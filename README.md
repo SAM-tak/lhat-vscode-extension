@@ -1,13 +1,18 @@
 # L^ (lhat) Language Support
 
-`lhatls`（言語サーバー本体。ソースは `lsp/`、CMake ターゲット名は `lhat_lsp`）を
+`lhatls`（言語サーバー本体。ソースは L^ 本体リポジトリの `lsp/`、CMake
+ターゲット名は `lhat_lsp`）を
 起動し、VSCode に L^ の型検査の診断（赤波線）・セマンティックハイライト・
 ホバー・定義へ移動・アウトライン・補完を届ける薄いクライアント。
 加えて L^ のグラフ表示とデバッガを持つ。
 
 ## セットアップ
 
-1. サーバー本体（リポジトリルート）をビルド:
+この拡張のビルドに L^ 本体は要らない（TypeScript だけで閉じている）。
+要るのは動かすときで、サーバー本体 `lhatls` と、デバッグに使う実行時 `lhat`
+はどちらも別リポジトリ [SAM-tak/lhat](https://github.com/SAM-tak/lhat) にある。
+
+1. 本体リポジトリでサーバーをビルド:
 
    ```powershell
    . .\scripts\devshell.ps1
@@ -20,18 +25,14 @@
 2. この拡張の依存関係を入れてコンパイル:
 
    ```powershell
-   cd vscode-extension
    npm install
    npm run compile
    ```
 
-3. VSCode で **`vscode-extension` フォルダそのものを** 開く
-   （`File > Open Folder`）。リポジトリルートを開いたままだと
-   `.vscode/launch.json` が認識されず、F5 は今開いているファイルを
-   素で（Plain Text として）デバッグしようとしてしまう。
-   `vscode-extension` を開いた状態で F5 → 拡張開発ホストが起動する。
+3. VSCode でこのリポジトリを開いて（`File > Open Folder`）F5
+   → 拡張開発ホストが起動する。
    `lhatls.exe` が PATH 上になければ、設定 `lhat.serverPath` に
-   `build\debug\lhatls.exe` への絶対パスを指定する。
+   本体側の `build\debug\lhatls.exe` への絶対パスを指定する。
 
 4. `.lh` ファイルを開くと、保存前の編集内容がそのまま型検査され、
    `require^` で参照する同じワークスペース内の他ファイルも辿って検査される。
@@ -43,7 +44,6 @@
 インストールする。
 
 ```powershell
-cd vscode-extension
 npm run install-extension
 ```
 
@@ -62,9 +62,8 @@ npm run install-extension
 "lhat.serverPath": "C:\\path\\to\\lhat\\build\\release\\lhatls.exe"
 ```
 
-なお `vsce` は `.vsix` の中に LICENSE が入っていることを求めるため、
-リポジトリルートの `LICENSE`（Apache-2.0）をこのフォルダにも置いてある。
-どちらを直すときも両方を揃える。
+ライセンスは本体と同じ Apache-2.0（`LICENSE`）。`vsce` は `.vsix` の中に
+これが入っていることを求めるので、リポジトリに置いてある。
 
 ## ホバー
 

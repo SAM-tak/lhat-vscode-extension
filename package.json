@@ -8,8 +8,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/SAM-tak/lhat.git",
-    "directory": "vscode-extension"
+    "url": "https://github.com/SAM-tak/lhat-vscode-extension.git"
   },
   "engines": {
     "vscode": "^1.85.0"
