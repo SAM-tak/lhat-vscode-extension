@@ -20,6 +20,7 @@ import {
     ServerOptions,
     State,
 } from "vscode-languageclient/node";
+import { bundled, rememberExtensionRoot } from "./bundled";
 import {
     LhatDebugAdapterFactory,
     LhatDebugConfigurationProvider,
@@ -36,8 +37,13 @@ function resolveServerCommand(): string {
     if (configured && configured.trim().length > 0) {
         return configured;
     }
-    // No path configured: let the OS resolve it off PATH, as clangd's
-    // extension does for clangd itself.
+    // What a platform-specific package ships, when this is one.
+    const shipped = bundled("lhatls");
+    if (shipped !== undefined) {
+        return shipped;
+    }
+    // Shipping none: let the OS resolve it off PATH, as clangd's extension
+    // does for clangd itself.
     return process.platform === "win32" ? "lhatls.exe" : "lhatls";
 }
 
@@ -128,6 +134,9 @@ function startClient(command: string): LanguageClient {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+    // Before anything resolves a binary: bundled() reads this.
+    rememberExtensionRoot(context);
+
     client = startClient(resolveServerCommand());
 
     context.subscriptions.push(

@@ -2,6 +2,7 @@ node_modules/
 out/
 media/rf/
 *.vsix
+bin/
 
 # What `lhat --dump-host-api` writes for lhatls: generated from whatever the
 # driver registers, so it goes stale the moment the host's registrations

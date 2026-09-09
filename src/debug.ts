@@ -22,6 +22,8 @@ import * as net from "net";
 import * as path from "path";
 import * as vscode from "vscode";
 
+import { bundled } from "./bundled";
+
 // What dap/adapter.c prints once the socket is up, and nothing else does.
 // The newline is part of it: a chunk that split the number would otherwise
 // match the digits it happened to carry, and the port would be wrong.
@@ -74,7 +76,12 @@ function resolveRuntimeCommand(): string {
     if (configured && configured.trim().length > 0) {
         return configured;
     }
-    // No path configured: let the OS resolve it off PATH, the way
+    // What a platform-specific package ships, when this is one.
+    const shipped = bundled("lhat");
+    if (shipped !== undefined) {
+        return shipped;
+    }
+    // Shipping none: let the OS resolve it off PATH, the way
     // resolveServerCommand does for lhatls.
     return process.platform === "win32" ? "lhat.exe" : "lhat";
 }
