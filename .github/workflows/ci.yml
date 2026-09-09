@@ -1,0 +1,33 @@
+# Type-checks and builds both halves of the extension: the Node side that
+# tsc emits, and the webview esbuild bundles (which esbuild does not
+# type-check, so tsconfig.rf.json is a step of its own).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Compile (tsc + esbuild)
+        run: npm run compile
+
+      - name: Type-check the webview
+        run: npm run check:rf

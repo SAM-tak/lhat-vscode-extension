@@ -1,0 +1,93 @@
+# Publishes one .vsix per platform, each carrying the runtime and the
+# language server for that platform in bin/ (src/bundled.ts finds them
+# there). VSCode hands a user only the package that matches their machine,
+# so installing the extension is the whole of what they do.
+#
+# The binaries come from the lhat repository's own release, named in
+# .lhat-version. Keeping that in a file of its own rather than in
+# package.json is deliberate: the extension's version and the runtime's are
+# different numbers that move at different times, and vsce reads the one in
+# package.json.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      lhat_version:
+        description: 'lhat release tag to bundle (default: .lhat-version)'
+        required: false
+      dry_run:
+        description: 'Build the packages without publishing them'
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # One version, several targets: the Marketplace takes them as one
+      # release, and publishing them at once has raced before.
+      max-parallel: 1
+      matrix:
+        include:
+          - target: win32-x64
+            asset: lhat-win32-x64.zip
+          - target: linux-x64
+            asset: lhat-linux-x64.tar.gz
+          - target: linux-arm64
+            asset: lhat-linux-arm64.tar.gz
+          # Both Apple targets take the same universal build.
+          - target: darwin-x64
+            asset: lhat-darwin-universal.tar.gz
+          - target: darwin-arm64
+            asset: lhat-darwin-universal.tar.gz
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Compile
+        run: npm run compile && npm run check:rf
+
+      - name: Fetch the runtime for ${{ matrix.target }}
+        run: |
+          version="${{ inputs.lhat_version }}"
+          if [ -z "$version" ]; then
+            version="$(tr -d '[:space:]' < .lhat-version)"
+          fi
+          echo "bundling lhat $version"
+          mkdir -p bin
+          gh release download "$version" --repo SAM-tak/lhat \
+             --pattern '${{ matrix.asset }}' --output pack
+          case '${{ matrix.asset }}' in
+            *.zip) unzip -q pack -d bin ;;
+            *)     tar -C bin -xzf pack ;;
+          esac
+          rm pack
+          ls -l bin
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Package
+        run: npx vsce package --target ${{ matrix.target }} --no-dependencies
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsix-${{ matrix.target }}
+          path: '*.vsix'
+          if-no-files-found: error
+
+      # A tag publishes; a manual run defaults to proving the package builds.
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
+        run: npx vsce publish --target ${{ matrix.target }} --no-dependencies
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}

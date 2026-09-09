@@ -4,7 +4,6 @@
   "description": "Real-time type-check diagnostics for the L^ (lhat) language, via lhatls",
   "version": "0.1.0",
   "publisher": "lhat",
-  "private": true,
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

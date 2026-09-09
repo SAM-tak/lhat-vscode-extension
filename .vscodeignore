@@ -5,8 +5,13 @@
 
 # TypeScript sources and their build configuration. `out/` and `media/` hold
 # the emitted JavaScript, which is what `main` and the webview load.
+#
+# bin/ is deliberately absent from this list: a platform-specific package is
+# built with the runtime and the language server in it, and src/bundled.ts
+# looks for them there.
 src/**
 tsconfig.json
+tsconfig.rf.json
 tsconfig.webview.json
 
 # Source maps point back at src/, which is not shipped. The F5 extension
@@ -16,9 +21,17 @@ tsconfig.webview.json
 
 # Editor and repository plumbing.
 .vscode/**
+.github/**
 .gitignore
 .vscodeignore
 package-lock.json
+# Which lhat release the packages bundle -- read by the release workflow,
+# of no use to anyone who has already installed one.
+.lhat-version
+
+# Sample sources for driving the extension by hand (README's "testing").
+# The extension does not read them; they are for whoever is working on it.
+testing/**
 
 # Earlier packages, when one is built in place.
 *.vsix
