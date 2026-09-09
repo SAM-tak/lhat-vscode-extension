@@ -2,7 +2,7 @@
   "name": "lhat-lsp-client",
   "displayName": "L^ Language Support",
   "description": "Real-time type-check diagnostics for the L^ (lhat) language, via lhatls",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "publisher": "lhat",
   "license": "Apache-2.0",
   "repository": {
