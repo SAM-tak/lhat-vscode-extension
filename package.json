@@ -1,9 +1,10 @@
 {
-  "name": "lhat-lsp-client",
+  "name": "lhat",
   "displayName": "L^ Language Support",
   "description": "Real-time type-check diagnostics for the L^ (lhat) language, via lhatls",
-  "version": "0.3.0",
-  "publisher": "lhat",
+  "icon": "./images/lhat-logo.png",
+  "version": "0.3.1",
+  "publisher": "SAMtak",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -154,7 +155,7 @@
         "lhat.serverPath": {
           "type": "string",
           "default": "",
-          "description": "Path to lhatls(.exe). If empty, looks for lhatls(.exe) on PATH."
+          "description": "Path to lhatls(.exe). If empty, uses the server bundled with this extension, then looks on PATH."
         },
         "lhat.serverAutoRestart": {
           "type": "boolean",
@@ -169,7 +170,7 @@
         "lhat.runtimePath": {
           "type": "string",
           "default": "",
-          "description": "Path to the L^ runtime (lhat/lhat.exe). It is the debug adapter as well as the interpreter (09 の 7 章). Empty resolves it off PATH."
+          "description": "Path to the L^ runtime (lhat/lhat.exe), used to run and debug programs. It is distributed separately from this extension; when empty, it resolves from PATH."
         }
       }
     },
@@ -300,16 +301,12 @@
     "bundle:rf": "esbuild src/webview/rf/main.tsx --bundle --minify --outdir=media/rf --entry-names=bundle --jsx=automatic --sourcemap --log-level=warning",
     "check:rf": "tsc -p ./tsconfig.rf.json",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package -o lhat-lsp-client.vsix",
-    "install-extension": "npm run package && code --install-extension lhat-lsp-client.vsix --force",
-    "uninstall-extension": "code --uninstall-extension lhat.lhat-lsp-client",
+    "package": "vsce package --githubBranch main -o lhat.vsix",
+    "install-extension": "npm run package && code --install-extension lhat.vsix --force",
+    "uninstall-extension": "code --uninstall-extension samtak.lhat",
     "watch:rf": "npm run bundle:rf -- --watch"
   },
   "dependencies": {
-    "@xyflow/react": "^12.11.3",
-    "elkjs": "^0.12.0",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
@@ -318,7 +315,11 @@
     "@types/react-dom": "^19.2.4",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^3.9.2",
+    "@xyflow/react": "^12.11.3",
+    "elkjs": "^0.12.0",
     "esbuild": "^0.28.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "typescript": "^5.4.0"
   }
 }

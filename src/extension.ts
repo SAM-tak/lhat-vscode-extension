@@ -20,7 +20,7 @@ import {
     ServerOptions,
     State,
 } from "vscode-languageclient/node";
-import { bundled, rememberExtensionRoot } from "./bundled";
+import { bundledServer, rememberExtensionRoot } from "./bundled";
 import {
     LhatDebugAdapterFactory,
     LhatDebugConfigurationProvider,
@@ -38,7 +38,7 @@ function resolveServerCommand(): string {
         return configured;
     }
     // What a platform-specific package ships, when this is one.
-    const shipped = bundled("lhatls");
+    const shipped = bundledServer();
     if (shipped !== undefined) {
         return shipped;
     }

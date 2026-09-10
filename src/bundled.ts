@@ -1,8 +1,9 @@
-// L^ (lhat) -- the binaries a platform-specific package ships with it.
+// L^ (lhat) -- the language-server binary a platform-specific package ships.
 //
-// A .vsix published with `vsce publish --target <platform>` carries the
-// runtime and the language server for that platform in bin/, put there by
-// the release workflow from what the lhat repository's own release built.
+// A .vsix published with `vsce publish --target <platform>` carries lhatls
+// for that platform in bin/, put there by the release workflow from what the
+// lhat repository's own release built. The runtime is intentionally separate:
+// it is useful as a standalone CLI and is only needed for debugging.
 // An extension installed any other way -- from source, from a generic
 // package -- ships none, and the caller falls back to PATH as before.
 //
@@ -22,15 +23,15 @@ export function rememberExtensionRoot(context: vscode.ExtensionContext): void {
 }
 
 /**
- * The path to a binary this package ships, or undefined when it ships none.
+ * The path to lhatls this package ships, or undefined when it ships none.
  *
- * `name` is spelt without an extension; the .exe is added on Windows.
+ * Windows calls it lhatls.exe; other platforms call it lhatls.
  */
-export function bundled(name: string): string | undefined {
+export function bundledServer(): string | undefined {
     if (root === undefined) {
         return undefined;
     }
-    const exe = process.platform === "win32" ? `${name}.exe` : name;
+    const exe = process.platform === "win32" ? "lhatls.exe" : "lhatls";
     const at = path.join(root, "bin", exe);
     if (!fs.existsSync(at)) {
         return undefined;

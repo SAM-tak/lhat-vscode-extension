@@ -7,8 +7,7 @@
 # the emitted JavaScript, which is what `main` and the webview load.
 #
 # bin/ is deliberately absent from this list: a platform-specific package is
-# built with the runtime and the language server in it, and src/bundled.ts
-# looks for them there.
+# built with lhatls in it, and src/bundled.ts looks for it there.
 src/**
 tsconfig.json
 tsconfig.rf.json
@@ -25,6 +24,9 @@ tsconfig.webview.json
 .gitignore
 .vscodeignore
 package-lock.json
+
+devdocs/**
+
 # Which lhat release the packages bundle -- read by the release workflow,
 # of no use to anyone who has already installed one.
 .lhat-version
