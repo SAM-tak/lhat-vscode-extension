@@ -30,6 +30,41 @@ import { LhatOutlineProvider, graphedUri } from "./outline";
 
 let client: LanguageClient | undefined;
 
+enum LspFileChangeType {
+    Created = 1,
+    Changed = 2,
+    Deleted = 3,
+}
+
+function watchProjectConfiguration(context: vscode.ExtensionContext): void {
+    const changed = (uri: vscode.Uri, type: LspFileChangeType): void => {
+        if (client === undefined) {
+            return;
+        }
+        void client
+            .sendNotification("workspace/didChangeWatchedFiles", {
+                changes: [{ uri: uri.toString(), type }],
+            })
+            .catch(() => undefined);
+    };
+
+    for (const name of ["lhat-host.json", "lhat-lsp.json"]) {
+        const watcher = vscode.workspace.createFileSystemWatcher(`**/${name}`);
+        context.subscriptions.push(
+            watcher,
+            watcher.onDidCreate((uri) =>
+                changed(uri, LspFileChangeType.Created)
+            ),
+            watcher.onDidChange((uri) =>
+                changed(uri, LspFileChangeType.Changed)
+            ),
+            watcher.onDidDelete((uri) =>
+                changed(uri, LspFileChangeType.Deleted)
+            )
+        );
+    }
+}
+
 function resolveServerCommand(): string {
     const configured = vscode.workspace
         .getConfiguration("lhat")
@@ -138,6 +173,7 @@ export function activate(context: vscode.ExtensionContext): void {
     rememberExtensionRoot(context);
 
     client = startClient(resolveServerCommand());
+    watchProjectConfiguration(context);
 
     context.subscriptions.push(
         vscode.commands.registerCommand("lhat.restartServer", async () => {
