@@ -48,9 +48,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - run: npm ci
@@ -80,7 +80,7 @@ jobs:
       - name: Package
         run: npx vsce package --target ${{ matrix.target }} --githubBranch main
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: vsix-${{ matrix.target }}
           path: '*.vsix'
