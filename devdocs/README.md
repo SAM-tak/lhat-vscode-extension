@@ -138,7 +138,7 @@ npm run install-extension
 
 `.lh` を開いた状態で **`L^: Open Graph View`**（コマンドパレット、または
 エディタ右上のボタン）を実行すると、グラフが開く。
-DesignDocuments/06-visual-editor.md の写像を実装したもので、今のところ
+[06-visual-editor.md](06-visual-editor.md) の写像を実装したもので、今のところ
 **閲覧専用**。グラフ上の箱を中クリックすると、テキスト側の対応箇所が選択される。
 
 既定では同じエディタグループの別タブに開く。横に並べたい場合は設定
