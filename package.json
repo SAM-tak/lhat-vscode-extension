@@ -1,6 +1,6 @@
 {
   "name": "lhat",
-  "displayName": "L^ Language Support",
+  "displayName": "L^(Lhat) Language Support",
   "description": "Real-time type-check diagnostics for the L^ (lhat) language, via lhatls",
   "icon": "./images/lhat-logo.png",
   "version": "0.3.1",
