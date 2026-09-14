@@ -23,8 +23,9 @@ const MAX_LABEL = 48;
 // is widened by this much to keep the two off each other.
 const FOLD_BTN = 18;
 
-// 5.3's table, by kind.
-const STATEMENT_LIST = new Set(["block"]);
+// 5.3's table, by kind. Code switched off (01 の 6.5) lists statements the
+// way a block does, and is laid out as one.
+const STATEMENT_LIST = new Set(["block", "disabled"]);
 // 04 の 4.5's try^{ } is here too: its items are if-clause nodes like an
 // if^ statement's, the first being the body and the rest the catch arms. The
 // body is not one of the alternatives, but it reads well enough at the left
@@ -87,6 +88,8 @@ export interface ElkNode {
         foldable?: boolean;
         /** A branch container: its clauses snap rather than slide (8.6). */
         branch?: boolean;
+        /** Inside code switched off (01 の 6.5): drawn greyed out. */
+        disabled?: boolean;
     };
 }
 
@@ -98,6 +101,7 @@ export interface ElkEdge {
     pinned?: boolean;
     /** 8.6: an execution line -- consecutive statements, shown as an arrow. */
     drawn?: boolean;
+    layoutOptions?: Record<string, string>;
     sections?: {
         startPoint: { x: number; y: number };
         endPoint: { x: number; y: number };
@@ -144,6 +148,12 @@ function holdsBranchOrBody(node: AstNode): boolean {
 function holdsCollapsible(node: AstNode): boolean {
     return drawnChildren(node).some(
         ({ node: c }) => COLLAPSIBLE.has(c.kind) || holdsCollapsible(c));
+}
+
+// 01 の 6.5: everything drawn inside code switched off is switched off too.
+function markDisabled(node: ElkNode): void {
+    if (node.lhat !== undefined) node.lhat.disabled = true;
+    for (const child of node.children ?? []) markDisabled(child);
 }
 
 // V16: the construct's own text with every drawn child's span cut out, so a
@@ -248,14 +258,39 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         lhat: from(node),
     });
 
-    const chain = (id: string, kids: ElkNode[], drawn = false): ElkEdge[] =>
+    const chain = (id: string, kids: ElkNode[]): ElkEdge[] =>
         kids.slice(1).map((k, i) => ({
             id: `${id}__ord${i}`,
             sources: [kids[i].id],
             targets: [k.id],
             pinned: true,
-            ...(drawn ? { drawn: true } : {}),
         }));
+
+    // 8.6: a statement sequence's execution lines. Code switched off (01 の
+    // 6.5) keeps its place and its order-pinning edges, but no line enters or
+    // leaves it: the line runs from the statement before it straight to the
+    // one after. That line stays out of the layout -- spanning two layers, it
+    // would have ELK route around the skipped box and push it aside.
+    const flow = (id: string, kids: ElkNode[]): ElkEdge[] => {
+        const off = (k: ElkNode) => k.lhat?.disabled === true;
+        const edges = chain(id, kids).map((e, i) =>
+            off(kids[i]) || off(kids[i + 1]) ? e : { ...e, drawn: true });
+        let live: ElkNode | undefined;
+        kids.forEach((k, i) => {
+            if (off(k)) return;
+            if (live !== undefined && off(kids[i - 1])) {
+                edges.push({
+                    id: `${id}__skip${i}`,
+                    sources: [live.id],
+                    targets: [k.id],
+                    drawn: true,
+                    layoutOptions: { "elk.noLayout": "true" },
+                });
+            }
+            live = k;
+        });
+        return edges;
+    };
 
     const container = (
         id: string, label: string, dir: string, children: ElkNode[],
@@ -352,6 +387,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         const built = expand(node, voice, unfold, avail);
         // Said of an open one too: the button is how it gets shut again.
         if (foldable && built.lhat !== undefined) built.lhat.foldable = true;
+        if (node.kind === "disabled") markDisabled(built);
         return built;
     }
 
@@ -430,9 +466,11 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         const dir = voice === "stmt" ? "DOWN" : "RIGHT";
         // 8.6: the statement sequence carries the execution lines. Only the
         // true statement lists -- a body, the file root -- not the parts a
-        // for^ or a define stacks, which are one construct, not a sequence.
+        // for^ or a define stacks, which are one construct, not a sequence;
+        // and not what is switched off, which does not run.
         return container(id, label, dir, inner,
-                         chain(id, inner, STATEMENT_LIST.has(kind)), node);
+                         kind === "block" ? flow(id, inner) : chain(id, inner),
+                         node);
     }
 
     const width = options.width ?? Number.POSITIVE_INFINITY;

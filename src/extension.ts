@@ -19,6 +19,7 @@ import {
     ResponseError,
     ServerOptions,
     State,
+    TextEdit,
 } from "vscode-languageclient/node";
 import { bundledServer, rememberExtensionRoot } from "./bundled";
 import {
@@ -306,6 +307,83 @@ export function activate(context: vscode.ExtensionContext): void {
             void vscode.window.showInformationMessage(
                 `Copied the signature to the clipboard ` +
                 `(${reply.signature.length} characters).`);
+        }),
+    );
+
+    // 01 の 6.5: statements switched off as '#[~ ... ]#', and on again. What
+    // to wrap -- the whole statements a selection touches -- is the server's
+    // to say, since only the tree knows where one ends. This applies the
+    // edits it answers with, and says why when it answers with none.
+    context.subscriptions.push(
+        vscode.commands.registerCommand("lhat.toggleDisabledCode", async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (editor === undefined || editor.document.languageId !== "lhat") {
+                void vscode.window.showInformationMessage(
+                    "Open a .lh file first.");
+                return;
+            }
+            if (client === undefined || client.state !== State.Running) {
+                void vscode.window.showWarningMessage(
+                    "lhatls is not running, so there is nothing to ask. " +
+                    "Run \"L^: Restart Language Server\".");
+                return;
+            }
+
+            const document = editor.document;
+            const version = document.version;
+            type Reply = { edits: TextEdit[] } | { refusal: string } | null;
+            let reply: Reply | undefined;
+            try {
+                reply = await client.sendRequest<Reply>(
+                    "lhat/toggleDisabledCode",
+                    {
+                        textDocument:
+                            client.code2ProtocolConverter.asTextDocumentIdentifier(
+                                document),
+                        range: client.code2ProtocolConverter.asRange(
+                            editor.selection),
+                    },
+                );
+            } catch (error: unknown) {
+                if (error instanceof ResponseError &&
+                    error.code === ErrorCodes.MethodNotFound) {
+                    void vscode.window.showErrorMessage(
+                        "This lhatls is older than Toggle Disabled Code. " +
+                        "Rebuild it (cmake --build --preset release) and run " +
+                        "\"L^: Restart Language Server\".");
+                    return;
+                }
+                const reason =
+                    error instanceof Error ? error.message : String(error);
+                void vscode.window.showErrorMessage(
+                    `Could not toggle disabled code: ${reason}`);
+                return;
+            }
+
+            if (reply === null || reply === undefined) {
+                // Answered only for a file the server holds open.
+                void vscode.window.showInformationMessage(
+                    "lhatls does not have this file open.");
+                return;
+            }
+            if ("refusal" in reply) {
+                void vscode.window.showInformationMessage(reply.refusal);
+                return;
+            }
+            // The edits are positions in the text that was asked about.
+            if (document.version !== version) {
+                void vscode.window.showInformationMessage(
+                    "The file changed while lhatls was answering. " +
+                    "Press it again.");
+                return;
+            }
+            const edits =
+                await client.protocol2CodeConverter.asTextEdits(reply.edits);
+            await editor.edit((builder) => {
+                for (const edit of edits ?? []) {
+                    builder.replace(edit.range, edit.newText);
+                }
+            });
         }),
     );
 

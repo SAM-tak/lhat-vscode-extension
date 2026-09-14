@@ -38,6 +38,8 @@ the bundled server, so it is also the way to try a locally built server.
 - Completion, hover information, go to definition, find references, and rename
 - Document symbols and a graph-specific outline
 - **Copy Signature** for copying the full inferred type of the name at the cursor
+- **Toggle Disabled Code** (`Ctrl+Shift+/`) for switching whole statements off
+  as `#[~ … ]#` and back on; the graph view shows them greyed out
 - A read-only graph view of an L^ source file
 - Debugging through the L^ Debug Adapter Protocol implementation
 

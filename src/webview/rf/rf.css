@@ -164,6 +164,14 @@ html, body, #root {
     cursor: zoom-in;
 }
 
+/* Code switched off (01 の 6.5). Greyed rather than hidden -- it is still
+   written there -- and see-through, so the execution line that runs past it
+   (8.6) shows behind. */
+.box.disabled {
+    opacity: 0.45;
+    border-style: dashed;
+}
+
 /* Handles for the data lines (5.5): out of the way until pointed at. */
 .react-flow__handle {
     width: 7px;

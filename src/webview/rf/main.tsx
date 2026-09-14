@@ -60,6 +60,8 @@ interface BoxData extends Record<string, unknown> {
     depth: number;
     isContainer: boolean;
     collapsed: boolean;
+    /** 01 の 6.5: written, but switched off. */
+    disabled: boolean;
     start?: number;
     end?: number;
     /**
@@ -249,6 +251,7 @@ function toFlow(
                     depth,
                     isContainer,
                     collapsed: c.lhat?.collapsed === true,
+                    disabled: c.lhat?.disabled === true,
                     start: c.lhat?.start,
                     end: c.lhat?.end,
                     slideKey:
@@ -535,6 +538,7 @@ function BoxNode({ data }: NodeProps<BoxNodeType>) {
     if (data.collapsed) classes.push("folded");
     else if (data.isContainer) classes.push(`container d${Math.min(data.depth, 6)}`);
     else classes.push("leaf");
+    if (data.disabled) classes.push("disabled");
     // No `nopan` here. It was what kept a slide from dragging the canvas with
     // it, back when a drag could pan; with panOnDrag off there is nothing left
     // to hold back -- and the class would cost us, since inside one React Flow
