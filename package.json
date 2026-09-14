@@ -297,11 +297,12 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./ && npm run bundle:rf",
+    "compile": "tsc -p ./ && npm run bundle:extension && npm run bundle:rf",
+    "bundle:extension": "esbuild src/extension.ts --bundle --minify --platform=node --format=cjs --external:vscode --outfile=out/extension.js --sourcemap --log-level=warning",
     "bundle:rf": "esbuild src/webview/rf/main.tsx --bundle --minify --outdir=media/rf --entry-names=bundle --jsx=automatic --sourcemap --log-level=warning",
     "check:rf": "tsc -p ./tsconfig.rf.json",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package --githubBranch main -o lhat.vsix",
+    "package": "vsce package --githubBranch main --no-dependencies -o lhat.vsix",
     "install-extension": "npm run package && code --install-extension lhat.vsix --force",
     "uninstall-extension": "code --uninstall-extension samtak.lhat",
     "watch:rf": "npm run bundle:rf -- --watch"

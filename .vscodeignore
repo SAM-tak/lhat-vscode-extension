@@ -18,6 +18,12 @@ tsconfig.webview.json
 # either way, so debugging is unaffected.
 **/*.map
 
+# `out/extension.js` is bundled from the extension's entry point. The other
+# TypeScript output files are only its source modules, and shipping them would
+# duplicate both code and files already contained in that bundle.
+out/**
+!out/extension.js
+
 # Editor and repository plumbing.
 .vscode/**
 .github/**

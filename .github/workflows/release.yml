@@ -78,7 +78,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Package
-        run: npx vsce package --target ${{ matrix.target }} --githubBranch main
+        run: npx vsce package --target ${{ matrix.target }} --githubBranch main --no-dependencies
 
       - uses: actions/upload-artifact@v6
         with:
@@ -89,6 +89,19 @@ jobs:
       # A tag publishes; a manual run defaults to proving the package builds.
       - name: Publish
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
-        run: npx vsce publish --target ${{ matrix.target }} --githubBranch main
+        # vsce has no --no-wait-validation option: it does not wait for that
+        # Marketplace operation. Its initial Gallery API call can time out,
+        # though, so retry it. --skip-duplicate also handles a request that
+        # reached the Marketplace even when its response was lost.
+        run: |
+          for attempt in 1 2 3; do
+            if npx vsce publish --target ${{ matrix.target }} --githubBranch main --no-dependencies --skip-duplicate; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 15))
+            fi
+          done
+          exit 1
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
