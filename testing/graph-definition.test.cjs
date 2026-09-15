@@ -189,9 +189,13 @@ test('def and self-table members split while abstract fields and function parame
     ] });
     const method = n('func', 'f^n = 1 { n }', {
         params: [n('param', 'n = 1', { name: n('ident', 'n', undefined, source.indexOf('f^n')), fallback: n('int', '1') })],
-        body: n('block', '{ n }', { items: [n('return', 'n', undefined, source.indexOf('{ n'))] }),
+        body: n('block', '{ n }', { items: [n('return', 'n', {
+            value: [n('ident', 'n', undefined, source.indexOf('{ n'))],
+        }, source.indexOf('{ n'))] }),
     });
-    const equality = n('func', 'f^a, b { a = b }', { body: n('block', '{ a = b }', { items: [n('return', 'a = b')] }) });
+    const equality = n('func', 'f^a, b { a = b }', { body: n('block', '{ a = b }', {
+        items: [n('return', 'a = b', { value: [n('binary', 'a = b')] })],
+    }) });
     const definition = n('def', source, { items: [
         n('table-entry', 'self^{ count:number^ = 0 }', { value: template }),
         n('table-entry', 'abstract^limit:number^', {
@@ -202,7 +206,7 @@ test('def and self-table members split while abstract fields and function parame
     ] });
     const reply = { source, root: definition };
     const graph = await new ELK().layout(toElk(reply));
-    const pairs = rows(graph);
+    const pairs = rows(graph).filter(n => n.lhat.kind === 'member-row');
     assert.equal(pairs.length, 3, 'only explicit member values split');
     assertDefinition(pairs[0], source, ['count:number^', '0']);
     assert.equal(pairs[1].children[0].labels[0].text, 'override^new');
@@ -217,7 +221,8 @@ test('def and self-table members split while abstract fields and function parame
     assert.equal(foldedMethod.children[0].lhat.collapsed, undefined);
     assert.equal(foldedMethod.edges[0].definition, true);
     const methodView = toElk(reply, { root: method, collapse: true });
-    assert.equal(rows(methodView).length, 0, 'parameter defaults remain in the signature');
+    assert.equal(rows(methodView).length, 1, 'only the implicit return splits; parameter defaults remain in the signature');
+    assert.equal(rows(methodView)[0].lhat.kind, 'return-row');
 });
 
 test('branch-free enclosing expressions expose nested member definitions', async () => {
@@ -231,10 +236,11 @@ test('branch-free enclosing expressions expose nested member definitions', async
     ] });
     const root = n('return', source, { value: [outer] });
     const graph = await new ELK().layout(toElk({ source, root }, { width: 450 }));
-    assert.equal(rows(graph).length, 2);
-    assertDefinition(rows(graph)[1], source, ['leaf', '1']);
-    assert.equal(rows(graph)[0].children[0].labels[0].text, 'child');
-    assert.equal(rows(graph)[0].children[1].lhat.kind, 'table');
+    assert.equal(rows(graph).length, 3, 'return value and both nested member definitions');
+    assert.equal(rows(graph)[0].children[0].lhat.pictogram, 'return');
+    assertDefinition(rows(graph)[2], source, ['leaf', '1']);
+    assert.equal(rows(graph)[1].children[0].labels[0].text, 'child');
+    assert.equal(rows(graph)[1].children[1].lhat.kind, 'table');
 });
 
 test('only wide outermost values drop; later statements gain clearance without moving the declaration', () => {

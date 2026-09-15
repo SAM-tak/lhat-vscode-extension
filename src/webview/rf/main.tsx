@@ -18,11 +18,11 @@ import React, {
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
-    Background, ConnectionLineType, Handle, MarkerType, MiniMap, PanOnScrollMode, Position,
-    ReactFlow, addEdge, getSmoothStepPath, getStraightPath, useEdgesState, useReactFlow, ReactFlowProvider,
+    Background, BaseEdge, ConnectionLineType, Handle, MarkerType, MiniMap, PanOnScrollMode, Position,
+    ReactFlow, addEdge, getSmoothStepPath, useEdgesState, useReactFlow, ReactFlowProvider,
     useUpdateNodeInternals,
     type BuiltInEdge, type Connection, type ConnectionLineComponentProps,
-    type Edge, type Node, type NodeProps, type NodeTypes,
+    type Edge, type EdgeProps, type EdgeTypes, type Node, type NodeProps, type NodeTypes,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import "./rf.css";
@@ -101,6 +101,10 @@ interface BoxData extends Record<string, unknown>, SlideData {
     slideOwner: boolean;
     isStart: boolean;
     isAdd: boolean;
+    isReturn: boolean;
+    isCondition: boolean;
+    branchOffset?: number;
+    definitionBranchOffset?: number;
     definitionRole?: "declaration" | "value";
     definitionHandleY?: number;
     collapsed: boolean;
@@ -134,18 +138,29 @@ interface BoxData extends Record<string, unknown>, SlideData {
 
 type BoxNodeType = Node<BoxData, "box">;
 
+// React Flow adds the endpoint nodes' layers to an edge's z-index. Leave
+// room for its selection lift (1000): an active scroll owner covers an
+// unrelated execution line, while its own descendant edges stay above it.
+const EXECUTION_Z = 2000;
+const ACTIVE_SCROLL_Z = EXECUTION_Z * 2;
+// Above internal edges (up to 7000 with selection) and their preview (8000).
+// Conditions have no execution handles, so this lift cannot lift an edge too.
+const CONDITION_Z = EXECUTION_Z * 5;
+
 const executionEdge = {
-    type: "straight",
+    type: "smoothstep",
     className: "exec",
-    // Lines between descendants must stay visible over their enclosing boxes.
-    zIndex: 2000,
+    zIndex: EXECUTION_Z,
+    pathOptions: { borderRadius: 6, offset: 6 },
     markerEnd: {
         type: MarkerType.ArrowClosed,
         width: 11,
         height: 11,
         color: "var(--lhat-exec)",
     },
-} satisfies Partial<Edge>;
+} satisfies Partial<BuiltInEdge>;
+
+const branchEdge = { ...executionEdge, type: "branch", className: "exec branch" };
 
 const definitionEdge = {
     ...executionEdge,
@@ -157,9 +172,15 @@ const definitionEdge = {
     markerEnd: { ...executionEdge.markerEnd, color: "var(--vscode-charts-blue, #58a)" },
 } satisfies Partial<BuiltInEdge>;
 
+// Only the outward trunk has an arrowhead at the actual definition target.
+const definitionBranchEdge = { ...definitionEdge, type: "definition-branch",
+    className: "definition definition-branch", markerEnd: undefined };
+
 const validConnection = (connection: Connection | Edge): boolean =>
-    (connection.sourceHandle === "flow-out" && connection.targetHandle === "flow-in") ||
-    (connection.sourceHandle === "definition-out" && connection.targetHandle === "definition-in");
+    ((connection.sourceHandle === "flow-out" || connection.sourceHandle === "flow-branch") &&
+        connection.targetHandle === "flow-in") ||
+    (connection.sourceHandle === "definition-out" &&
+        (connection.targetHandle === "definition-in" || connection.targetHandle === "definition-branch"));
 
 function toFlow(
     laid: ElkNode,
@@ -179,10 +200,12 @@ function toFlow(
     const exec: Edge[] = [];
     const definitions: Edge[] = [];
     const endpoints = new Map<string, ElkNode>();
-    const index = (node: ElkNode): void => {
+    const parents = new Map<string, ElkNode>();
+    const index = (node: ElkNode, parent?: ElkNode): void => {
         endpoints.set(node.id, node);
+        if (parent !== undefined) parents.set(node.id, parent);
         for (const port of node.ports ?? []) endpoints.set(port.id, node);
-        for (const child of node.children ?? []) index(child);
+        for (const child of node.children ?? []) index(child, node);
     };
     index(laid);
     const executionEnd = (node: ElkNode, end: "Entry" | "Exit"): ElkNode => {
@@ -221,11 +244,38 @@ function toFlow(
             const isContainer = (c.children ?? []).length > 0;
             const isStart = c.lhat?.synthetic === "start";
             const isAdd = c.lhat?.synthetic === "add";
+            const isReturn = c.lhat?.pictogram === "return";
+            const condition = c.lhat?.condition;
+            const isCondition = condition !== undefined;
             const synthetic = c.lhat?.synthetic !== undefined;
-            const layoutOnly = c.lhat?.definitionRole === "row";
+            const layoutOnly = c.lhat?.definitionRole === "row" || c.lhat?.layoutOnly === true;
+            const disabled = c.lhat?.disabled === true;
             const detachedValue = parent.lhat?.stackedDefinition === true &&
                 c.lhat?.definitionRole === "value";
             let x = c.x ?? 0;
+            let y = c.y ?? 0;
+            if (condition !== undefined) {
+                // Follow the actual statement endpoint (including split
+                // declarations/returns and nested sequential groups). All
+                // descendants share the owner's slide, so this stays local.
+                const entry = condition.entry === undefined ? undefined : endpoints.get(condition.entry);
+                const horizontal = condition.axis === "horizontal";
+                let target = entry === undefined ? undefined : horizontal ? entry : executionEnd(entry, "Entry");
+                let axis = horizontal ? target?.lhat?.definitionHandleY ?? (target?.height ?? 0) / 2
+                    : (target?.width ?? 0) / 2;
+                while (target !== undefined && target !== parent) {
+                    axis += (horizontal ? target.y : target.x) ?? 0;
+                    target = parents.get(target.id);
+                }
+                const size = horizontal ? h : w;
+                const extent = (horizontal ? parent.height : parent.width) ?? size;
+                if (target === undefined) axis = extent / 2;
+                const min = condition.inset;
+                const max = Math.max(min, extent - size - condition.inset);
+                const aligned = Math.max(min, Math.min(max, axis - size / 2));
+                if (horizontal) y = aligned;
+                else x = aligned;
+            }
             let baseShift = 0;
             if (topLevel && !layoutOnly && !detachedValue && usable > 0 && w > usable) {
                 const shift = baseAbs - x;
@@ -262,12 +312,16 @@ function toFlow(
             // global scroll already covers what sticks out up or down, so a
             // per-node vertical slide would be a second way to do the same
             // thing, and one that bends the execution line for nothing.
-            const y = c.y ?? 0;
             nodes.push({
                 id: c.id,
                 type: "box",
                 position: { x, y },
                 parentId,
+                // Lift only scroll owners and individual condition boxes,
+                // never a condition's whole arm. Disabled code stays behind
+                // the execution line that skips it.
+                zIndex: disabled ? undefined : isCondition ? CONDITION_Z
+                    : key !== undefined ? ACTIVE_SCROLL_Z : undefined,
                 // As first-class fields, not style: the minimap decides
                 // whether a node exists to draw by nodeHasDimensions(), which
                 // reads these and never the style -- with them only in style,
@@ -284,7 +338,8 @@ function toFlow(
                 // and every click. Selectable is the cheapest way to keep
                 // events flowing.
                 selectable: !layoutOnly,
-                ariaLabel: isStart ? "Execution start" : isAdd ? "Add element (not yet available)" : undefined,
+                ariaLabel: isStart ? "Execution start" : isReturn ? "Return"
+                    : isAdd ? "Add element (not yet available)" : undefined,
                 data: {
                     ...slide,
                     slideMotion,
@@ -293,13 +348,17 @@ function toFlow(
                     isContainer,
                     isStart,
                     isAdd,
+                    isReturn,
+                    isCondition,
+                    branchOffset: c.lhat?.branchOffset,
+                    definitionBranchOffset: c.lhat?.definitionBranchOffset,
                     layoutOnly,
                     slideOwner: key !== undefined,
                     definitionRole: c.lhat?.definitionRole === "row"
                         ? undefined : c.lhat?.definitionRole,
                     definitionHandleY: c.lhat?.definitionHandleY,
                     collapsed: c.lhat?.collapsed === true,
-                    disabled: c.lhat?.disabled === true,
+                    disabled,
                     start: synthetic ? undefined : c.lhat?.start,
                     end: synthetic ? undefined : c.lhat?.revealEnd ?? c.lhat?.end,
                     flashed: c.lhat !== undefined &&
@@ -343,6 +402,33 @@ function toFlow(
                 selectable: false,
                 focusable: false,
             });
+        }
+        if (parentId !== undefined && !parent.lhat?.disabled) {
+            for (const entry of parent.lhat?.executionBranches ?? []) {
+                const target = endpoints.get(entry);
+                if (target === undefined) continue;
+                exec.push({
+                    ...branchEdge,
+                    id: `x__${parent.id}__branch__${entry}`,
+                    source: parent.id, target: executionEnd(target, "Entry").id,
+                    sourceHandle: "flow-branch", targetHandle: "flow-in",
+                    data: { branchOffset: parent.lhat?.branchOffset },
+                    selectable: false, focusable: false,
+                });
+            }
+        }
+        if (parentId !== undefined) {
+            for (const candidate of parent.lhat?.definitionBranches ?? []) {
+                if (!endpoints.has(candidate)) continue;
+                definitions.push({
+                    ...definitionBranchEdge,
+                    id: `d__${parent.id}__branch__${candidate}`,
+                    source: candidate, target: parent.id,
+                    sourceHandle: "definition-out", targetHandle: "definition-branch",
+                    data: { definitionBranchOffset: parent.lhat?.definitionBranchOffset },
+                    selectable: false, focusable: false,
+                });
+            }
         }
     };
 
@@ -530,10 +616,14 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         data.onReveal(data);
     };
 
-    if (data.layoutOnly) return null;
+    // Match arms share their FOR's box. The invisible grouping still owns
+    // the branch junction, unlike a declaration row with no handles at all.
+    if (data.layoutOnly && data.branchOffset === undefined && data.definitionBranchOffset === undefined) return null;
 
     const classes = ["box"];
     if (data.isStart) classes.push("start-node");
+    if (data.isReturn) classes.push("return-node");
+    if (data.isCondition) classes.push("condition-node");
     if (data.isAdd) classes.push("add-node");
     if (data.flashed) classes.push("flash");
     if (data.collapsed) classes.push("folded");
@@ -547,12 +637,14 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
 
     return (
         <>
-            <div
+            {!data.layoutOnly && <div
                 className={classes.join(" ")}
                 title={data.isStart ? "Execution start"
+                    : data.isReturn ? "Return"
                     : data.isAdd ? "Add element (editing is not yet available)" : undefined}
-                role={data.isStart ? "img" : data.isAdd ? "button" : undefined}
-                aria-label={data.isStart ? "Execution start" : data.isAdd ? "Add element" : undefined}
+                role={data.isStart || data.isReturn ? "img" : data.isAdd ? "button" : undefined}
+                aria-label={data.isStart ? "Execution start" : data.isReturn ? "Return"
+                    : data.isAdd ? "Add element" : undefined}
                 aria-disabled={data.isAdd ? true : undefined}
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
@@ -585,21 +677,33 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                     <svg className="start-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M 6.5 8 L 17.5 8 L 12 17 Z" />
                     </svg>
+                ) : data.isReturn ? (
+                    <svg className="return-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        {/* ↵ rotated clockwise: the bent arrow points up. */}
+                        <path d="M 18 17 H 9 V 6 M 5 10 L 9 6 L 13 10" />
+                    </svg>
                 ) : data.isAdd ? (
                     <svg className="add-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M 12 6 V 18 M 6 12 H 18" />
                     </svg>
                 ) : <div className="boxlabel">{data.label}</div>}
-            </div>
+            </div>}
             {/* Use the execution lines' own endpoints as the visible ports:
                 incoming at the top, outgoing at the bottom. flowHandleX
                 keeps the ports and arrows together while the box slides. */}
-            {!data.isAdd && data.definitionRole !== "value" && (
+            {!data.isAdd && !data.isCondition && data.definitionRole !== "value" &&
+                data.definitionBranchOffset === undefined && (
                 <>
                     {!data.isStart && <Handle type="target" position={Position.Top} id="flow-in"
                             className="flowhandle" title="Execution input"
                             style={data.flowHandleX !== undefined
                                 ? { left: data.flowHandleX } : undefined} />}
+                    {data.branchOffset !== undefined && (
+                        <Handle type="source" position={Position.Top} id="flow-branch"
+                                className="flowhandle" title="Execution branches"
+                                style={data.flowHandleX !== undefined
+                                    ? { left: data.flowHandleX } : undefined} />
+                    )}
                     <Handle type="source" position={Position.Bottom} id="flow-out"
                             className="flowhandle" title="Execution output"
                             style={data.flowHandleX !== undefined
@@ -611,7 +715,12 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                         className="definitionhandle" title="Definition input"
                         style={{ top: data.definitionHandleY }} />
             )}
-            {data.definitionRole === "value" && (
+            {data.definitionBranchOffset !== undefined && (
+                <Handle type="target" position={Position.Left} id="definition-branch"
+                        className="definitionhandle" title="Definition alternatives"
+                        style={{ top: data.definitionHandleY }} />
+            )}
+            {(data.definitionRole === "value" || data.definitionBranchOffset !== undefined) && (
                 <Handle type="source" position={Position.Left} id="definition-out"
                         className="definitionhandle" title="Definition output"
                         style={{ top: data.definitionHandleY }} />
@@ -622,20 +731,55 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
 
 const nodeTypes: NodeTypes = { box: BoxNode };
 
+// The branch output shares its top input position, but heads down into
+// the box. Every arm uses one header lane, regardless of its target's depth.
+function BranchEdge({ id, sourceX, sourceY, targetX, targetY, style, markerEnd, data }: EdgeProps) {
+    const offset = typeof data?.branchOffset === "number" ? data.branchOffset : 18;
+    const [path] = getSmoothStepPath({
+        sourceX, sourceY, targetX, targetY,
+        sourcePosition: Position.Bottom, targetPosition: Position.Top,
+        ...executionEdge.pathOptions, centerY: sourceY + offset,
+    });
+    return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
+}
+
+function DefinitionBranchEdge({ id, sourceX, sourceY, targetX, targetY, style, data }: EdgeProps) {
+    const offset = typeof data?.definitionBranchOffset === "number" ? data.definitionBranchOffset : 18;
+    const [path] = getSmoothStepPath({
+        sourceX, sourceY, targetX, targetY,
+        sourcePosition: Position.Left, targetPosition: Position.Right,
+        ...definitionEdge.pathOptions, centerX: targetX + offset,
+    });
+    return <BaseEdge id={id} path={path} style={style} />;
+}
+
+const edgeTypes: EdgeTypes = { branch: BranchEdge, "definition-branch": DefinitionBranchEdge };
+
 /** Preview the same line shape as the connection being drawn. */
 function ConnectionPreview({
-    fromX, fromY, toX, toY, fromHandle, fromPosition, connectionLineStyle,
+    fromX, fromY, toX, toY, fromHandle, fromPosition, fromNode, toHandle, toNode, connectionLineStyle,
 }: ConnectionLineComponentProps) {
     const endpoints = { sourceX: fromX, sourceY: fromY, targetX: toX, targetY: toY };
-    const definition = fromHandle.id === "definition-out" || fromHandle.id === "definition-in";
-    const [path] = definition ? getSmoothStepPath({
+    const fromDefinitionBranch = fromHandle.id === "definition-branch";
+    const definition = fromHandle.id === "definition-out" || fromHandle.id === "definition-in" || fromDefinitionBranch;
+    const branch = fromHandle.id === "flow-branch";
+    const sourcePosition = fromDefinitionBranch ? Position.Right : branch ? Position.Bottom : fromPosition;
+    const definitionJunction = fromDefinitionBranch ? { x: fromX, node: fromNode }
+        : toHandle?.id === "definition-branch" ? { x: toX, node: toNode } : undefined;
+    const [path] = getSmoothStepPath({
         ...endpoints,
-        ...definitionEdge.pathOptions,
-        sourcePosition: fromPosition,
-        // Keep the free end horizontal too, including a drag begun at the
-        // declaration's input handle rather than the value's output handle.
-        targetPosition: fromPosition === Position.Left ? Position.Right : Position.Left,
-    }) : getStraightPath(endpoints);
+        ...(definition ? definitionEdge.pathOptions : executionEdge.pathOptions),
+        sourcePosition,
+        // Both endpoints keep their axis, including reverse drags from an input.
+        targetPosition: definition
+            ? sourcePosition === Position.Left ? Position.Right : Position.Left
+            : sourcePosition === Position.Top ? Position.Bottom : Position.Top,
+        ...(branch ? { centerY: fromY + (typeof fromNode.data.branchOffset === "number"
+            ? fromNode.data.branchOffset : 18) } : {}),
+        ...(definitionJunction ? { centerX: definitionJunction.x +
+            (typeof definitionJunction.node?.data.definitionBranchOffset === "number"
+                ? definitionJunction.node.data.definitionBranchOffset : 18) } : {}),
+    });
     return <path className={`react-flow__connection-path ${definition ? "definition" : "exec"}`} d={path}
                  style={connectionLineStyle} fill="none" />;
 }
@@ -644,7 +788,7 @@ function ConnectionPreview({
 // The app
 
 function countNodes(n: ElkNode, root = true): number {
-    let total = root || n.lhat?.definitionRole === "row" ? 0 : 1;
+    let total = root || n.lhat?.definitionRole === "row" || n.lhat?.layoutOnly ? 0 : 1;
     for (const c of n.children ?? []) total += countNodes(c, false);
     return total;
 }
@@ -1136,15 +1280,21 @@ function App() {
             edge.source === connection.source && edge.target === connection.target &&
             edge.sourceHandle === connection.sourceHandle &&
             edge.targetHandle === connection.targetHandle)) return;
-        // Edges render in an svg layer below the nodes unless told otherwise,
-        // and a line that runs behind the boxes it connects says nothing.
-        // Nesting gives a node z of parent+1 (depth ~13 here) and selection
-        // adds 1000, so 2000 clears everything.
+        // Use the same relative layer as the generated edges. React Flow
+        // raises it with the endpoints when drawing inside a scroll owner.
         setEdges((current) =>
             addEdge({ ...connection,
                 ...(connection.sourceHandle === "definition-out" ? definitionEdge : executionEdge),
-                zIndex: 2000 }, current));
-    }, [flow.exec, flow.definitions, setEdges]);
+                ...(connection.targetHandle === "definition-branch" ? {
+                    ...definitionBranchEdge,
+                    data: { definitionBranchOffset: flow.nodes.find(n => n.id === connection.target)?.data.definitionBranchOffset },
+                } : {}),
+                ...(connection.sourceHandle === "flow-branch" ? {
+                    ...branchEdge,
+                    data: { branchOffset: flow.nodes.find(n => n.id === connection.source)?.data.branchOffset },
+                } : {}),
+            }, current));
+    }, [flow.exec, flow.definitions, flow.nodes, setEdges]);
 
     return (
         <div id="app">
@@ -1235,9 +1385,10 @@ function App() {
                     onEdgesChange={onEdgesChange}
                     onConnect={onConnect}
                     isValidConnection={validConnection}
-                    connectionLineType={ConnectionLineType.Straight}
+                    connectionLineType={ConnectionLineType.SmoothStep}
                     connectionLineComponent={ConnectionPreview}
                     nodeTypes={nodeTypes}
+                    edgeTypes={edgeTypes}
                     // 8.6: a document, not a canvas. The zoom is locked at 1
                     // -- growing the picture is the type-size buttons' job,
                     // a re-layout rather than a transform -- and the only
@@ -1268,7 +1419,7 @@ function App() {
                     <Background />
                     {paneReady && <MiniMap pannable
                         nodeClassName={(node) => node.data.layoutOnly ? "layout-only"
-                            : node.data.isStart ? "start-marker" : ""} />}
+                            : node.data.isStart || node.data.isReturn ? "start-marker" : ""} />}
                 </ReactFlow>
             </div>
         </div>

@@ -1,0 +1,26 @@
+module^examples.patterns
+
+# The focus is evaluated once; the clauses share one execution junction.
+let^describe = p^kind:string^{
+    for^let^subject = kind {
+        when^"item": return^"item"
+        when^"box", "carton": return^"box"
+        when^"pallet": return^"pallet"
+        other^: return^"unknown"
+    }
+}
+
+# Range/type patterns retain their source spelling in the clause header.
+let^classify = p^n:number^{
+    for^n {
+        when^0: return^"zero"
+        when^1 to^3, 5: return^"small"
+        when^fits^number^: return^"number"
+        other^: return^"other"
+    }
+}
+
+# Expression matches do not acquire statement execution lines.
+let^expression = f^n:number^{
+    for^n: when^0: "zero" other^: "other";
+}

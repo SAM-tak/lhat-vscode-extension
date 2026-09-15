@@ -112,8 +112,9 @@ html, body, #root {
     border-color: var(--vscode-focusBorder);
 }
 
-/* An entry point, never source text: a red circle with a downward play mark. */
-.box.start-node {
+/* Start and return share a red circle, with distinct white pictograms. */
+.box.start-node,
+.box.return-node {
     border-radius: 50%;
     border-color: var(--vscode-charts-red, #e5534b);
     background: var(--vscode-charts-red, #e5534b);
@@ -126,6 +127,17 @@ html, body, #root {
     width: 100%;
     height: 100%;
     fill: white;
+    pointer-events: none;
+}
+
+.return-icon {
+    width: 100%;
+    height: 100%;
+    fill: none;
+    stroke: white;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
     pointer-events: none;
 }
 
@@ -171,6 +183,12 @@ html, body, #root {
     align-items: center;
     height: 100%;
     padding: 0 calc(8px * var(--lhat-scale, 1));
+}
+
+/* Conditions alone cover the execution line, not the surrounding arm/body.
+   Keep the background opaque in both light and dark editor themes. */
+.box.condition-node {
+    background: var(--vscode-editor-background);
 }
 
 /* Depth by opacity over the theme's own foreground, as graph.css does. */
@@ -242,9 +260,9 @@ html, body, #root {
     stroke-width: 1.5;
 }
 
-/* The rubber line while a connection is being dragged sits at the same
-   height as the finished edges (zIndex 2000 in onConnect) -- above every
-   box, not behind them. */
-.react-flow__connection {
-    z-index: 2000;
+/* Keep the interactive preview visible even inside an active scroll owner
+   (z=4000, plus descendants and selection). The SVG wrapper owns the layer,
+   not its inner connection group. Finished edges use their endpoint layers. */
+.react-flow__connectionline {
+    z-index: 8000;
 }

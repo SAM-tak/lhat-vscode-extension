@@ -1,0 +1,17 @@
+module^examples.returns
+
+let^describe = f^n:number^-> string^{
+    if^n > 0 { return^"positive" }
+    return^"other"
+}
+
+let^empty = p^{ return^ }
+
+# An implicit return still has a start, a return node and its value in the graph.
+let^implicit = f^n:number^{ n * 2 }
+
+# Drill into this function to scroll only the returned expressions.
+let^many = f^{
+    return^100, 101, 102, 103, 104, 105, 106, 107, 108, 109,
+           110, 111, 112, 113, 114, 115, 116, 117, 118, 119
+}
