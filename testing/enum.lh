@@ -1,0 +1,12 @@
+module^examples.enums
+
+# Named members, implicit numbering and explicit values.
+public^enum^Mode {
+    Idle,
+    Walk,
+    Dash = 10,
+    Label = "dash",
+    Data = { 1, 2, 3 },
+}
+
+let^current = Mode.Idle

@@ -1,0 +1,27 @@
+module^examples.memberDefinitions
+
+var^ count = 0
+
+let^ settings = {
+    enabled = true^,
+    ["request-method"] = "GET",
+    nested = { limit = 10, name = "sample" },
+    (1 = 1),
+    42,
+}
+
+enum^Mode { Idle, Walk, Dash = 10, Label = "dash" }
+
+let^ Counter = def^{
+    self^{ count:number^ = 0 },
+    version = 1,
+    abstract^limit:number^,
+    override^new = f^count:number^{ self^{ count = count } },
+    read = f^self^{ self^.count },
+    op^= = f^self^, rhs:Self^{ self^.count = rhs.count },
+}
+
+errordef^StockError {
+    OutOfStock { sku:string^ = "", wanted:number^ = 0 },
+    UnknownSku { sku:string^ },
+}

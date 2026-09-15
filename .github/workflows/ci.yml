@@ -31,3 +31,6 @@ jobs:
 
       - name: Type-check the webview
         run: npm run check:rf
+
+      - name: Graph mapping and syntax highlighting tests
+        run: npm test

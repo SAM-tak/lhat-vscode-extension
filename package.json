@@ -319,6 +319,7 @@
     "bundle:extension": "esbuild src/extension.ts --bundle --minify --platform=node --format=cjs --external:vscode --outfile=out/extension.js --sourcemap --log-level=warning",
     "bundle:rf": "esbuild src/webview/rf/main.tsx --bundle --minify --outdir=media/rf --entry-names=bundle --jsx=automatic --sourcemap --log-level=warning",
     "check:rf": "tsc -p ./tsconfig.rf.json",
+    "test": "node --test testing/graph-definition.test.cjs testing/graph-execution.test.cjs testing/enum-highlighting.test.cjs",
     "watch": "tsc -watch -p ./",
     "package": "vsce package --githubBranch main --no-dependencies -o lhat.vsix",
     "install-extension": "npm run package && code --install-extension lhat.vsix --force",
@@ -339,6 +340,8 @@
     "esbuild": "^0.28.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vscode-oniguruma": "^1.7.0",
+    "vscode-textmate": "^9.3.2"
   }
 }

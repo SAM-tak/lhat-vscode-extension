@@ -15,6 +15,7 @@ import type { AstNode, AstReply } from "../protocol.js";
 
 const CH = 7.2; // mono advance at 12px
 const LEAF_H = 30;
+const MARKER_SIZE = 24;
 const HEAD_H = 24; // a container's label strip
 const PAD = 10;
 const MAX_LABEL = 48;
@@ -33,8 +34,11 @@ const STATEMENT_LIST = new Set(["block", "disabled"]);
 // whole try^{ } into a single leaf.
 const BRANCH = new Set(["if-stmt", "if-expr", "try-block"]);
 const ELEMENT_LIST = new Set([
-    "table", "def", "self-table", "error-new", "errordef", "type-table",
+    "table", "def", "self-table", "error-new", "errordef", "error-kind", "enumdef", "type-table",
 ]);
+// These literal/definition lists reserve a trailing insertion affordance.
+// It is not an execution step and does not belong to the source AST.
+const ADDABLE = new Set(["table", "self-table", "def", "errordef", "enumdef"]);
 const BODY_STATEMENT = new Set(["for", "repeat", "with"]);
 const VOICE_TURN = new Set(["func"]);
 
@@ -42,7 +46,7 @@ const VOICE_TURN = new Set(["func"]);
 // annotate. V5: the same for declaration lists.
 const NOT_DRAWN = new Set([
     "type-name", "type-func", "type-coro", "type-table", "type-tuple",
-    "type-union", "type-intersect", "param", "member-decl", "error-kind",
+    "type-union", "type-intersect", "param", "member-decl",
 ]);
 
 // 5.6: the name a binding introduces and the condition a clause carries are
@@ -52,6 +56,10 @@ const NOT_DRAWN_FIELDS: Record<string, string[]> = {
     define: ["targets"],
     reassign: ["targets"],
     "if-clause": ["condition"],
+    errordef: ["name"],
+    "error-kind": ["name"],
+    enumdef: ["name"],
+    "enum-member": ["name"],
 };
 
 // A qualified name is a MEMBER tree, a box per dot if it is drawn.
@@ -60,9 +68,9 @@ const ALWAYS_LEAF = new Set(["module", "import-stmt", "require-stmt"]);
 // V15: collapsed when a view is first opened. A collapsed container is a
 // fixed-size leaf, so neither its size nor the layout's cost depends on what
 // is inside it.
-const COLLAPSIBLE = new Set(["func", "def", "self-table", "errordef"]);
-// A definition of one of those is collapsed whole.
-const FOLDS_WITH_VALUE = new Set(["define", "reassign"]);
+const COLLAPSIBLE = new Set(["func", "def", "self-table", "errordef", "enumdef"]);
+// Reassignments still fold whole; declarations split off their values below.
+const FOLDS_WITH_VALUE = new Set(["reassign"]);
 
 // 5.3.1 and 8.6: element lists that wrap. The rest of 5.3's element lists
 // (def, errordef, self-table, ...) stack their basic elements vertically, so
@@ -80,16 +88,32 @@ export interface ElkNode {
     children?: ElkNode[];
     edges?: ElkEdge[];
     layoutOptions?: Record<string, string>;
+    ports?: {
+        id: string; x: number; y: number;
+        layoutOptions: Record<string, string>;
+    }[];
     /** Not ELK's: what this node was made from, for clicks and folding. */
     lhat?: {
         kind: string; start: number; end: number;
         collapsed?: boolean;
         /** Whether this one can be folded shut at all, open or not. */
         foldable?: boolean;
-        /** A branch container: its clauses snap rather than slide (8.6). */
-        branch?: boolean;
         /** Inside code switched off (01 の 6.5): drawn greyed out. */
         disabled?: boolean;
+        /** An invisible layout row, or one of its two visible boxes. */
+        definitionRole?: "row" | "declaration" | "value";
+        /** Visible declaration used by execution edges attached to a row. */
+        executionNode?: string;
+        /** Sequential groups pass their execution lines through to these children. */
+        executionEntry?: string;
+        executionExit?: string;
+        /** A visual entry/insertion point, not a source-language node. */
+        synthetic?: "start" | "add";
+        /** Source selection for the declaration excludes '=' and the value. */
+        revealEnd?: number;
+        definitionHandleY?: number;
+        /** Wide outermost pair: its value is lowered and scrolls on its own. */
+        stackedDefinition?: boolean;
     };
 }
 
@@ -101,6 +125,8 @@ export interface ElkEdge {
     pinned?: boolean;
     /** 8.6: an execution line -- consecutive statements, shown as an arrow. */
     drawn?: boolean;
+    /** The value defines the declaration: drawn from right to left. */
+    definition?: boolean;
     layoutOptions?: Record<string, string>;
     sections?: {
         startPoint: { x: number; y: number };
@@ -130,15 +156,41 @@ function allChildren(node: AstNode): Child[] {
 function drawnChildren(node: AstNode): Child[] {
     if (ALWAYS_LEAF.has(node.kind)) return [];
     const skip = NOT_DRAWN_FIELDS[node.kind] ?? [];
-    return allChildren(node).filter(
-        (c) => !NOT_DRAWN.has(c.node.kind) && !skip.includes(c.field));
+    return allChildren(node).filter((c) => !skip.includes(c.field) &&
+        (!NOT_DRAWN.has(c.node.kind) ||
+            // Error payloads are the contents being inspected, not a
+            // function signature. Both AST spellings retain their defaults.
+            (node.kind === "error-kind" && c.field === "members" &&
+                (c.node.kind === "param" || c.node.kind === "member-decl"))));
 }
 
-// 5.2: anything holding neither a branch nor a body is one box.
-function holdsBranchOrBody(node: AstNode): boolean {
+// All introduction sites share the same pair of boxes. PARAM is built only
+// for visible error payload fields; function signatures still stay in labels.
+const DEFINITION_FIELDS: Record<string, [string[], string[]]> = {
+    define: [["targets"], ["values"]], // let^ and var^ use the same AST kind
+    "table-entry": [["key", "type"], ["value"]],
+    "enum-member": [["name"], ["members"]],
+    param: [["name", "type"], ["fallback"]],
+    "member-decl": [["key", "name", "type"], ["fallback", "value"]],
+};
+
+function definitionParts(node: AstNode): { targets: Child[]; values: Child[] } | undefined {
+    const parts = DEFINITION_FIELDS[node.kind];
+    if (parts === undefined) return undefined;
+    const children = allChildren(node);
+    const targets = children.filter((c) => parts[0].includes(c.field));
+    const values = children.filter((c) => parts[1].includes(c.field) && !NOT_DRAWN.has(c.node.kind));
+    // Positional table entries, implicit enum members, and abstract/typed-only
+    // fields have no definition line. A written type is never an initializer.
+    return targets.length > 0 && values.length > 0 ? { targets, values } : undefined;
+}
+
+// 5.2: preserve the path to a branch, body, or member definition. Otherwise
+// a branch-free enclosing expression would swallow its members' '=' lines.
+function holdsExpandedChild(node: AstNode): boolean {
     for (const { node: c } of drawnChildren(node)) {
-        if (BRANCH.has(c.kind) || VOICE_TURN.has(c.kind) ||
-            holdsBranchOrBody(c)) {
+        if (BRANCH.has(c.kind) || VOICE_TURN.has(c.kind) || ADDABLE.has(c.kind) ||
+            definitionParts(c) !== undefined || holdsExpandedChild(c)) {
             return true;
         }
     }
@@ -153,6 +205,9 @@ function holdsCollapsible(node: AstNode): boolean {
 // 01 の 6.5: everything drawn inside code switched off is switched off too.
 function markDisabled(node: ElkNode): void {
     if (node.lhat !== undefined) node.lhat.disabled = true;
+    for (const edge of node.edges ?? []) {
+        if (!edge.definition) edge.drawn = false;
+    }
     for (const child of node.children ?? []) markDisabled(child);
 }
 
@@ -160,6 +215,14 @@ function markDisabled(node: ElkNode): void {
 // container shows what shapes it rather than everything below it. What is not
 // drawn stays, which is how names and conditions reach the label.
 function labelOf(node: AstNode, source: string, drawn: Child[]): string {
+    // Named definitions label their containers; the member/field lists are
+    // children, not text to spill into a folded title or breadcrumb.
+    const name = node.fields?.name;
+    if ((node.kind === "errordef" || node.kind === "error-kind" || node.kind === "enumdef") &&
+        name !== undefined && !Array.isArray(name)) {
+        const title = source.slice(node.start, name.end).replace(/\s+/g, " ").trim();
+        return title.length > MAX_LABEL ? title.slice(0, MAX_LABEL - 1) + "…" : title;
+    }
     const holes = drawn
         .map((c) => [c.node.start, c.node.end] as const)
         .sort((a, b) => a[0] - b[0]);
@@ -232,8 +295,70 @@ export interface MapOptions {
     width?: number;
 }
 
+/** Split declaration rows read from the left when the whole view is wide. */
+export function graphViewportX(laid: ElkNode, width: number): number {
+    const centered = (width - (laid.width ?? 0)) / 2;
+    return laid.lhat?.definitionRole === "row" ||
+        laid.children?.some((n) => n.lhat?.definitionRole === "row")
+        ? Math.max(8, centered) : centered;
+}
+
+/**
+ * Reserve a declaration-height lane above a wide, outermost definition.
+ * This runs once on each fresh ELK result, after widths are known. Only the
+ * value moves inside the row; its descendants retain ELK's relative layout.
+ * Later statements and the document's scroll extent gain the same height.
+ * Renderers use node/handle positions, not the original ELK edge sections.
+ */
+export function stackWideDefinitions(laid: ElkNode, usableWidth: number): ElkNode {
+    // Width alone misses rows displaced by the shared declaration column.
+    // Compare the value's actual right edge with the viewport's right margin,
+    // in graph coordinates, just as the scroll bounds in toFlow do.
+    const rightEdge = usableWidth + 8 - graphViewportX(laid, usableWidth + 16);
+    const stack = (row: ElkNode, rowX: number): ElkNode => {
+        if (row.lhat?.definitionRole !== "row" || usableWidth <= 0) return row;
+        const declaration = row.children?.find((n) => n.lhat?.definitionRole === "declaration");
+        const value = row.children?.find((n) => n.lhat?.definitionRole === "value");
+        if (declaration === undefined || value === undefined) return row;
+        if (rowX + (value.x ?? 0) + (value.width ?? 0) <= rightEdge) return row;
+        const offset = declaration.height ?? 0;
+        return {
+            ...row,
+            height: (row.height ?? 0) + offset,
+            lhat: { ...row.lhat, stackedDefinition: true },
+            children: row.children?.map((n) => n === value
+                ? { ...n, y: (n.y ?? 0) + offset } : n),
+            ports: row.ports?.map((p) => p.layoutOptions["elk.port.side"] === "SOUTH"
+                ? { ...p, y: p.y + offset } : p),
+        };
+    };
+    if (laid.lhat?.definitionRole === "row") return stack(laid, 0);
+    let extraHeight = 0;
+    const children = laid.children?.map((node) => {
+        const next = stack(node, node.x ?? 0);
+        const y = (node.y ?? 0) + extraHeight;
+        extraHeight += (next.height ?? 0) - (node.height ?? 0);
+        return next === node && y === node.y ? node : { ...next, y };
+    });
+    return extraHeight === 0 ? laid
+        : { ...laid, children, height: (laid.height ?? 0) + extraHeight };
+}
+
 export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     const source = reply.source;
+    // Only executable scopes get an entry point. A function's body starts a
+    // new chain; its declaration is never connected to the code inside it.
+    const entryScopes = new Set<AstNode>();
+    const viewRoot = options.root ?? reply.root;
+    if (viewRoot.kind === "block") entryScopes.add(viewRoot);
+    const findEntries = (node: AstNode): void => {
+        const body = node.fields?.body;
+        if (node.kind === "func" && body !== undefined && !Array.isArray(body)) {
+            entryScopes.add(body);
+        }
+        for (const { node: child } of allChildren(node)) findEntries(child);
+    };
+    findEntries(viewRoot);
     let counter = 0;
     const nextId = (kind: string) => `${kind}-${counter++}`;
 
@@ -258,11 +383,21 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         lhat: from(node),
     });
 
+    const markerNode = (scope: AstNode, kind: "start" | "add"): ElkNode => ({
+        id: nextId(kind),
+        labels: [],
+        width: px(MARKER_SIZE), height: px(MARKER_SIZE),
+        lhat: { kind, start: scope.start, end: scope.start, synthetic: kind },
+    });
+
+    const executionPort = (node: ElkNode, end: "in" | "out") =>
+        node.lhat?.kind === "define-row" ? `${node.id}__flow-${end}` : node.id;
+
     const chain = (id: string, kids: ElkNode[]): ElkEdge[] =>
         kids.slice(1).map((k, i) => ({
             id: `${id}__ord${i}`,
-            sources: [kids[i].id],
-            targets: [k.id],
+            sources: [executionPort(kids[i], "out")],
+            targets: [executionPort(k, "in")],
             pinned: true,
         }));
 
@@ -281,8 +416,8 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             if (live !== undefined && off(kids[i - 1])) {
                 edges.push({
                     id: `${id}__skip${i}`,
-                    sources: [live.id],
-                    targets: [k.id],
+                    sources: [executionPort(live, "out")],
+                    targets: [executionPort(k, "in")],
                     drawn: true,
                     layoutOptions: { "elk.noLayout": "true" },
                 });
@@ -308,6 +443,12 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 : "[top=0,left=0,bottom=0,right=0]",
             "elk.spacing.nodeNode": `${px(14)}`,
             "elk.layered.spacing.nodeNodeBetweenLayers": `${px(20)}`,
+            // Children alone do not determine a box's width: its title
+            // must fit too. Invisible layout groups need no header space.
+            ...(padded && label !== "" ? {
+                "elk.nodeSize.constraints": "MINIMUM_SIZE",
+                "elk.nodeSize.minimum": `(${widthFor(label)}, 0)`,
+            } : {}),
         },
         children,
         edges,
@@ -326,7 +467,16 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         let row: ElkNode[] = [];
         let used = 0;
         for (const kid of kids) {
-            const w = kid.width ?? 0;
+            // A container whose width ELK has not measured yet gets its own
+            // row. Treating it as zero packs arbitrarily wide definitions.
+            if (kid.width === undefined) {
+                if (row.length > 0) slices.push(row);
+                slices.push([kid]);
+                row = [];
+                used = 0;
+                continue;
+            }
+            const w = kid.width;
             if (row.length > 0 && used + gap + w > avail) {
                 slices.push(row);
                 row = [];
@@ -359,6 +509,106 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     // since that one is a way further in rather than part of what is shown.
     function build(node: AstNode, voice: "stmt" | "expr",
                    unfold: boolean, avail: number): ElkNode {
+        // A keyless entry is just its value, not another visible wrapper.
+        // In particular, a def^ field template must expose its own members.
+        const positional = node.fields?.value;
+        if (node.kind === "table-entry" && node.fields?.key === undefined &&
+            positional !== undefined && !Array.isArray(positional) &&
+            positional.start === node.start && positional.end === node.end) {
+            return build(positional, voice, unfold, avail);
+        }
+
+        // The declaration/key remains visible while its value folds alone.
+        // This exception to 5.2 also splits simple initializers such as '= 1'.
+        const parts = definitionParts(node);
+        if (parts !== undefined) {
+            const { targets, values } = parts;
+            const rowKind = node.kind === "define" ? "define-row" : "member-row";
+            const id = nextId(rowKind);
+            let declarationEnd = Math.max(...targets.map((c) => c.node.end));
+            // A computed key's AST span can omit its closing ')' and ']'.
+            // Keep those on the left, but not '=' or parentheses of the RHS.
+            // Comments between tokens must not be mistaken for punctuation.
+            for (let i = declarationEnd; i < values[0].node.start;) {
+                if (/\s/.test(source[i])) { i++; continue; }
+                if (source.startsWith("#[", i)) {
+                    let depth = 1;
+                    i += 2;
+                    while (i < values[0].node.start && depth > 0) {
+                        if (source.startsWith("#[", i)) { depth++; i += 2; }
+                        else if (source.startsWith("]#", i)) { depth--; i += 2; }
+                        else i++;
+                    }
+                    continue;
+                }
+                if (source[i] === "#") {
+                    while (i < values[0].node.start && source[i] !== "\n") i++;
+                    continue;
+                }
+                if (source[i] !== "]" && source[i] !== ")") break;
+                declarationEnd = ++i;
+            }
+            const label = labelOf({ ...node, end: declarationEnd }, source, []);
+            const declaration = leaf(node, label);
+            declaration.lhat = {
+                ...from(node), definitionRole: "declaration", revealEnd: declarationEnd,
+                definitionHandleY: px(LEAF_H) / 2,
+            };
+            const gap = px(28);
+            const valueAvail = avail - (declaration.width ?? 0) - gap;
+            const value = values.length === 1
+                ? build(values[0].node, "expr", unfold, valueAvail)
+                : container(nextId("definition-value"), "", "RIGHT",
+                    values.map((c) => build(c.node, "expr", unfold, valueAvail)), [], {
+                        ...node, kind: "definition-value",
+                        start: values[0].node.start, end: values[values.length - 1].node.end,
+                    });
+            if (values.length > 1) value.edges = chain(value.id, value.children ?? []);
+            value.lhat = {
+                ...value.lhat!, definitionRole: "value", definitionHandleY: px(LEAF_H) / 2,
+            };
+            const attach = (box: ElkNode, side: "EAST" | "WEST", suffix: string) => {
+                box.layoutOptions = { ...box.layoutOptions, "elk.portConstraints": "FIXED_POS" };
+                box.ports = [{
+                    id: `${box.id}__${suffix}`,
+                    x: side === "EAST" ? box.width ?? 0 : 0,
+                    y: px(LEAF_H) / 2,
+                    layoutOptions: { "elk.port.side": side },
+                }];
+            };
+            attach(declaration, "EAST", "definition-in");
+            attach(value, "WEST", "definition-out");
+            // LEFT applies to the definition arrow only. The value's own
+            // expression layout remains RIGHT, with branches transposed DOWN.
+            const row = container(id, "", "LEFT", [declaration, value], [{
+                id: `${id}__definition`,
+                sources: [`${value.id}__definition-out`],
+                targets: [`${declaration.id}__definition-in`],
+                drawn: true, definition: true,
+            }], node, false);
+            row.lhat = {
+                ...from(node), kind: rowKind, definitionRole: "row",
+                executionNode: declaration.id,
+            };
+            // Wrapping tables can measure simple pairs without asking ELK;
+            // complex values remain unknown and receive a row of their own.
+            if (value.width !== undefined) {
+                row.width = (declaration.width ?? 0) + gap + value.width;
+            }
+            row.layoutOptions!["elk.layered.spacing.nodeNodeBetweenLayers"] = `${gap}`;
+            // The surrounding statement sequence aligns at the declaration,
+            // even when the values have very different widths and heights.
+            // Members have no execution axis. Giving them north/south ports
+            // would force horizontally wrapping pairs into a staircase.
+            if (node.kind === "define") {
+                row.layoutOptions!["elk.portConstraints"] = "FIXED_POS";
+                row.ports = ["in", "out"].map((end) => ({
+                    id: `${id}__flow-${end}`, x: (declaration.width ?? 0) / 2, y: 0,
+                    layoutOptions: { "elk.port.side": end === "in" ? "NORTH" : "SOUTH" },
+                }));
+            }
+            return row;
+        }
         // Nothing with an empty body is worth a fold, so the emptiness is
         // asked about before anything else -- an f^() {} folded shut would
         // read '… …'.
@@ -367,12 +617,11 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 (FOLDS_WITH_VALUE.has(node.kind) && holdsCollapsible(node))) &&
             drawnChildren(node).length > 0;
 
-        // A fold the reader made by hand outweighs the view-wide default,
-        // which is what makes one definition openable inside a folded file
-        // and one shuttable inside an open one.
-        if (foldable &&
-            (options.folds?.[node.start] ??
-                (options.collapse === true && !unfold))) {
+        // A manual fold outweighs the default, but never folds the root we
+        // just entered: that view must show its body even if it was entered
+        // from a box the reader explicitly folded shut.
+        if (foldable && !unfold &&
+            (options.folds?.[node.start] ?? options.collapse === true)) {
             const text = labelOf(node, source, drawnChildren(node)) + " …";
             return {
                 id: nextId(node.kind),
@@ -386,7 +635,13 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
 
         const built = expand(node, voice, unfold, avail);
         // Said of an open one too: the button is how it gets shut again.
-        if (foldable && built.lhat !== undefined) built.lhat.foldable = true;
+        if (foldable && built.lhat !== undefined) {
+            built.lhat.foldable = true;
+            if (built.children?.length && built.layoutOptions !== undefined) {
+                const headerWidth = widthFor(built.labels?.[0]?.text ?? "") + px(FOLD_BTN);
+                built.layoutOptions["elk.nodeSize.minimum"] = `(${headerWidth}, 0)`;
+            }
+        }
         if (node.kind === "disabled") markDisabled(built);
         return built;
     }
@@ -399,7 +654,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         const kids = drawnChildren(node);
         const label = labelOf(node, source, kids);
 
-        if (kids.length === 0) return leaf(node, label);
+        if (kids.length === 0 && !entryScopes.has(node) && !ADDABLE.has(kind)) return leaf(node, label);
 
         // 5.2, statements included. The label is taken again with nothing cut
         // out: a leaf draws none of its children, so there are no holes to
@@ -407,7 +662,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         // child covers the whole of it -- 'print(x)' read as "call-stmt".
         if (!STATEMENT_LIST.has(kind) && !BRANCH.has(kind) &&
             !ELEMENT_LIST.has(kind) && !VOICE_TURN.has(kind) &&
-            !BODY_STATEMENT.has(kind) && !holdsBranchOrBody(node)) {
+            !BODY_STATEMENT.has(kind) && !holdsExpandedChild(node)) {
             return leaf(node, labelOf(node, source, []));
         }
 
@@ -417,18 +672,25 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
 
         const id = nextId(kind);
 
+        // f^/p^ already provide the body box. Hoist only their immediate
+        // BLOCK's contents and execution edges, preserving nested scopes.
+        // Pass the same width: the function replaces, not wraps, its padding.
+        const body = kids.find((c) => c.field === "body" && c.node.kind === "block");
+        if (kind === "func" && body !== undefined) {
+            const contents = build(body.node, "stmt", childUnfold, avail);
+            return container(id, label, "DOWN", contents.children ?? [], contents.edges ?? [], node);
+        }
+
         // 5.3.1: an element list wraps, and does not follow the voice.
         if (ELEMENT_LIST.has(kind)) {
             const items = kids.map(
                 (c) => build(c.node, "expr", childUnfold, inner_avail));
-            if (WRAPS.has(kind) && items.length > 1) {
-                const rows = fittedRows(id, items, inner_avail);
-                if (rows.length > 1) {
-                    return container(
-                        id, label, "DOWN", rows, chain(id, rows), node);
-                }
-            }
-            return container(id, label, "DOWN", items, chain(id, items), node);
+            const content = WRAPS.has(kind) && items.length > 1
+                ? fittedRows(id, items, inner_avail) : items;
+            // Keep the insertion control below the whole final row, even
+            // for wrapping tables or empty lists. Ordering edges stay hidden.
+            if (ADDABLE.has(kind)) content.push(markerNode(node, "add"));
+            return container(id, label, "DOWN", content, chain(id, content), node);
         }
 
         // A branch transposes; each clause goes back to the enclosing voice.
@@ -438,17 +700,12 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             const dir = voice === "stmt" ? "RIGHT" : "DOWN";
             // 6.3: clauses carry no edge of their own, so ELK would pack them
             // by area and lose both the axis and the source order.
-            const box = container(
+            return container(
                 id, label, dir, clauses, chain(id, clauses), node);
-            // 8.6: a statement branch's clauses snap sideways to the reader's
-            // attention rather than sliding freely.
-            if (box.lhat !== undefined && dir === "RIGHT") {
-                box.lhat.branch = true;
-            }
-            return box;
         }
 
         const inner: ElkNode[] = [];
+        if (entryScopes.has(node)) inner.push(markerNode(node, "start"));
         for (const { field, node: c } of kids) {
             let childVoice = voice;
             if (voice === "stmt" && !STATEMENT_LIST.has(kind) &&
@@ -464,21 +721,27 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         // V4: 9 章's clauses are `extra` on a BLOCK and run in a fixed order,
         // so they go down with the rest of the statements.
         const dir = voice === "stmt" ? "DOWN" : "RIGHT";
-        // 8.6: the statement sequence carries the execution lines. Only the
-        // true statement lists -- a body, the file root -- not the parts a
-        // for^ or a define stacks, which are one construct, not a sequence;
-        // and not what is switched off, which does not run.
-        return container(id, label, dir, inner,
-                         kind === "block" ? flow(id, inner) : chain(id, inner),
-                         node);
+        // A with^ is a sequence of resource declarations followed by its
+        // body (items/extra in the AST). These groups continue the enclosing
+        // chain; connect visible statements, not merely their outer borders.
+        // Expressions, branch alternatives, and member lists stay unlinked.
+        const sequential = voice === "stmt" && (kind === "block" || kind === "with");
+        const built = container(id, label, dir, inner,
+            sequential ? flow(id, inner) : chain(id, inner), node);
+        const live = inner.filter((child) => !child.lhat?.disabled);
+        if (sequential && live.length > 0) {
+            built.lhat!.executionEntry = live[0].id;
+            built.lhat!.executionExit = live[live.length - 1].id;
+        }
+        return built;
     }
 
     const width = options.width ?? Number.POSITIVE_INFINITY;
-    const root = build(options.root ?? reply.root, "stmt",
+    const root = build(viewRoot, "stmt",
                        options.root !== undefined, width - 2 * px(PAD));
     // The root of a view need not be a container -- one definition opened on
     // its own may map to a single box -- so give it something to sit in.
-    if (!root.layoutOptions) {
+    if (!root.children?.length) {
         return {
             id: "view",
             layoutOptions: {
@@ -492,8 +755,13 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             edges: [],
         };
     }
-    root.layoutOptions["elk.padding"] =
-        `[top=${PAD},left=${PAD},bottom=${PAD},right=${PAD}]`;
+    root.layoutOptions = {
+        ...root.layoutOptions,
+        "elk.padding": `[top=${PAD},left=${PAD},bottom=${PAD},right=${PAD}]`,
+    };
     root.labels = [];
+    // The view's root has no visible box/title; only its children are drawn.
+    delete root.layoutOptions["elk.nodeSize.minimum"];
+    delete root.layoutOptions["elk.nodeSize.constraints"];
     return root;
 }

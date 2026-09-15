@@ -7,6 +7,7 @@
     { "include": "#strings" },
     { "include": "#numbers" },
     { "include": "#annotations" },
+    { "include": "#enum-definition" },
     { "include": "#scope-specifiers" },
     { "include": "#hat-identifiers" },
     { "include": "#operators" },
@@ -55,6 +56,7 @@
             { "include": "#comments" },
             { "include": "#strings" },
             { "include": "#numbers" },
+            { "include": "#enum-definition" },
             { "include": "#scope-specifiers" },
             { "include": "#hat-identifiers" },
             {
@@ -162,6 +164,70 @@
           "match": "@[\\p{L}_][\\p{L}\\p{N}_]*",
           "name": "storage.type.annotation.lhat"
         }
+      ]
+    },
+
+    "enum-definition": {
+      "comment": "02-syntax.md 19: a named enum declaration. The keyword was already covered by hat-identifiers; this context additionally identifies the declaration name and members, even without semantic tokens. A qualified '.enum^' is a value member, not a declaration.",
+      "name": "meta.enum.lhat",
+      "begin": "(?<![\\p{L}\\p{N}_.])(enum)(\\^+)(?!\\^)",
+      "beginCaptures": {
+        "1": { "name": "keyword.other.declaration.lhat" },
+        "2": { "name": "punctuation.definition.hat.lhat" }
+      },
+      "end": "(?<=\\})",
+      "patterns": [
+        { "include": "#comments" },
+        {
+          "match": "[\\p{L}_][\\p{L}\\p{N}_]*|`(?:``|[^`\\r\\n])+`",
+          "name": "entity.name.type.enum.lhat"
+        },
+        {
+          "name": "meta.enum.body.lhat",
+          "begin": "\\{",
+          "beginCaptures": { "0": { "name": "punctuation.bracket.lhat" } },
+          "end": "\\}",
+          "endCaptures": { "0": { "name": "punctuation.bracket.lhat" } },
+          "patterns": [
+            { "include": "#comments" },
+            {
+              "name": "meta.enum.value.lhat",
+              "begin": "=",
+              "beginCaptures": { "0": { "name": "keyword.operator.assignment.lhat" } },
+              "end": "(?=,|\\})",
+              "patterns": [{ "include": "#enum-value" }]
+            },
+            {
+              "match": "[\\p{L}_][\\p{L}\\p{N}_]*|`(?:``|[^`\\r\\n])+`",
+              "name": "variable.other.enummember.lhat"
+            },
+            { "match": ",", "name": "punctuation.separator.lhat" }
+          ]
+        }
+      ]
+    },
+    "enum-value": {
+      "comment": "An initializer is an expression, not another member declaration. Balance groups so commas in calls/tables and braces in nested values do not end the enum or miscolour identifiers as enum members; strings and comments keep their normal scopes through $self.",
+      "patterns": [
+        {
+          "begin": "\\(", "end": "\\)",
+          "beginCaptures": { "0": { "name": "punctuation.bracket.lhat" } },
+          "endCaptures": { "0": { "name": "punctuation.bracket.lhat" } },
+          "patterns": [{ "include": "#enum-value" }]
+        },
+        {
+          "begin": "\\[", "end": "\\]",
+          "beginCaptures": { "0": { "name": "punctuation.bracket.lhat" } },
+          "endCaptures": { "0": { "name": "punctuation.bracket.lhat" } },
+          "patterns": [{ "include": "#enum-value" }]
+        },
+        {
+          "begin": "\\{", "end": "\\}",
+          "beginCaptures": { "0": { "name": "punctuation.bracket.lhat" } },
+          "endCaptures": { "0": { "name": "punctuation.bracket.lhat" } },
+          "patterns": [{ "include": "#enum-value" }]
+        },
+        { "include": "$self" }
       ]
     },
 

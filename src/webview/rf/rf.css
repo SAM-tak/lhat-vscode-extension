@@ -25,14 +25,7 @@ html, body, #root {
        derives from it, the same way the layout's metrics do in map.ts. */
     --lhat-scale: 1;
     /* The execution lines' colour, shared by strokes and arrowheads. */
-    --lhat-exec: color-mix(in srgb,
-        var(--vscode-editor-foreground) 45%, var(--vscode-editor-background));
-}
-
-/* 8.6: a snap glides. Only while one is settling -- left on permanently it
-   would drag behind every slide of the finger. */
-.snap-anim .react-flow__node {
-    transition: transform 180ms ease-out;
+    --lhat-exec: #fff;
 }
 
 /* React Flow's own chrome, matched to the theme. */
@@ -52,11 +45,16 @@ html, body, #root {
     stroke: none;
 }
 
+/* Declaration/value rows reserve space but have no enclosing box. */
+.react-flow__minimap-node.layout-only {
+    display: none;
+}
+
 .react-flow__minimap-mask {
     fill: color-mix(in srgb, var(--vscode-editor-background) 55%, transparent);
 }
 
-/* One box. The node wrapper carries width/height/clip-path from the layout;
+/* One box. The node wrapper carries width/height from the layout;
    this fills it. */
 .box {
     position: relative;
@@ -114,9 +112,52 @@ html, body, #root {
     border-color: var(--vscode-focusBorder);
 }
 
+/* An entry point, never source text: a red circle with a downward play mark. */
+.box.start-node {
+    border-radius: 50%;
+    border-color: var(--vscode-charts-red, #e5534b);
+    background: var(--vscode-charts-red, #e5534b);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.start-icon {
+    width: 100%;
+    height: 100%;
+    fill: white;
+    pointer-events: none;
+}
+
+.react-flow__minimap-node.start-marker {
+    fill: var(--vscode-charts-red, #e5534b);
+}
+
+/* Reserved insertion point. Kept distinct from the filled red start node;
+   gestures still scroll its containing list, but no edit is available yet. */
+.box.add-node {
+    border-radius: 50%;
+    border-color: #b0b0b0;
+    color: #b0b0b0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: default;
+}
+
+.add-icon {
+    width: 100%;
+    height: 100%;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    pointer-events: none;
+}
+
 /* Selection exists only to keep pointer events on (see toFlow); its own
    look stays quiet. */
-.react-flow__node.selected .box {
+.react-flow__node.selected .box:not(.add-node) {
     border-color: var(--vscode-focusBorder);
 }
 
@@ -172,7 +213,7 @@ html, body, #root {
     border-style: dashed;
 }
 
-/* Handles for the data lines (5.5): out of the way until pointed at. */
+/* Execution/definition ports appear when their box or handle is pointed at. */
 .react-flow__handle {
     width: 7px;
     height: 7px;
@@ -183,62 +224,20 @@ html, body, #root {
 }
 
 .box:hover ~ .react-flow__handle,
-.react-flow__node:hover .react-flow__handle {
+.react-flow__node:hover .react-flow__handle,
+.react-flow__handle.connectingfrom,
+.react-flow__handle.connectingto {
     opacity: 1;
 }
 
-/* 8.6: the execution lines' anchors. Never seen, never grabbed -- the
-   arrows belong to the picture, not to the reader's connecting hand. After
-   the hover rule above so it wins over it. */
-.react-flow__node .react-flow__handle.flowhandle {
-    opacity: 0;
-    pointer-events: none;
-}
-
-.react-flow__edge.exec path {
+.react-flow__edge.exec path,
+.react-flow__connection-path.exec {
     stroke: var(--lhat-exec);
-    stroke-width: calc(1.4px * var(--lhat-scale, 1));
+    stroke-width: calc(2.1px * var(--lhat-scale, 1));
 }
 
-/* 8.6: one dot per clause of a branch, in the container's bottom padding. */
-/* Centred under the execution line: `left` is the axis (flowHandleX, set
-   inline when the box is shifted or slid), and the translate makes that the
-   row's middle rather than its start.
-
-   Not named `.dots`: React Flow's background pattern puts a bare `dots`
-   class on its circles, and a rule by that name moved every one of them
-   half out of its tile -- the background looked switched off. */
-.clausedots {
-    position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
-    bottom: calc(2px * var(--lhat-scale, 1));
-    display: flex;
-    gap: calc(5px * var(--lhat-scale, 1));
-    z-index: 1;
-}
-
-.clausedot {
-    width: calc(7px * var(--lhat-scale, 1));
-    height: calc(7px * var(--lhat-scale, 1));
-    padding: 0;
-    border: none;
-    border-radius: 50%;
-    background: color-mix(in srgb,
-        var(--vscode-editor-foreground) 30%, transparent);
-    cursor: pointer;
-}
-
-.clausedot:hover {
-    background: color-mix(in srgb,
-        var(--vscode-editor-foreground) 60%, transparent);
-}
-
-.clausedot.lit {
-    background: var(--vscode-focusBorder);
-}
-
-.react-flow__edge-path {
+.react-flow__edge-path,
+.react-flow__connection-path.definition {
     stroke: var(--vscode-charts-blue, #58a);
     stroke-width: 1.5;
 }

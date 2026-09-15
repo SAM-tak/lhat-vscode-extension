@@ -2,13 +2,13 @@
 //
 // What this exists to prove or disprove:
 //   - ELK owns every position; React Flow only shows them. Static nodes,
-//     `parentId` subflows, ELK's parent-relative coordinates passed through
+//     `parentId` subflows, with a declaration-height offset for wide values
 //   - parity with the SVG view: folding, drilling in, click-to-reveal
-//   - V17: a container's contents can slide, and what an ancestor no longer
-//     shows is cut -- React Flow's DOM is flat, so the cut is computed here
-//   - V18: the slide is a drag on the container along the axis that carries
-//     no order, without fighting the pane's own pan
-//   - the connection UI for the decided data lines: drag from a handle
+//   - wide top-level boxes slide horizontally with their whole subtree;
+//     descendants keep ELK's parent-relative positions
+//   - a wide declaration's value drops below it and slides independently;
+//     the declaration and execution lines stay fixed
+//   - execution and definition handles share their arrows' endpoints
 //
 // The mapping (map.ts) is shared with the SVG view untouched, which is the
 // point of keeping it framework-free.
@@ -18,15 +18,17 @@ import React, {
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
-    Background, Handle, MarkerType, MiniMap, PanOnScrollMode, Position,
-    ReactFlow, addEdge, useEdgesState, useReactFlow, ReactFlowProvider,
-    type Connection, type Edge, type Node, type NodeProps, type NodeTypes,
+    Background, ConnectionLineType, Handle, MarkerType, MiniMap, PanOnScrollMode, Position,
+    ReactFlow, addEdge, getSmoothStepPath, getStraightPath, useEdgesState, useReactFlow, ReactFlowProvider,
+    useUpdateNodeInternals,
+    type BuiltInEdge, type Connection, type ConnectionLineComponentProps,
+    type Edge, type Node, type NodeProps, type NodeTypes,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import "./rf.css";
 import ELK from "elkjs/lib/elk.bundled.js";
 import type { AstNode, AstReply, FromWebview, ToWebview } from "../../protocol";
-import { nodeAt, titleOf, toElk, type ElkNode } from "../map";
+import { graphViewportX, nodeAt, stackWideDefinitions, titleOf, toElk, type ElkNode } from "../map";
 
 declare function acquireVsCodeApi(): {
     postMessage(message: FromWebview): void;
@@ -36,13 +38,14 @@ declare function acquireVsCodeApi(): {
 
 const vscode = acquireVsCodeApi();
 const elk = new ELK();
+const DEFAULT_FONT_PX = 12;
 
 // ---------------------------------------------------------------------------
 // Laid-out ELK graph -> React Flow nodes
 
-// V17/V18: how far a container's contents have been slid, keyed by what the
-// container was made from -- ELK ids are regenerated every layout, the source
-// span survives one. The same key is what *.lhl would store (06 の 9 章).
+// How far a scroll-owning box has been slid, keyed by what it was made from.
+// ELK ids are regenerated every layout; the source span survives one.
+// The same key is what *.lhl would store (06 の 9 章).
 //
 // The start alone will not do: a parent and its first child begin at the same
 // place all the time (the root and the first statement of a file, for one), so
@@ -50,48 +53,66 @@ const elk = new ELK();
 // of them adds the same slide again -- the contents drift further the deeper
 // they sit. Span and kind together are unique, since two nodes of one kind
 // covering exactly one range would be the same node.
-type Slides = Record<string, { dx: number; dy: number }>;
+type SlideBounds = { min: number; max: number };
+type Slides = Record<string, {
+    dx: number; dy: number;
+    /** Temporary stretch, valid only for the bounds it was pulled against. */
+    elastic?: SlideBounds;
+}>;
+
+const clampSlide = (dx: number, min: number, max: number): number =>
+    Math.min(Math.max(dx, min), max);
+
+const slidePosition = (saved: Slides[string] | undefined, bounds: SlideBounds) =>
+    saved?.elastic?.min === bounds.min && saved.elastic.max === bounds.max
+        ? saved.dx : clampSlide(saved?.dx ?? 0, bounds.min, bounds.max);
+
+/** Resist only the part of a drag beyond an edge, including the crossing. */
+function rubberSlide(current: number, delta: number, bounds: SlideBounds): number {
+    let next = current + delta;
+    if (next > bounds.max && delta > 0) {
+        const edge = Math.max(current, bounds.max);
+        next = edge + (next - edge) / 3;
+    } else if (next < bounds.min && delta < 0) {
+        const edge = Math.min(current, bounds.min);
+        next = edge + (next - edge) / 3;
+    }
+    // A long pull cannot move the box away indefinitely. Unused motion is
+    // discarded, so changing direction takes effect immediately.
+    return clampSlide(next, bounds.min - 96, bounds.max + 96);
+}
 
 const slideKeyOf = (lhat: NonNullable<ElkNode["lhat"]>) =>
     `${lhat.kind}:${lhat.start}:${lhat.end}`;
 
-interface BoxData extends Record<string, unknown> {
+interface SlideData {
+    /** The outermost visible box moved by a gesture in this subtree. */
+    slideKey?: string;
+    slideDx: number;
+    slideMin?: number;
+    slideMax?: number;
+}
+
+interface BoxData extends Record<string, unknown>, SlideData {
     label: string;
     depth: number;
     isContainer: boolean;
+    layoutOnly: boolean;
+    slideOwner: boolean;
+    isStart: boolean;
+    isAdd: boolean;
+    definitionRole?: "declaration" | "value";
+    definitionHandleY?: number;
     collapsed: boolean;
     /** 01 の 6.5: written, but switched off. */
     disabled: boolean;
     start?: number;
     end?: number;
-    /**
-     * V17's cut, applied to the box's own div rather than carried in
-     * node.style: whatever is in node.style reaches the minimap's shapes
-     * too, where a full-scale pixel inset would swallow the tiny rect.
-     */
-    clipPath?: string;
-    /** Set when this container's contents may slide (it has a stable key). */
-    slideKey?: string;
-    /** V18: the axis that carries no order for this node -- see toFlow. */
-    slideAxis: "x" | "y";
-    onSlide: (key: string, dx: number, dy: number) => void;
-    /**
-     * 8.6: a branch's clauses snap. One slide offset per clause, at which
-     * that clause's centre sits on the container's own axis -- the position
-     * where the execution line through it runs straight.
-     */
-    snapStops?: number[];
-    /** The container's current slide, for the dots and for snapping. */
-    slideDx: number;
-    /**
-     * 8.6: the range within which the execution line through this box stays
-     * vertical -- the same span the handle clamp covers. Outside it the drag
-     * meets resistance and the release springs back. Only for x slides.
-     */
-    slideMin?: number;
-    slideMax?: number;
-    /** Set the slide outright (a snap), with the short glide the CSS gives. */
-    onSnap: (key: string, dx: number) => void;
+    /** Shared across boxes so touching another descendant stops the glide. */
+    slideMotion: { current: (() => void) | null };
+    onSlide: (key: string, dx: number, mode?: "drag" | "glide") => void;
+    /** Return a stretched box to its nearest viewport edge. */
+    onSpring: (key: string) => void;
     /**
      * 8.6: where the execution line crosses this box, in its own pixels.
      * Undefined means the middle. A base-left shift moves the box, not the
@@ -113,7 +134,32 @@ interface BoxData extends Record<string, unknown> {
 
 type BoxNodeType = Node<BoxData, "box">;
 
-interface Rect { l: number; t: number; r: number; b: number }
+const executionEdge = {
+    type: "straight",
+    className: "exec",
+    // Lines between descendants must stay visible over their enclosing boxes.
+    zIndex: 2000,
+    markerEnd: {
+        type: MarkerType.ArrowClosed,
+        width: 11,
+        height: 11,
+        color: "var(--lhat-exec)",
+    },
+} satisfies Partial<Edge>;
+
+const definitionEdge = {
+    ...executionEdge,
+    type: "smoothstep",
+    className: "definition",
+    // Leave horizontal stubs at both side handles, even when the value
+    // scrolls past the declaration. A short offset fits the 28px row gap.
+    pathOptions: { borderRadius: 6, offset: 6 },
+    markerEnd: { ...executionEdge.markerEnd, color: "var(--vscode-charts-blue, #58a)" },
+} satisfies Partial<BuiltInEdge>;
+
+const validConnection = (connection: Connection | Edge): boolean =>
+    (connection.sourceHandle === "flow-out" && connection.targetHandle === "flow-in") ||
+    (connection.sourceHandle === "definition-out" && connection.targetHandle === "definition-in");
 
 function toFlow(
     laid: ElkNode,
@@ -121,108 +167,102 @@ function toFlow(
     viewWidth: number,
     flashKey: string | undefined,
     onSlide: BoxData["onSlide"],
-    onSnap: BoxData["onSnap"],
     onEnter: BoxData["onEnter"],
     onReveal: BoxData["onReveal"],
     onFold: BoxData["onFold"],
-): { nodes: BoxNodeType[]; exec: Edge[] } {
+    slideMotion: BoxData["slideMotion"],
+    onSpring: BoxData["onSpring"],
+): { nodes: BoxNodeType[]; exec: Edge[]; definitions: Edge[] } {
     const nodes: BoxNodeType[] = [];
     // 8.6: the execution lines. The layout's own order-pinning edges (6.3),
     // shown where the mapping marked them -- the statement sequences.
     const exec: Edge[] = [];
-    const dirOf = (n: ElkNode) => n.layoutOptions?.["elk.direction"] ?? "DOWN";
+    const definitions: Edge[] = [];
+    const endpoints = new Map<string, ElkNode>();
+    const index = (node: ElkNode): void => {
+        endpoints.set(node.id, node);
+        for (const port of node.ports ?? []) endpoints.set(port.id, node);
+        for (const child of node.children ?? []) index(child);
+    };
+    index(laid);
+    const executionEnd = (node: ElkNode, end: "Entry" | "Exit"): ElkNode => {
+        const seen = new Set<string>();
+        while (!seen.has(node.id)) {
+            seen.add(node.id);
+            const id = node.lhat?.executionNode ?? node.lhat?.[`execution${end}`];
+            const child = id === undefined ? undefined : endpoints.get(id);
+            if (child === undefined) break;
+            node = child;
+        }
+        return node;
+    };
 
-    // 8.6: the document's axis is the vertical centre line the viewport is
-    // centred on. Anything longer than the view cannot be centred -- its
+    // 8.6: wide split rows keep their declaration column in view. Other
+    // views are centred. Anything longer than the view cannot be centred -- its
     // start would fall off the left, which is the wrong end to lose -- so it
     // hangs from the base left edge instead: shifted right, display-only,
     // until its left edge sits where the view's left margin is. Computed
-    // before the slide is added, so a deliberate partial scroll still moves
-    // it off that alignment.
+    // before the slide is added. Only the top-level box is aligned: shifting
+    // children as well would move them outside the bounds ELK gave the parent.
     const usable = viewWidth - 16;
-    const baseAbs = (laid.width ?? 0) / 2 - usable / 2;
+    const baseAbs = 8 - graphViewportX(laid, viewWidth);
 
     const walk = (
         parent: ElkNode,
         parentId: string | undefined,
-        parentAbs: { x: number; y: number },
-        visible: Rect | undefined,
         depth: number,
-        // The ancestors' slides added up. The base-left landing is judged
-        // against the position *without* them: a slid ancestor is the reader
-        // scrolling this subtree, and a child that re-anchored itself to the
-        // base edge on every frame would stick to the screen while its
-        // parent moved away.
-        slidX: number,
+        inheritedSlide: SlideData,
+        parentX: number,
     ): void => {
-        // Edges join siblings, so what an edge needs to know about hiding is
-        // settled within this one level.
-        const hiddenIds = new Set<string>();
         for (const c of parent.children ?? []) {
+            const topLevel = parentId === undefined;
+            const w = c.width ?? 0;
+            const h = c.height ?? 0;
+            const isContainer = (c.children ?? []).length > 0;
+            const isStart = c.lhat?.synthetic === "start";
+            const isAdd = c.lhat?.synthetic === "add";
+            const synthetic = c.lhat?.synthetic !== undefined;
+            const layoutOnly = c.lhat?.definitionRole === "row";
+            const detachedValue = parent.lhat?.stackedDefinition === true &&
+                c.lhat?.definitionRole === "value";
             let x = c.x ?? 0;
             let baseShift = 0;
-            if (usable > 0 && (c.width ?? 0) > usable) {
-                const shift = baseAbs - (parentAbs.x - slidX + x);
+            if (topLevel && !layoutOnly && !detachedValue && usable > 0 && w > usable) {
+                const shift = baseAbs - x;
                 if (shift > 0) {
                     x += shift;
                     baseShift = shift;
                 }
             }
-            // 8.3改: the slide moves the node itself -- grab a box and the
-            // whole box goes, frame and all. Its children ride along for
-            // free: they are positioned relative to it.
-            //
-            // A box that fits the view whole has nothing to scroll to, so it
-            // neither slides nor snaps: its stored offset -- kept from when
-            // it was wider, folded shut being the usual way -- is ignored
-            // rather than deleted, and comes back to life when unfolding
-            // makes the box wide again.
-            const fitsX = usable > 0 && (c.width ?? 0) <= usable;
-            const own = c.lhat !== undefined
-                ? slides[slideKeyOf(c.lhat)] : undefined;
-            const ownDx = fitsX ? 0 : own?.dx ?? 0;
+            // A wide definition's invisible row and declaration stay fixed;
+            // only its lowered value owns the offset. Other wide top-level
+            // containers still move as a whole. Deeper boxes never acquire
+            // another offset; gestures there are routed to the same owner.
+            const canSlide = detachedValue ||
+                (topLevel && !layoutOnly && isContainer && usable > 0 && w > usable);
+            const key = canSlide && c.lhat !== undefined ? slideKeyOf(c.lhat) : undefined;
+            // Normal boxes stop at the viewport's side margins; a lowered
+            // value stops at its initial x or at the viewport's right margin.
+            // Only a live rubber-band stretch may go outside these bounds.
+            // Saved offsets from a different layout are clamped as before.
+            // A detached value starts beside the declaration as before; its
+            // rightward stop keeps that initial gap for the definition line.
+            const max = detachedValue ? 0 : baseAbs - parentX - x;
+            const min = Math.min(max, baseAbs + usable - parentX - x - w);
+            const ownDx = key !== undefined
+                ? slidePosition(slides[key], { min, max }) : 0;
+            const slide: SlideData = topLevel || detachedValue ? {
+                slideKey: key,
+                slideDx: ownDx,
+                slideMin: key !== undefined ? min : undefined,
+                slideMax: key !== undefined ? max : undefined,
+            } : inheritedSlide;
             x += ownDx;
             // Horizontal only. Vertical is the document's own axis -- the
             // global scroll already covers what sticks out up or down, so a
             // per-node vertical slide would be a second way to do the same
             // thing, and one that bends the execution line for nothing.
             const y = c.y ?? 0;
-            const ax = parentAbs.x + x;
-            const ay = parentAbs.y + y;
-            const w = c.width ?? 0;
-            const h = c.height ?? 0;
-
-            // V17: what an ancestor no longer shows is cut, in this node's own
-            // coordinates. React Flow keeps every node in one flat layer, so a
-            // parent clips nothing by itself; the inset accumulates over every
-            // ancestor instead.
-            let clipPath: string | undefined;
-            let hidden = false;
-            if (visible !== undefined) {
-                const cutL = Math.max(0, visible.l - ax);
-                const cutT = Math.max(0, visible.t - ay);
-                const cutR = Math.max(0, ax + w - visible.r);
-                const cutB = Math.max(0, ay + h - visible.b);
-                if (cutL + cutR >= w || cutT + cutB >= h) {
-                    hidden = true;
-                } else if (cutL || cutT || cutR || cutB) {
-                    clipPath =
-                        `inset(${cutT}px ${cutR}px ${cutB}px ${cutL}px)`;
-                }
-            }
-
-            const isContainer = (c.children ?? []).length > 0;
-            if (hidden) hiddenIds.add(c.id);
-            // dx per clause that slides the box until that clause's centre
-            // sits under the execution line -- which stays put on the chain's
-            // axis (flowHandleX) while the box moves beneath it.
-            const snapStops =
-                !fitsX &&
-                c.lhat?.branch === true && (c.children?.length ?? 0) > 1
-                    ? (c.children ?? []).map((k) =>
-                        (c.width ?? 0) / 2 - baseShift
-                            - ((k.x ?? 0) + (k.width ?? 0) / 2))
-                    : undefined;
             nodes.push({
                 id: c.id,
                 type: "box",
@@ -243,36 +283,27 @@ function toFlow(
                 // own pointer handlers, the hover that shows the handles,
                 // and every click. Selectable is the cheapest way to keep
                 // events flowing.
-                selectable: true,
-                hidden,
+                selectable: !layoutOnly,
+                ariaLabel: isStart ? "Execution start" : isAdd ? "Add element (not yet available)" : undefined,
                 data: {
-                    clipPath,
+                    ...slide,
+                    slideMotion,
                     label: c.labels?.[0]?.text ?? "",
                     depth,
                     isContainer,
+                    isStart,
+                    isAdd,
+                    layoutOnly,
+                    slideOwner: key !== undefined,
+                    definitionRole: c.lhat?.definitionRole === "row"
+                        ? undefined : c.lhat?.definitionRole,
+                    definitionHandleY: c.lhat?.definitionHandleY,
                     collapsed: c.lhat?.collapsed === true,
                     disabled: c.lhat?.disabled === true,
-                    start: c.lhat?.start,
-                    end: c.lhat?.end,
-                    slideKey:
-                        isContainer && c.lhat !== undefined &&
-                            dirOf(parent) !== "RIGHT" && !fitsX
-                            ? slideKeyOf(c.lhat) : undefined,
-                    // 8.3: the axis the parent stacks this node in carries the
-                    // order, so it is dull; the cross axis slides. A child of
-                    // a DOWN container slides horizontally, of a RIGHT one
-                    // vertically.
-                    slideAxis: dirOf(parent) === "RIGHT" ? "y" : "x",
+                    start: synthetic ? undefined : c.lhat?.start,
+                    end: synthetic ? undefined : c.lhat?.revealEnd ?? c.lhat?.end,
                     flashed: c.lhat !== undefined &&
                         slideKeyOf(c.lhat) === flashKey,
-                    snapStops,
-                    slideDx: ownDx,
-                    slideMin: isContainer && dirOf(parent) !== "RIGHT"
-                        ? (c.width ?? 0) / 2 - baseShift - (c.width ?? 0) + 6
-                        : undefined,
-                    slideMax: isContainer && dirOf(parent) !== "RIGHT"
-                        ? (c.width ?? 0) / 2 - baseShift - 6
-                        : undefined,
                     foldable: c.lhat?.foldable === true,
                     // The line does not follow the box: the handle counters
                     // both the base-left landing and the reader's own slide,
@@ -285,52 +316,38 @@ function toFlow(
                             (c.width ?? 0) - 6)
                         : undefined,
                     onSlide,
-                    onSnap,
+                    onSpring,
                     onEnter,
                     onReveal,
                     onFold,
                 },
             });
 
-            if (isContainer && !hidden) {
-                const own: Rect = { l: ax, t: ay, r: ax + w, b: ay + h };
-                const next: Rect = visible === undefined ? own : {
-                    l: Math.max(visible.l, own.l),
-                    t: Math.max(visible.t, own.t),
-                    r: Math.min(visible.r, own.r),
-                    b: Math.min(visible.b, own.b),
-                };
-                walk(c, c.id, { x: ax, y: ay }, next, depth + 1,
-                     slidX + ownDx);
+            if (isContainer) {
+                walk(c, c.id, depth + (layoutOnly ? 0 : 1), slide, parentX + x);
             }
         }
         for (const e of parent.edges ?? []) {
             if (e.drawn !== true) continue;
-            if (hiddenIds.has(e.sources[0]) || hiddenIds.has(e.targets[0])) {
-                continue;
-            }
-            exec.push({
-                id: `x__${e.id}`,
-                source: e.sources[0],
-                target: e.targets[0],
-                sourceHandle: "flow-out",
-                targetHandle: "flow-in",
-                type: "straight",
-                className: "exec",
+            const source = endpoints.get(e.sources[0]);
+            const target = endpoints.get(e.targets[0]);
+            if (source === undefined || target === undefined) continue;
+            const definition = e.definition === true;
+            (definition ? definitions : exec).push({
+                id: `${definition ? "d" : "x"}__${e.id}`,
+                source: definition ? source.id : executionEnd(source, "Exit").id,
+                target: definition ? target.id : executionEnd(target, "Entry").id,
+                sourceHandle: definition ? "definition-out" : "flow-out",
+                targetHandle: definition ? "definition-in" : "flow-in",
+                ...(definition ? definitionEdge : executionEdge),
                 selectable: false,
                 focusable: false,
-                markerEnd: {
-                    type: MarkerType.ArrowClosed,
-                    width: 11,
-                    height: 11,
-                    color: "var(--lhat-exec)",
-                },
             });
         }
     };
 
-    walk(laid, undefined, { x: 0, y: 0 }, undefined, 1, 0);
-    return { nodes, exec };
+    walk(laid, undefined, 1, { slideDx: 0 }, 0);
+    return { nodes, exec, definitions };
 }
 
 /**
@@ -391,15 +408,6 @@ const trimSamples = (samples: Sample[], now: number): void => {
     while (samples.length > 1 && now - samples[0].t > 120) samples.shift();
 };
 
-/** Which snap stop the current slide is closest to. */
-function nearestStop(stops: number[], dx: number): number {
-    let best = 0;
-    for (let i = 1; i < stops.length; i++) {
-        if (Math.abs(stops[i] - dx) < Math.abs(stops[best] - dx)) best = i;
-    }
-    return best;
-}
-
 /**
  * For every button here. A press with the pointer leaves the button focused,
  * and the browser then shows its focus ring at the next keystroke -- which,
@@ -415,15 +423,21 @@ const keepFocusOff = (event: React.MouseEvent) => event.preventDefault();
 // ---------------------------------------------------------------------------
 // One node
 
-function BoxNode({ data }: NodeProps<BoxNodeType>) {
+function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
     const { getZoom } = useReactFlow();
+    const updateNodeInternals = useUpdateNodeInternals();
+    // Moving a handle inside an unchanged-size box does not trigger React
+    // Flow's ResizeObserver. Re-measure it so arrows follow the visible port.
+    useEffect(() => {
+        updateNodeInternals(id);
+    }, [id, data.flowHandleX, data.definitionRole, data.definitionHandleY, updateNodeInternals]);
     const drag = useRef<{
         x: number; y: number; moved: boolean; samples: Sample[];
     } | null>(null);
-    const flingStop = useRef<(() => void) | null>(null);
+    const flingStop = data.slideMotion;
 
-    // V18, the immediate half: a drag on a container slides its contents on
-    // the axis that carries no order. Pointer capture keeps the gesture ours.
+    // A drag anywhere in a wide subtree moves its top-level box horizontally.
+    // React Flow's flat DOM requires explicit routing via the inherited key.
     const onPointerDown = (event: React.PointerEvent) => {
         // Middle press: the browser would start its own autoscroll here, and
         // the click that follows is what shows the text.
@@ -442,7 +456,7 @@ function BoxNode({ data }: NodeProps<BoxNodeType>) {
             x: event.clientX, y: event.clientY, moved: false,
             samples: [{
                 t: performance.now(),
-                p: data.slideAxis === "x" ? event.clientX : event.clientY,
+                p: event.clientX,
             }],
         };
     };
@@ -459,21 +473,12 @@ function BoxNode({ data }: NodeProps<BoxNodeType>) {
         const now = performance.now();
         d.samples.push({
             t: now,
-            p: data.slideAxis === "x" ? event.clientX : event.clientY,
+            p: event.clientX,
         });
         trimSamples(d.samples, now);
         // Screen pixels over canvas zoom = graph units.
         const zoom = getZoom() || 1;
-        let step = (data.slideAxis === "x" ? dx : dy) / zoom;
-        // Past the range the line can stay vertical in, the drag pulls
-        // against the band -- a third of the movement, so the edge is felt.
-        if (data.slideMin !== undefined && data.slideMax !== undefined &&
-            ((data.slideDx > data.slideMax && step > 0) ||
-                (data.slideDx < data.slideMin && step < 0))) {
-            step /= 3;
-        }
-        if (data.slideAxis === "x") data.onSlide(data.slideKey, step, 0);
-        else data.onSlide(data.slideKey, 0, step);
+        data.onSlide(data.slideKey, dx / zoom, "drag");
     };
     const onPointerUp = (event: React.PointerEvent) => {
         if (event.button !== 0 || drag.current === null) return;
@@ -482,43 +487,35 @@ function BoxNode({ data }: NodeProps<BoxNodeType>) {
         drag.current = null;
         // A press that never moved was a click on the box, not a slide.
         if (!wasDrag) {
+            if (data.slideKey !== undefined) data.onSpring(data.slideKey);
             data.onEnter(data);
             return;
         }
         if (data.slideKey === undefined) return;
         const key = data.slideKey;
+        const now = performance.now();
+        dragged.samples.push({ t: now, p: event.clientX });
+        trimSamples(dragged.samples, now);
         const velocity = releaseVelocity(dragged.samples);
-        // 8.6: a branch slides freely under the finger; let go, the throw is
-        // carried to where it would land and the nearest clause there takes
-        // it -- a fling turns the page.
-        if (data.snapStops !== undefined) {
-            const landing = data.slideDx + velocity * 320;
-            const at = nearestStop(data.snapStops, landing);
-            data.onSnap(key, data.snapStops[at]);
-            return;
-        }
         const min = data.slideMin;
         const max = data.slideMax;
-        // Let go outside the band and it comes home -- onSnap's glide is the
-        // spring.
         if (min !== undefined && max !== undefined &&
             (data.slideDx < min || data.slideDx > max)) {
-            data.onSnap(key, Math.min(Math.max(data.slideDx, min), max));
+            data.onSpring(key);
             return;
         }
-        // Everything else keeps its momentum and glides out, until the band
-        // catches it.
-        if (Math.abs(velocity) > 0.05) {
+        // A fling can pull the band briefly; reaching an edge then gives
+        // control to the same spring used when releasing a stretched drag.
+        if (min !== undefined && max !== undefined &&
+            Math.abs(velocity) > 0.05) {
             let acc = data.slideDx;
             flingStop.current = fling(velocity, (d) => {
                 acc += d;
-                if (min !== undefined && max !== undefined &&
-                    (acc < min || acc > max)) {
-                    data.onSnap(key, Math.min(Math.max(acc, min), max));
+                data.onSlide(key, d, "glide");
+                if (acc < min || acc > max) {
+                    data.onSpring(key);
                     return false;
                 }
-                if (data.slideAxis === "x") data.onSlide(key, d, 0);
-                else data.onSlide(key, 0, d);
             });
         }
     };
@@ -533,7 +530,11 @@ function BoxNode({ data }: NodeProps<BoxNodeType>) {
         data.onReveal(data);
     };
 
+    if (data.layoutOnly) return null;
+
     const classes = ["box"];
+    if (data.isStart) classes.push("start-node");
+    if (data.isAdd) classes.push("add-node");
     if (data.flashed) classes.push("flash");
     if (data.collapsed) classes.push("folded");
     else if (data.isContainer) classes.push(`container d${Math.min(data.depth, 6)}`);
@@ -548,10 +549,18 @@ function BoxNode({ data }: NodeProps<BoxNodeType>) {
         <>
             <div
                 className={classes.join(" ")}
-                style={data.clipPath ? { clipPath: data.clipPath } : undefined}
+                title={data.isStart ? "Execution start"
+                    : data.isAdd ? "Add element (editing is not yet available)" : undefined}
+                role={data.isStart ? "img" : data.isAdd ? "button" : undefined}
+                aria-label={data.isStart ? "Execution start" : data.isAdd ? "Add element" : undefined}
+                aria-disabled={data.isAdd ? true : undefined}
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
+                onPointerCancel={() => {
+                    drag.current = null;
+                    if (data.slideKey !== undefined) data.onSpring(data.slideKey);
+                }}
                 onAuxClick={onAuxClick}
             >
                 {data.foldable && (
@@ -572,63 +581,40 @@ function BoxNode({ data }: NodeProps<BoxNodeType>) {
                         }}
                     >{data.collapsed ? "▸" : "▾"}</button>
                 )}
-                <div className="boxlabel">{data.label}</div>
-                {data.snapStops !== undefined && (
-                    // 8.6: one dot per clause, the settled one lit. Their own
-                    // gestures, like the fold button's: a press must not start
-                    // a slide and the click must not read as entering. They
-                    // sit where the execution line does -- on the chain's
-                    // axis, countering the box's slide the way the handles
-                    // do -- so they hold still on screen while the box moves.
-                    <div
-                        className="clausedots"
-                        style={data.flowHandleX !== undefined
-                            ? { left: data.flowHandleX } : undefined}
-                    >
-                        {data.snapStops.map((stop, i) => (
-                            <button
-                                key={i}
-                                type="button"
-                                className={
-                                    i === nearestStop(
-                                        data.snapStops ?? [], data.slideDx)
-                                        ? "clausedot lit" : "clausedot"}
-                                title={`Clause ${i + 1}`}
-                                onMouseDown={keepFocusOff}
-                                onPointerDown={(ev) => ev.stopPropagation()}
-                                onClick={(ev) => {
-                                    ev.stopPropagation();
-                                    if (data.slideKey !== undefined) {
-                                        data.onSnap(data.slideKey, stop);
-                                    }
-                                }}
-                            />
-                        ))}
-                    </div>
-                )}
+                {data.isStart ? (
+                    <svg className="start-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M 6.5 8 L 17.5 8 L 12 17 Z" />
+                    </svg>
+                ) : data.isAdd ? (
+                    <svg className="add-icon" viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M 12 6 V 18 M 6 12 H 18" />
+                    </svg>
+                ) : <div className="boxlabel">{data.label}</div>}
             </div>
-            {/* 8.6: where the execution lines fasten. Never shown, never a
-                place to start a connection -- the arrows are the picture's,
-                not the reader's. flowHandleX keeps them on the chain's axis
-                when the box itself was shifted to the base left edge. */}
-            <Handle type="target" position={Position.Top} id="flow-in"
-                    isConnectable={false} className="flowhandle"
-                    style={data.flowHandleX !== undefined
-                        ? { left: data.flowHandleX } : undefined} />
-            <Handle type="source" position={Position.Bottom} id="flow-out"
-                    isConnectable={false} className="flowhandle"
-                    style={data.flowHandleX !== undefined
-                        ? { left: data.flowHandleX } : undefined} />
-            {!data.isContainer && (
+            {/* Use the execution lines' own endpoints as the visible ports:
+                incoming at the top, outgoing at the bottom. flowHandleX
+                keeps the ports and arrows together while the box slides. */}
+            {!data.isAdd && data.definitionRole !== "value" && (
                 <>
-                    {/* The decided data lines (06 の 5.5) are drawn and edited
-                        through handles like these; this pair is the mock that
-                        tries the interaction out. Siblings of the box, not
-                        children: the box clips its overflow and a handle sits
-                        exactly on the edge. */}
-                    <Handle type="target" position={Position.Left} />
-                    <Handle type="source" position={Position.Right} />
+                    {!data.isStart && <Handle type="target" position={Position.Top} id="flow-in"
+                            className="flowhandle" title="Execution input"
+                            style={data.flowHandleX !== undefined
+                                ? { left: data.flowHandleX } : undefined} />}
+                    <Handle type="source" position={Position.Bottom} id="flow-out"
+                            className="flowhandle" title="Execution output"
+                            style={data.flowHandleX !== undefined
+                                ? { left: data.flowHandleX } : undefined} />
                 </>
+            )}
+            {data.definitionRole === "declaration" && (
+                <Handle type="target" position={Position.Right} id="definition-in"
+                        className="definitionhandle" title="Definition input"
+                        style={{ top: data.definitionHandleY }} />
+            )}
+            {data.definitionRole === "value" && (
+                <Handle type="source" position={Position.Left} id="definition-out"
+                        className="definitionhandle" title="Definition output"
+                        style={{ top: data.definitionHandleY }} />
             )}
         </>
     );
@@ -636,12 +622,30 @@ function BoxNode({ data }: NodeProps<BoxNodeType>) {
 
 const nodeTypes: NodeTypes = { box: BoxNode };
 
+/** Preview the same line shape as the connection being drawn. */
+function ConnectionPreview({
+    fromX, fromY, toX, toY, fromHandle, fromPosition, connectionLineStyle,
+}: ConnectionLineComponentProps) {
+    const endpoints = { sourceX: fromX, sourceY: fromY, targetX: toX, targetY: toY };
+    const definition = fromHandle.id === "definition-out" || fromHandle.id === "definition-in";
+    const [path] = definition ? getSmoothStepPath({
+        ...endpoints,
+        ...definitionEdge.pathOptions,
+        sourcePosition: fromPosition,
+        // Keep the free end horizontal too, including a drag begun at the
+        // declaration's input handle rather than the value's output handle.
+        targetPosition: fromPosition === Position.Left ? Position.Right : Position.Left,
+    }) : getStraightPath(endpoints);
+    return <path className={`react-flow__connection-path ${definition ? "definition" : "exec"}`} d={path}
+                 style={connectionLineStyle} fill="none" />;
+}
+
 // ---------------------------------------------------------------------------
 // The app
 
-function countNodes(n: ElkNode): number {
-    let total = 1;
-    for (const c of n.children ?? []) total += countNodes(c);
+function countNodes(n: ElkNode, root = true): number {
+    let total = root || n.lhat?.definitionRole === "row" ? 0 : 1;
+    for (const c of n.children ?? []) total += countNodes(c, false);
     return total;
 }
 
@@ -672,11 +676,14 @@ function App() {
     const [folds, setFolds] = useState<Record<number, boolean>>({});
     const [trail, setTrail] = useState<number[]>([]);
     const [slides, setSlides] = useState<Slides>({});
+    const slidesRef = useRef(slides);
+    slidesRef.current = slides;
     const [laid, setLaid] = useState<ElkNode>();
+    const slideMotion = useRef<(() => void) | null>(null);
     const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
     // 8.6: zoom is the type size. The scale everything else derives from it.
-    const [fontPx, setFontPx] = useState(12);
-    const scale = fontPx / 12;
+    const [fontPx, setFontPx] = useState(DEFAULT_FONT_PX);
+    const scale = fontPx / DEFAULT_FONT_PX;
     // 8.6: the width the view has -- a ceiling for wrapping, re-measured on
     // resize. Zero until first measured; nothing lays out before that.
     const [viewWidth, setViewWidth] = useState(0);
@@ -686,9 +693,6 @@ function App() {
     const [wanted, setWanted] = useState<{ start: number; end: number }>();
     const [flashKey, setFlashKey] = useState<string>();
     const flashTimer = useRef<number | undefined>(undefined);
-    // Briefly on after a snap, so the settling glides instead of jumping.
-    const [snapAnim, setSnapAnim] = useState(false);
-    const snapTimer = useRef<number | undefined>(undefined);
 
     useEffect(() => {
         const el = flowRef.current;
@@ -759,7 +763,7 @@ function App() {
         const started = performance.now();
         void elk.layout(graph).then((result) => {
             if (stale) return;
-            const done = result as ElkNode;
+            const done = stackWideDefinitions(result as ElkNode, viewWidth - 16);
             setLaid(done);
             const folded = countFolded(done);
             setNote(`${countNodes(done)} nodes, ` +
@@ -791,31 +795,75 @@ function App() {
     useEffect(() => {
         if (laid === undefined) return;
         const w = flowRef.current?.clientWidth ?? 0;
-        const gw = laid.width ?? 0;
         const y = place.current ? 8 : getViewport().y;
         place.current = false;
-        setViewport({ x: (w - gw) / 2, y, zoom: 1 });
+        setViewport({ x: graphViewportX(laid, w), y, zoom: 1 });
     }, [laid, viewWidth, setViewport, getViewport]);
 
-    const onSlide = useCallback((key: string, dx: number, dy: number) => {
-        setSlides((s) => ({
-            ...s,
-            [key]: { dx: (s[key]?.dx ?? 0) + dx, dy: (s[key]?.dy ?? 0) + dy },
-        }));
+    const slideBounds = useRef(new Map<string, SlideBounds>());
+    const onSlide = useCallback((key: string, dx: number, mode?: "drag" | "glide") => {
+        setSlides((s) => {
+            const bounds = slideBounds.current.get(key);
+            if (bounds === undefined) return s;
+            // Start from the displayed position, even if the saved offset is
+            // outside newly resized bounds. Excess input must not accumulate:
+            // reversing direction at an edge should move the box immediately.
+            const current = slidePosition(s[key], bounds);
+            const next = mode === "drag" ? rubberSlide(current, dx, bounds)
+                : mode === "glide"
+                    ? clampSlide(current + dx, bounds.min - 96, bounds.max + 96)
+                    : clampSlide(clampSlide(current, bounds.min, bounds.max) + dx,
+                                 bounds.min, bounds.max);
+            const elastic = next < bounds.min || next > bounds.max ? bounds : undefined;
+            if (next === s[key]?.dx && elastic === s[key]?.elastic) return s;
+            return { ...s, [key]: { dx: next, dy: 0, elastic } };
+        });
     }, []);
-
-    // A snap sets the slide outright and lets the transition carry it there.
-    const onSnap = useCallback((key: string, dx: number) => {
-        setSlides((s) => ({ ...s, [key]: { dx, dy: 0 } }));
-        setSnapAnim(true);
-        window.clearTimeout(snapTimer.current);
-        snapTimer.current = window.setTimeout(
-            () => setSnapAnim(false), 200);
-    }, []);
-    const onSnapRef = useRef(onSnap);
-    onSnapRef.current = onSnap;
     const onSlideRef = useRef(onSlide);
     onSlideRef.current = onSlide;
+
+    const onSpring = useCallback((key: string) => {
+        slideMotion.current?.();
+        const bounds = slideBounds.current.get(key);
+        if (bounds === undefined) return;
+        // Start reading on the first animation frame: a fling may have just
+        // queued the last movement and React has not rendered it yet.
+        const read = () => slidePosition(slidesRef.current[key], bounds);
+        const apply = (dx: number) => {
+            setSlides((s) => ({ ...s, [key]: {
+                dx, dy: 0,
+                elastic: dx < bounds.min || dx > bounds.max ? bounds : undefined,
+            } }));
+        };
+        let cancel = () => cancelAnimationFrame(frame);
+        const frame = requestAnimationFrame(() => {
+            const target = clampSlide(read(), bounds.min, bounds.max);
+            cancel = springTo(read, target, apply);
+        });
+        slideMotion.current = () => cancel();
+    }, []);
+
+    // Re-grabbing the same box takes over from its current spring position.
+    // Switching to another box or using the wheel ends any old stretch.
+    const stopSlide = useCallback((keepKey?: string) => {
+        slideMotion.current?.();
+        slideMotion.current = null;
+        setSlides((s) => {
+            let next = s;
+            for (const [key, saved] of Object.entries(s)) {
+                if (saved.elastic === undefined || key === keepKey) continue;
+                const bounds = slideBounds.current.get(key) ?? saved.elastic;
+                if (next === s) next = { ...s };
+                next[key] = { dx: clampSlide(saved.dx, bounds.min, bounds.max), dy: 0 };
+            }
+            return next;
+        });
+    }, []);
+    // A fold, resize or change of view replaces the boxes and their bounds.
+    useEffect(() => {
+        stopSlide();
+        return () => { slideMotion.current?.(); };
+    }, [laid, viewWidth, stopSlide]);
 
     // 8.2: a folded definition is a way in. Anything else does nothing on the
     // left button, which is what leaves it free for sliding and connecting.
@@ -847,26 +895,26 @@ function App() {
     const flow = useMemo(
         () => (laid !== undefined
             ? toFlow(laid, slides, viewWidth, flashKey,
-                     onSlide, onSnap, onEnter, onReveal, onFold)
-            : { nodes: [], exec: [] }),
+                     onSlide, onEnter, onReveal, onFold, slideMotion, onSpring)
+            : { nodes: [], exec: [], definitions: [] }),
         [laid, slides, viewWidth, flashKey,
-            onSlide, onSnap, onEnter, onReveal, onFold]);
+            onSlide, onEnter, onReveal, onFold, onSpring]);
     const nodes = flow.nodes;
+    slideBounds.current = new Map(nodes.flatMap(({ data }) =>
+        data.slideOwner && data.slideKey !== undefined &&
+            data.slideMin !== undefined && data.slideMax !== undefined
+            ? [[data.slideKey, { min: data.slideMin, max: data.slideMax }]]
+            : []));
 
     // What the wheel needs to know about the node under the pointer, by node
     // id. A ref because the wheel listener is native (below) and must not be
     // re-installed per render.
     const slidables = useMemo(() => {
-        const m = new Map<string, {
-            key: string; axis: "x" | "y"; stops?: number[]; dx: number;
-        }>();
+        const m = new Map<string, string>();
         for (const n of nodes) {
             const d = n.data;
             if (d.slideKey !== undefined) {
-                m.set(n.id, {
-                    key: d.slideKey, axis: d.slideAxis,
-                    stops: d.snapStops, dx: d.slideDx,
-                });
+                m.set(n.id, d.slideKey);
             }
         }
         return m;
@@ -905,8 +953,12 @@ function App() {
         const down = (event: PointerEvent) => {
             paneFling.current?.();
             paneFling.current = null;
-            if (event.button !== 0) return;
             const target = event.target as Element;
+            const over = target.closest("[data-id]")?.getAttribute("data-id");
+            stopSlide(event.button === 0 && over != null &&
+                target.closest("button, .react-flow__handle") === null
+                ? slidablesRef.current.get(over) : undefined);
+            if (event.button !== 0) return;
             if (target.closest(
                 ".react-flow__node, .react-flow__handle," +
                 " .react-flow__minimap, .react-flow__edge, button") !== null) {
@@ -973,11 +1025,11 @@ function App() {
             el.removeEventListener("pointerup", up);
             el.removeEventListener("pointercancel", up);
         };
-    }, [getViewport, setViewport]);
+    }, [getViewport, setViewport, stopSlide]);
 
     // 8.6's wheel, ahead of React Flow's own: Ctrl resizes the type, Shift
-    // scrolls the slidable node under the pointer sideways (snapping one
-    // clause at a time where the node snaps). Native and capturing -- React
+    // scrolls the top-level box containing the node under the pointer.
+    // Native and capturing -- React
     // Flow's pan is a d3 listener on a descendant, so only a capture on the
     // ancestor runs first; passive listeners cannot preventDefault, so not
     // that either.
@@ -987,6 +1039,7 @@ function App() {
         const onWheel = (event: WheelEvent) => {
             paneFling.current?.();
             paneFling.current = null;
+            stopSlide();
             if (event.ctrlKey || event.metaKey) {
                 event.preventDefault();
                 event.stopPropagation();
@@ -999,26 +1052,17 @@ function App() {
             event.stopPropagation();
             const over = (event.target as Element)
                 .closest?.("[data-id]")?.getAttribute("data-id");
-            const info = over != null
+            const key = over != null
                 ? slidablesRef.current.get(over) : undefined;
-            if (info === undefined) return;
+            if (key === undefined) return;
             const delta = event.deltaY !== 0 ? event.deltaY : event.deltaX;
-            if (info.stops !== undefined) {
-                const at = nearestStop(info.stops, info.dx);
-                const next = Math.min(info.stops.length - 1,
-                    Math.max(0, at + (delta > 0 ? 1 : -1)));
-                onSnapRef.current(info.key, info.stops[next]);
-            } else if (info.axis === "x") {
-                onSlideRef.current(info.key, delta > 0 ? -24 : 24, 0);
-            } else {
-                onSlideRef.current(info.key, 0, delta > 0 ? -24 : 24);
-            }
+            if (delta !== 0) onSlideRef.current(key, delta > 0 ? -24 : 24);
         };
         el.addEventListener("wheel", onWheel,
             { capture: true, passive: false });
         return () => el.removeEventListener("wheel", onWheel,
             { capture: true });
-    }, []);
+    }, [stopSlide]);
 
     // The map is mounted one render after the pane it belongs to.
     //
@@ -1055,7 +1099,7 @@ function App() {
             for (const c of n.children ?? []) {
                 const y = absY + (c.y ?? 0);
                 const l = c.lhat;
-                if (l !== undefined &&
+                if (l !== undefined && l.synthetic === undefined && l.definitionRole !== "row" &&
                     l.start <= wanted.start && wanted.end <= l.end) {
                     const span = l.end - l.start;
                     if (best === undefined || span <= best.span) {
@@ -1086,13 +1130,21 @@ function App() {
     }, [wanted, laid, getViewport, setViewport]);
 
     const onConnect = useCallback((connection: Connection) => {
+        // Reconnecting an existing execution arrow must not draw a duplicate.
+        if (!validConnection(connection)) return;
+        if (flow.exec.concat(flow.definitions).some((edge) =>
+            edge.source === connection.source && edge.target === connection.target &&
+            edge.sourceHandle === connection.sourceHandle &&
+            edge.targetHandle === connection.targetHandle)) return;
         // Edges render in an svg layer below the nodes unless told otherwise,
-        // and a data line that runs behind the boxes it connects says nothing.
+        // and a line that runs behind the boxes it connects says nothing.
         // Nesting gives a node z of parent+1 (depth ~13 here) and selection
         // adds 1000, so 2000 clears everything.
         setEdges((current) =>
-            addEdge({ ...connection, animated: true, zIndex: 2000 }, current));
-    }, [setEdges]);
+            addEdge({ ...connection,
+                ...(connection.sourceHandle === "definition-out" ? definitionEdge : executionEdge),
+                zIndex: 2000 }, current));
+    }, [flow.exec, flow.definitions, setEdges]);
 
     return (
         <div id="app">
@@ -1138,6 +1190,14 @@ function App() {
                     onMouseDown={keepFocusOff}
                     onClick={() => setFontPx((v) => Math.min(28, v + 1))}
                 >A+</button>
+                <button
+                    type="button"
+                    title={`Reset text size (${DEFAULT_FONT_PX}px)`}
+                    aria-label="Reset text size to default"
+                    disabled={fontPx === DEFAULT_FONT_PX}
+                    onMouseDown={keepFocusOff}
+                    onClick={() => setFontPx(DEFAULT_FONT_PX)}
+                >A↺</button>
                 <span id="status">{note}</span>
             </div>
             {view !== undefined && view.path.length > 0 && reply !== undefined && (
@@ -1160,7 +1220,6 @@ function App() {
             <div
                 id="flow"
                 ref={flowRef}
-                className={snapAnim ? "snap-anim" : undefined}
                 style={{ "--lhat-scale": String(scale) } as React.CSSProperties}
             >
                 <ReactFlow
@@ -1172,15 +1231,18 @@ function App() {
                     // the reader off a diagram they had not finished reading.
                     key={flowKey}
                     nodes={nodes}
-                    edges={flow.exec.concat(edges)}
+                    edges={flow.exec.concat(flow.definitions, edges)}
                     onEdgesChange={onEdgesChange}
                     onConnect={onConnect}
+                    isValidConnection={validConnection}
+                    connectionLineType={ConnectionLineType.Straight}
+                    connectionLineComponent={ConnectionPreview}
                     nodeTypes={nodeTypes}
                     // 8.6: a document, not a canvas. The zoom is locked at 1
                     // -- growing the picture is the type-size buttons' job,
                     // a re-layout rather than a transform -- and the only
                     // global movement is vertical. What overflows sideways is
-                    // a branch's, and the branch handles it itself.
+                    // handled by each top-level box with its entire subtree.
                     minZoom={1}
                     maxZoom={1}
                     zoomOnScroll={false}
@@ -1204,7 +1266,9 @@ function App() {
                     ]}
                 >
                     <Background />
-                    {paneReady && <MiniMap pannable />}
+                    {paneReady && <MiniMap pannable
+                        nodeClassName={(node) => node.data.layoutOnly ? "layout-only"
+                            : node.data.isStart ? "start-marker" : ""} />}
                 </ReactFlow>
             </div>
         </div>
