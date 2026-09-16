@@ -19,6 +19,8 @@ html, body, #root {
 }
 
 #flow {
+    position: relative;
+    overflow: hidden;
     flex: 1;
     min-height: 0;
     /* 8.6: the type factor the zoom buttons set; every size in the boxes
@@ -26,6 +28,23 @@ html, body, #root {
     --lhat-scale: 1;
     /* The execution lines' colour, shared by strokes and arrowheads. */
     --lhat-exec: #fff;
+}
+
+/* Hover-only references do not participate in layout or intercept editing. */
+.reference-overlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 11000;
+    pointer-events: none;
+}
+.reference-line {
+    fill: none;
+    stroke: var(--vscode-lhat-graph-referenceLine, #eaa04b);
+    stroke-width: 1;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
 }
 
 /* React Flow's own chrome, matched to the theme. */
@@ -53,6 +72,7 @@ html, body, #root {
 }
 .minimap-resize-left { left: -4px; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
 .minimap-resize-top { top: -4px; left: 0; right: 0; height: 8px; cursor: ns-resize; }
+.minimap-resize-top-left { top: -4px; left: -4px; width: 14px; height: 14px; z-index: 8; cursor: nwse-resize; }
 .minimap-resize::after {
     content: "";
     position: absolute;
@@ -62,6 +82,12 @@ html, body, #root {
 }
 .minimap-resize-left::after { left: 3px; top: 0; bottom: 0; width: 2px; }
 .minimap-resize-top::after { top: 3px; left: 0; right: 0; height: 2px; }
+.minimap-resize-top-left::after {
+    left: 3px; top: 3px; width: 8px; height: 8px;
+    background: none;
+    border-top: 2px solid var(--vscode-focusBorder);
+    border-left: 2px solid var(--vscode-focusBorder);
+}
 .minimap-resize:hover::after,
 .minimap-resize:focus-visible::after { opacity: 0.8; }
 .minimap-toggle {
@@ -233,6 +259,45 @@ html, body, #root {
     white-space: nowrap;
 }
 
+/* Only semantic role/type text is italic; user names and literal values are not. */
+.semantic-label { font-style: italic; }
+.semantic-label[data-category="declaration"] { color: var(--vscode-lhat-graph-declaration, #82b7ed); }
+.semantic-label[data-category="control"] { color: var(--vscode-lhat-graph-control, #dda1df); }
+.semantic-label[data-category="callable"] { color: var(--vscode-lhat-graph-callable, #e3d58c); }
+.semantic-label[data-category="function"] { color: var(--vscode-lhat-graph-function, #89cff0); }
+.semantic-label[data-category="procedure"] { color: var(--vscode-lhat-graph-procedure, #e3d58c); }
+.semantic-label[data-category="type"] { color: var(--vscode-lhat-graph-type, #73cfb8); }
+.semantic-label[data-category="value"] { color: var(--vscode-lhat-graph-value, #b8d995); }
+.semantic-label[data-category="module"] { color: var(--vscode-lhat-graph-module, #efb58a); }
+.semantic-label[data-category="modifier"] { color: var(--vscode-lhat-graph-modifier, #b8b8d6); }
+.semantic-label[data-category="operator"] { color: var(--vscode-lhat-graph-operator, #8dcae5); }
+.semantic-label[data-category="member"] { color: var(--vscode-lhat-graph-member, #d7c4a2); }
+.name-input {
+    box-sizing: border-box;
+    padding: 0 calc(3px * var(--lhat-scale));
+    border: 1px solid transparent;
+    border-radius: calc(3px * var(--lhat-scale));
+    background: var(--vscode-input-background, var(--vscode-editor-background));
+    color: var(--vscode-input-foreground, var(--vscode-editor-foreground));
+    font: inherit;
+    font-style: normal;
+    line-height: calc(20px * var(--lhat-scale));
+    vertical-align: middle;
+    user-select: text;
+    cursor: text;
+}
+.name-input:hover { border-color: var(--vscode-input-border, #8888); }
+.name-input:focus { outline: 1px solid var(--vscode-focusBorder); }
+.name-input[aria-invalid="true"] { border-color: var(--vscode-inputValidation-errorBorder, #f48771); }
+.name-input[aria-busy="true"] { opacity: 0.65; }
+.literal-type-label {
+    height: calc(14px * var(--lhat-scale));
+    line-height: calc(14px * var(--lhat-scale));
+    padding: 0 calc(8px * var(--lhat-scale));
+    font-size: calc(10px * var(--lhat-scale));
+    white-space: nowrap;
+}
+
 .leaf .boxlabel {
     display: flex;
     align-items: center;
@@ -257,7 +322,7 @@ html, body, #root {
 .literal-editor {
     display: flex;
     align-items: center;
-    height: 100%;
+    height: calc(100% - 14px * var(--lhat-scale));
     padding: 0 calc(6px * var(--lhat-scale));
     box-sizing: border-box;
     gap: calc(2px * var(--lhat-scale));

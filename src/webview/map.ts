@@ -13,6 +13,7 @@
 
 import type { AstNode, AstReply } from "../protocol.js";
 import { literalOf, type LiteralValue } from "./literals";
+import { createLabeler, ENGLISH_VOCABULARY, labelColumns, labelText, nameColumns, renameTargetKey, type DisplayLabel, type LabelPart, type Vocabulary } from "./labels";
 
 const CH = 7.2; // mono advance at 12px
 const LEAF_H = 30;
@@ -99,6 +100,9 @@ export interface ElkNode {
         kind: string; start: number; end: number;
         /** Whole literal leaves expose an editable display value. */
         literal?: LiteralValue;
+        /** Localized semantic runs, kept separate from source labels/spans. */
+        labelParts?: LabelPart[];
+        literalTypeLabel?: string;
         /** Member values are data, not executable statement rows. */
         noExecutionHandles?: boolean;
         collapsed?: boolean;
@@ -242,31 +246,7 @@ function markDisabled(node: ElkNode): void {
 // container shows what shapes it rather than everything below it. What is not
 // drawn stays, which is how names and conditions reach the label.
 function labelOf(node: AstNode, source: string, drawn: Child[]): string {
-    // Named definitions label their containers; the member/field lists are
-    // children, not text to spill into a folded title or breadcrumb.
-    const name = node.fields?.name;
-    if ((node.kind === "errordef" || node.kind === "error-kind" || node.kind === "enumdef") &&
-        name !== undefined && !Array.isArray(name)) {
-        const title = source.slice(node.start, name.end).replace(/\s+/g, " ").trim();
-        return title.length > MAX_LABEL ? title.slice(0, MAX_LABEL - 1) + "…" : title;
-    }
-    const holes = drawn
-        .map((c) => [c.node.start, c.node.end] as const)
-        .sort((a, b) => a[0] - b[0]);
-    let text = "";
-    let cursor = node.start;
-    for (const [start, end] of holes) {
-        if (start > cursor) text += source.slice(cursor, start);
-        if (end > cursor) {
-            if (start > cursor || text !== "") text += "…";
-            cursor = end;
-        }
-    }
-    if (cursor < node.end) text += source.slice(cursor, node.end);
-
-    text = text.replace(/\s+/g, " ").replace(/(…\s*)+/g, "… ").trim();
-    if (text === "") text = node.kind;
-    return text.length > MAX_LABEL ? text.slice(0, MAX_LABEL - 1) + "…" : text;
+    return createLabeler(source, node)(node, drawn.map((c) => c.node)).text;
 }
 
 // 06 の 8.2: a named subroutine is a unit of its own, so opening one means
@@ -289,11 +269,19 @@ export function nodeAt(root: AstNode, start: number): AstNode | undefined {
 }
 
 /** What a definition is called, for the trail of where a view came from. */
-export function titleOf(node: AstNode, source: string): string {
-    return labelOf(node, source, drawnChildren(node)).replace(/\s*…\s*$/, "");
+export function titleOf(node: AstNode, source: string, vocabulary?: Vocabulary): string {
+    const label = vocabulary === undefined ? labelOf(node, source, drawnChildren(node))
+        : labelText(createLabeler(source, node, vocabulary)(node, drawnChildren(node).map((c) => c.node)));
+    return label.replace(/\s*…\s*$/, "");
 }
 
 export interface MapOptions {
+    /** Display language affects labels and their geometry, never source or identities. */
+    vocabulary?: Vocabulary;
+    /** Graph-only literal values, published on commit (not on every keystroke). */
+    literalValues?: Record<string, string>;
+    /** Committed rename drafts affect geometry only, until the new AST arrives. */
+    nameValues?: Record<string, string>;
     /** V15: fold definitions when the view opens. */
     collapse?: boolean;
     /**
@@ -373,6 +361,9 @@ export function stackWideDefinitions(laid: ElkNode, usableWidth: number): ElkNod
 
 export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     const source = reply.source;
+    const vocabulary = options.vocabulary ?? ENGLISH_VOCABULARY;
+    const makeLabel = createLabeler(source, reply.root, vocabulary);
+    const labelFor = (node: AstNode, drawn: Child[]) => makeLabel(node, drawn.map((c) => c.node));
     // Only executable scopes get an entry point. A function's body starts a
     // new chain; its declaration is never connected to the code inside it.
     const entryScopes = new Set<AstNode>();
@@ -417,8 +408,14 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     // 8.6: zoom is a re-layout at another type size, so every metric scales.
     const S = options.scale ?? 1;
     const px = (v: number) => Math.round(v * S);
-    const widthFor = (label: string) =>
-        Math.max(px(56), Math.round(label.length * CH * S) + px(18));
+    const widthFor = (label: DisplayLabel | string) => {
+        const parts = typeof label === "string" ? [{ text: label }] : label.parts;
+        const columns = parts.reduce((width, part) => width + (part.name
+            ? nameColumns(options.nameValues?.[renameTargetKey(part.name)] ?? part.name.value)
+            : labelColumns(part.text)), 0);
+        const inputPadding = parts.filter(part => part.name !== undefined).length * px(8);
+        return Math.max(px(56), Math.ceil(columns * CH * S) + px(20) + inputPadding);
+    };
 
     const from = (
         node: AstNode,
@@ -427,17 +424,19 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         kind: node.kind, start: node.start, end: node.end, ...extra,
     });
 
-    const leaf = (node: AstNode, label: string): ElkNode => {
+    const leaf = (node: AstNode, label: DisplayLabel | string): ElkNode => {
         const literal = literalOf(node, source);
-        const lines = literal?.value.split("\n") ?? [];
-        const longest = lines.reduce((length, line) => Math.max(length, line.length), 0);
+        const lines = literal === undefined ? [] : (options.literalValues?.[literal.key] ?? literal.value).split("\n");
+        const longest = lines.reduce((length, line) => Math.max(length, labelColumns(line)), 0);
+        const literalTypeLabel = literal === undefined ? undefined : vocabulary[literal.kind];
         return {
             id: nextId(node.kind),
-            labels: [{ text: label }],
+            labels: [{ text: typeof label === "string" ? label : label.text }],
             width: literal === undefined ? widthFor(label)
-                : widthFor(" ".repeat(Math.min(MAX_LABEL, longest) + (literal.kind === "string" ? 2 : 0))),
-            height: px(LEAF_H + (literal?.kind === "string" ? Math.min(3, lines.length - 1) * 16 : 0)),
-            lhat: { ...from(node), ...(literal === undefined ? {} : { literal }) },
+                : Math.max(widthFor(literalTypeLabel!), widthFor(" ".repeat(Math.min(MAX_LABEL, longest) + (literal.kind === "string" ? 2 : 0)))),
+            height: px(LEAF_H + (literal === undefined ? 0 : 14) + (literal?.kind === "string" ? Math.min(3, lines.length - 1) * 16 : 0)),
+            lhat: { ...from(node), labelParts: typeof label === "string" ? undefined : label.parts,
+                ...(literal === undefined ? {} : { literal, literalTypeLabel }) },
         };
     };
 
@@ -523,11 +522,11 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     };
 
     const container = (
-        id: string, label: string, dir: string, children: ElkNode[],
+        id: string, label: DisplayLabel | string, dir: string, children: ElkNode[],
         edges: ElkEdge[], node: AstNode, padded = true,
     ): ElkNode => ({
         id,
-        labels: [{ text: label }],
+        labels: [{ text: typeof label === "string" ? label : label.text }],
         layoutOptions: {
             "elk.algorithm": "layered",
             // 6.2: never inherited, so always written.
@@ -540,14 +539,14 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             "elk.layered.spacing.nodeNodeBetweenLayers": `${px(LAYER_GAP)}`,
             // Children alone do not determine a box's width: its title
             // must fit too. Invisible layout groups need no header space.
-            ...(padded && label !== "" ? {
+            ...(padded && labelText(label) !== "" ? {
                 "elk.nodeSize.constraints": "MINIMUM_SIZE",
                 "elk.nodeSize.minimum": `(${widthFor(label)}, 0)`,
             } : {}),
         },
         children,
         edges,
-        lhat: from(node),
+        lhat: { ...from(node), labelParts: typeof label === "string" ? undefined : label.parts },
     });
 
     // 6.4: a list wraps into rows built here. rectpacking loses source order
@@ -649,7 +648,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 if (source[i] !== "]" && source[i] !== ")") break;
                 declarationEnd = ++i;
             }
-            const label = labelOf({ ...node, end: declarationEnd }, source, []);
+            const label = labelFor({ ...node, end: declarationEnd }, []);
             const declaration = isReturn ? returnNode(node) : leaf(node, label);
             const handleY = (declaration.height ?? px(LEAF_H)) / 2;
             declaration.lhat = {
@@ -724,14 +723,16 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         // from a box the reader explicitly folded shut.
         if (foldable && !unfold &&
             (options.folds?.[node.start] ?? options.collapse === true)) {
-            const text = labelOf(node, source, drawnChildren(node)) + " …";
+            const label = labelFor(node, drawnChildren(node));
+            const text = label.text + " …";
+            const parts = [...label.parts, { text: " …" }];
             return {
                 id: nextId(node.kind),
                 labels: [{ text }],
                 // Room for the fold button, which sits inside the box.
-                width: widthFor(text) + px(FOLD_BTN),
+                width: widthFor({ text, parts }) + px(FOLD_BTN),
                 height: px(LEAF_H + 8),
-                lhat: from(node, { collapsed: true, foldable: true }),
+                lhat: { ...from(node, { collapsed: true, foldable: true }), labelParts: parts },
             };
         }
 
@@ -740,7 +741,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         if (foldable && built.lhat !== undefined) {
             built.lhat.foldable = true;
             if (built.children?.length && built.layoutOptions !== undefined) {
-                const headerWidth = widthFor(built.labels?.[0]?.text ?? "") + px(FOLD_BTN);
+                const headerWidth = widthFor(built.lhat.labelParts?.map((p) => p.text).join("") ?? built.labels?.[0]?.text ?? "") + px(FOLD_BTN);
                 built.layoutOptions["elk.nodeSize.minimum"] = `(${headerWidth}, 0)`;
             }
         }
@@ -758,7 +759,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         const clause = statementClauses.has(node) || expressionClause;
         const condition = node.fields?.condition;
         const label = matchBodies.has(node) || clause ? ""
-            : labelOf(node, source, kids);
+            : labelFor(node, kids);
 
         if (kids.length === 0 && !entryScopes.has(node) && !ADDABLE.has(kind) && !clause) return leaf(node, label);
 
@@ -769,7 +770,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         if (!clause && !STATEMENT_LIST.has(kind) && !BRANCH.has(kind) &&
             !ELEMENT_LIST.has(kind) && !VOICE_TURN.has(kind) &&
             !BODY_STATEMENT.has(kind) && !holdsExpandedChild(node)) {
-            return leaf(node, labelOf(node, source, []));
+            return leaf(node, labelFor(node, []));
         }
 
         // Past a subroutine or definition, the way down has been walked: what
@@ -783,7 +784,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             // down, with condition/value pairs across each arm. The value is
             // a separate source-backed expression, never a return statement.
             const predicate = condition !== undefined && !Array.isArray(condition)
-                ? leaf(condition, labelOf(condition, source, [])) : undefined;
+                ? leaf(condition, labelFor(condition, [])) : undefined;
             const body = kids.find((c) => c.field === "body");
             const value = body === undefined ? undefined
                 : build(body.node, "expr", childUnfold, inner_avail);
@@ -812,7 +813,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             // orders the layout but is not an execution endpoint: the branch
             // still connects directly to the first real statement behind it.
             const predicate = condition !== undefined && !Array.isArray(condition)
-                ? leaf(condition, labelOf(condition, source, [])) : undefined;
+                ? leaf(condition, labelFor(condition, [])) : undefined;
             const body = kids.find((c) => c.field === "body");
             const contents = body === undefined ? undefined
                 : build(body.node, "stmt", childUnfold, avail);

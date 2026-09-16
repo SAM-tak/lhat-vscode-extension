@@ -33,9 +33,18 @@ export interface AstReply {
     root: AstNode;
 }
 
+export interface SourceSpan { start: number; end: number }
+export interface ReferenceTarget extends SourceSpan {
+    /** Import/require endpoints belong to the statement/expression box. */
+    box?: boolean;
+}
+
 /** Host -> webview. */
 export type ToWebview =
-    | { type: "tree"; reply: AstReply; uri: string }
+    | { type: "localization"; language: string; bundle?: Record<string, string> }
+    | { type: "tree"; reply: AstReply; uri: string; version?: number }
+    | { type: "renameResult"; id: string; error?: string }
+    | { type: "referenceResult"; id: string; version: number; target?: ReferenceTarget }
     /** The unit is not part of any checked root yet (06 の 4.3). */
     | { type: "pending" }
     | { type: "error"; message: string }
@@ -47,5 +56,7 @@ export type FromWebview =
     | { type: "ready" }
     /** Ask for the tree again -- after an edit, or after "pending". */
     | { type: "refresh" }
+    | { type: "rename"; id: string; start: number; end: number; oldName: string; newName: string; version: number }
+    | { type: "reference"; id: string; start: number; end: number; text: string; version: number }
     /** Put the text cursor on what was clicked in the graph. */
     | { type: "reveal"; start: number; end: number };

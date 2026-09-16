@@ -15,6 +15,25 @@ const { toElk } = load('map.ts');
 const node = (kind, text, start = 0, fields) => ({ kind, start, end: start + text.length, line: 1, column: 1, fields });
 const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
 
+test('committed literal values determine resizable geometry without changing source or metadata', () => {
+    for (const [kind, source, long] of [['int', '1', '123456789012345678901234567890'], ['string', '"a"', '日本語の長い入力です\nsecond line\nthird line']]) {
+        const root = node(kind, source);
+        const reply = { source, root };
+        const before = JSON.stringify(reply);
+        const find = graph => flatten(graph).find(n => n.lhat?.literal);
+        const initial = find(toElk(reply));
+        const key = initial.lhat.literal.key;
+        const enlarged = find(toElk(reply, { literalValues: { [key]: long } }));
+        assert(enlarged.width > initial.width);
+        if (kind === 'string') assert(enlarged.height > initial.height);
+        assert.deepEqual(enlarged.lhat.literal, initial.lhat.literal, 'source identity/value is not rewritten');
+        const restored = find(toElk(reply, { literalValues: {} }));
+        assert.equal(restored.width, initial.width);
+        assert.equal(restored.height, initial.height);
+        assert.equal(JSON.stringify(reply), before);
+    }
+});
+
 test('numeric slots preserve precision, spelling, signs, bases, separators and exponents', () => {
     for (const text of ['0', '-0', '1234567890123456789', '1_000', '0xDEAD_BEEF', '-0b1010', '0o77', '1.25e-12', '+2E+4']) {
         assert(isNumberLiteral(text), text);
@@ -76,6 +95,7 @@ test('multiline string leaves reserve bounded height while negative literals rem
         const slot = flatten(graph).find(n => n.lhat?.literal);
         assert(slot);
         assert.equal(slot.lhat.literal.kind, kind === 'unary' ? 'number' : 'string');
-        assert.equal(slot.height, Math.round((kind === 'unary' ? 30 : 62) * 1.5));
+        assert.equal(slot.height, Math.round((kind === 'unary' ? 44 : 76) * 1.5));
+        assert.equal(slot.lhat.literalTypeLabel, kind === 'unary' ? 'Number' : 'Text');
     }
 });

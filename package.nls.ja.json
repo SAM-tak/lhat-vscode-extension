@@ -1,0 +1,8 @@
+{
+    "graph.editorTitle": "L^ ビジュアルエディター",
+    "graph.outlineTitle": "L^ グラフのアウトライン",
+    "graph.showGraph": "ビジュアルエディターを表示",
+    "graph.showSource": "ソースを表示",
+    "graph.language.auto": "VS Codeに従う",
+    "graph.language.description": "ビジュアルエディター内の翻訳対応済みラベルの表示言語。auto はVS Codeに従います。変更は開いているグラフにも再起動なしで反映されます。VS Codeのメニューや設定画面の言語は変わりません。"
+}

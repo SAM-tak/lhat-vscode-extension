@@ -17,7 +17,22 @@
     "Programming Languages"
   ],
   "main": "./out/extension.js",
+  "l10n": "./l10n",
   "contributes": {
+    "colors": [
+      { "id": "lhat.graph.referenceLine", "description": "L^ graph: hover reference lines.", "defaults": { "dark": "#eaa04b", "light": "#aa5200", "highContrast": "#ffc266", "highContrastLight": "#8b4000" } },
+      { "id": "lhat.graph.declaration", "description": "L^ graph: declarations.", "defaults": { "dark": "#82b7ed", "light": "#145da0", "highContrast": "#9cdcfe", "highContrastLight": "#004080" } },
+      { "id": "lhat.graph.control", "description": "L^ graph: control flow.", "defaults": { "dark": "#dda1df", "light": "#87378b", "highContrast": "#efb5ff", "highContrastLight": "#630064" } },
+      { "id": "lhat.graph.callable", "description": "L^ graph: operator definitions.", "defaults": { "dark": "#e3d58c", "light": "#725500", "highContrast": "#fff09c", "highContrastLight": "#514000" } },
+      { "id": "lhat.graph.function", "description": "L^ graph: functions.", "defaults": { "dark": "#89cff0", "light": "#006080", "highContrast": "#99e5ff", "highContrastLight": "#00445c" } },
+      { "id": "lhat.graph.procedure", "description": "L^ graph: procedures.", "defaults": { "dark": "#e3d58c", "light": "#725500", "highContrast": "#fff09c", "highContrastLight": "#514000" } },
+      { "id": "lhat.graph.type", "description": "L^ graph: types.", "defaults": { "dark": "#73cfb8", "light": "#006c59", "highContrast": "#80ffe0", "highContrastLight": "#004f3e" } },
+      { "id": "lhat.graph.value", "description": "L^ graph: predefined values.", "defaults": { "dark": "#b8d995", "light": "#3e660f", "highContrast": "#d0ff99", "highContrastLight": "#284700" } },
+      { "id": "lhat.graph.module", "description": "L^ graph: modules.", "defaults": { "dark": "#efb58a", "light": "#904709", "highContrast": "#ffc79f", "highContrastLight": "#753500" } },
+      { "id": "lhat.graph.modifier", "description": "L^ graph: modifiers.", "defaults": { "dark": "#b8b8d6", "light": "#585877", "highContrast": "#dedcff", "highContrastLight": "#363651" } },
+      { "id": "lhat.graph.operator", "description": "L^ graph: operators.", "defaults": { "dark": "#8dcae5", "light": "#096280", "highContrast": "#a0e6ff", "highContrastLight": "#00475f" } },
+      { "id": "lhat.graph.member", "description": "L^ graph: standard members.", "defaults": { "dark": "#d7c4a2", "light": "#73562b", "highContrast": "#ffe6b4", "highContrastLight": "#513500" } }
+    ],
     "languages": [
       {
         "id": "lhat",
@@ -58,7 +73,7 @@
     "customEditors": [
       {
         "viewType": "lhat.graph",
-        "displayName": "L^ Graph",
+        "displayName": "%graph.editorTitle%",
         "selector": [
           {
             "filenamePattern": "*.lh"
@@ -72,7 +87,7 @@
         {
           "comment": "VSCode's own Outline view cannot be filled over a custom editor (microsoft/vscode#101476), so the graph tab gets this one instead -- the same tree, in the same place, shown only while a graph is up so the two never appear together.",
           "id": "lhat.outline",
-          "name": "L^ Graph Outline",
+          "name": "%graph.outlineTitle%",
           "when": "activeCustomEditorId == lhat.graph",
           "icon": "$(symbol-class)"
         }
@@ -82,13 +97,13 @@
       {
         "comment": "\"Show\" rather than \"Open\": the two views take turns in one tab, so nothing new is opened. The exception is lhat.graph.openBeside, where a second tab is the point.",
         "command": "lhat.openGraph",
-        "title": "Show Graph View",
+        "title": "%graph.showGraph%",
         "category": "L^",
         "icon": "$(type-hierarchy)"
       },
       {
         "command": "lhat.openText",
-        "title": "Show Source",
+        "title": "%graph.showSource%",
         "category": "L^",
         "icon": "$(file-code)"
       },
@@ -184,6 +199,14 @@
           "type": "boolean",
           "default": false,
           "description": "Open the graph view in a split beside the current editor, so the source and the graph can be read side by side. When off, the graph replaces the source in the same tab and the button switches back."
+        },
+        "lhat.graph.language": {
+          "type": "string",
+          "enum": ["auto", "ja", "en"],
+          "enumItemLabels": ["%graph.language.auto%", "日本語", "English"],
+          "default": "auto",
+          "scope": "window",
+          "description": "%graph.language.description%"
         },
         "lhat.runtimePath": {
           "type": "string",
@@ -319,7 +342,8 @@
     "bundle:extension": "esbuild src/extension.ts --bundle --minify --platform=node --format=cjs --external:vscode --outfile=out/extension.js --sourcemap --log-level=warning",
     "bundle:rf": "esbuild src/webview/rf/main.tsx --bundle --minify --outdir=media/rf --entry-names=bundle --jsx=automatic --sourcemap --log-level=warning",
     "check:rf": "tsc -p ./tsconfig.rf.json",
-    "test": "node --test testing/graph-definition.test.cjs testing/graph-execution.test.cjs testing/graph-literal.test.cjs testing/graph-minimap.test.cjs testing/enum-highlighting.test.cjs",
+    "l10n:extract": "vscode-l10n-dev export --outDir ./l10n ./src && node scripts/extract-graph-vocabulary.cjs",
+    "test": "node --test testing/graph-definition.test.cjs testing/graph-execution.test.cjs testing/graph-literal.test.cjs testing/graph-minimap.test.cjs testing/graph-localization.test.cjs testing/graph-rename.test.cjs testing/graph-reference.test.cjs testing/enum-highlighting.test.cjs",
     "watch": "tsc -watch -p ./",
     "package": "vsce package --githubBranch main --no-dependencies -o lhat.vsix",
     "install-extension": "npm run package && code --install-extension lhat.vsix --force",
@@ -334,6 +358,8 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@types/vscode": "^1.85.0",
+    "@vscode/l10n": "^0.0.18",
+    "@vscode/l10n-dev": "^0.0.35",
     "@vscode/vsce": "^3.9.2",
     "@xyflow/react": "^12.11.3",
     "elkjs": "^0.12.0",

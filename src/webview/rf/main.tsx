@@ -31,8 +31,12 @@ import type { AstNode, AstReply, FromWebview, ToWebview } from "../../protocol";
 import { graphViewportX, nodeAt, stackWideDefinitions, titleOf, toElk, type ElkNode } from "../map";
 import type { LiteralValue } from "../literals";
 import { LiteralEditProvider, LiteralEditStatus, LiteralInput } from "./LiteralInput";
+import { NameInput, RenameProvider } from "./NameInput";
+import { ReferenceLine } from "./ReferenceLine";
 import { DEFAULT_MINIMAP_SIZE, fitMinimapSize } from "../minimap";
 import { MinimapResizeHandles } from "./MinimapResizeHandles";
+import { renameTargetKey, type LabelPart, type RenameTarget } from "../labels";
+import { configureLocalization, graphVocabulary } from "../localization";
 
 declare function acquireVsCodeApi(): {
     postMessage(message: FromWebview): void;
@@ -41,6 +45,7 @@ declare function acquireVsCodeApi(): {
 };
 
 const vscode = acquireVsCodeApi();
+const post = (message: FromWebview) => vscode.postMessage(message);
 const elk = new ELK();
 const DEFAULT_FONT_PX = 12;
 
@@ -99,7 +104,9 @@ interface SlideData {
 
 interface BoxData extends Record<string, unknown>, SlideData {
     label: string;
+    labelParts?: LabelPart[];
     literal?: LiteralValue;
+    literalTypeLabel?: string;
     depth: number;
     isContainer: boolean;
     layoutOnly: boolean;
@@ -118,6 +125,7 @@ interface BoxData extends Record<string, unknown>, SlideData {
     disabled: boolean;
     start?: number;
     end?: number;
+    sourceEnd?: number;
     /** Shared across boxes so touching another descendant stops the glide. */
     slideMotion: { current: (() => void) | null };
     onSlide: (key: string, dx: number, mode?: "drag" | "glide") => void;
@@ -354,6 +362,7 @@ function toFlow(
                     ...slide,
                     slideMotion,
                     label: c.labels?.[0]?.text ?? "",
+                    labelParts: c.lhat?.labelParts,
                     depth,
                     isContainer,
                     isStart,
@@ -362,6 +371,7 @@ function toFlow(
                     isCondition,
                     noExecutionHandles: c.lhat?.noExecutionHandles === true,
                     literal: c.lhat?.literal,
+                    literalTypeLabel: c.lhat?.literalTypeLabel,
                     branchOffset: c.lhat?.branchOffset,
                     definitionBranchOffset: c.lhat?.definitionBranchOffset,
                     layoutOnly,
@@ -373,6 +383,7 @@ function toFlow(
                     disabled,
                     start: synthetic ? undefined : c.lhat?.start,
                     end: synthetic ? undefined : c.lhat?.revealEnd ?? c.lhat?.end,
+                    sourceEnd: synthetic ? undefined : c.lhat?.end,
                     flashed: c.lhat !== undefined &&
                         slideKeyOf(c.lhat) === flashKey,
                     foldable: c.lhat?.foldable === true,
@@ -643,6 +654,9 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
     else if (data.isContainer) classes.push(`container d${Math.min(data.depth, 6)}`);
     else classes.push("leaf");
     if (data.disabled) classes.push("disabled");
+    const visibleParts = data.labelParts?.filter(part => part.text.trim());
+    const leafSymbol = !data.disabled && !data.isContainer && visibleParts?.length === 1
+        ? visibleParts[0].symbol : undefined;
     // No `nopan` here. It was what kept a slide from dragging the canvas with
     // it, back when a drag could pan; with panOnDrag off there is nothing left
     // to hold back -- and the class would cost us, since inside one React Flow
@@ -652,6 +666,8 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         <>
             {!data.layoutOnly && <div
                 className={classes.join(" ")}
+                data-source-start={data.start} data-source-end={data.sourceEnd}
+                data-reference-start={leafSymbol?.start} data-reference-end={leafSymbol?.end}
                 title={data.isStart ? "Execution start"
                     : data.isReturn ? "Return"
                     : data.isAdd ? "Add element (editing is not yet available)" : undefined}
@@ -699,8 +715,15 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                     <svg className="add-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M 12 6 V 18 M 6 12 H 18" />
                     </svg>
-                ) : data.literal !== undefined ? <LiteralInput key={data.literal.key} literal={data.literal} />
-                    : <div className="boxlabel">{data.label}</div>}
+                ) : data.literal !== undefined ? <>
+                    <div className="literal-type-label semantic-label" data-category="type">{data.literalTypeLabel}</div>
+                    <LiteralInput key={data.literal.key} literal={data.literal} />
+                </> : <div className="boxlabel"><span>{data.labelParts?.map((part, i) => part.name !== undefined
+                    ? <NameInput key={i} name={part.name} /> : part.role === undefined
+                    ? <span key={i} data-reference-start={part.symbol?.start} data-reference-end={part.symbol?.end}>{part.text}</span>
+                    : <span key={i} className="semantic-label" data-role={part.role} data-category={part.category}
+                        data-reference-start={part.symbol?.start} data-reference-end={part.symbol?.end}
+                        title={part.source}>{part.text}</span>) ?? data.label}</span></div>}
             </div>}
             {/* Use the execution lines' own endpoints as the visible ports:
                 incoming at the top, outgoing at the bottom. flowHandleX
@@ -823,8 +846,36 @@ function countFolded(n: ElkNode): number {
 
 function App() {
     const { setViewport, getViewport } = useReactFlow();
+    const [vocabulary, setVocabulary] = useState(graphVocabulary);
     const [reply, setReply] = useState<AstReply>();
     const [uri, setUri] = useState("");
+    const [version, setVersion] = useState<number>();
+    const sourceKey = `${uri}\0${reply?.source ?? ""}`;
+    const [literalSizes, setLiteralSizes] = useState({ sourceKey: "", values: {} as Record<string, string> });
+    if (literalSizes.sourceKey !== sourceKey) setLiteralSizes({ sourceKey, values: {} });
+    const commitLiteral = useCallback((literal: LiteralValue, value: string) => {
+        setLiteralSizes(previous => {
+            const values = previous.sourceKey === sourceKey ? previous.values : {};
+            if ((values[literal.key] ?? literal.value) === value) return previous;
+            const next = { ...values };
+            if (value === literal.value) delete next[literal.key];
+            else next[literal.key] = value;
+            return { sourceKey, values: next };
+        });
+    }, [sourceKey]);
+    const [nameSizes, setNameSizes] = useState({ sourceKey: "", values: {} as Record<string, string> });
+    if (nameSizes.sourceKey !== sourceKey) setNameSizes({ sourceKey, values: {} });
+    const resizeName = useCallback((name: RenameTarget, value: string) => {
+        setNameSizes(previous => {
+            const values = previous.sourceKey === sourceKey ? previous.values : {};
+            const key = renameTargetKey(name);
+            if ((values[key] ?? name.value) === value) return previous;
+            const next = { ...values };
+            if (value === name.value) delete next[key];
+            else next[key] = value;
+            return { sourceKey, values: next };
+        });
+    }, [sourceKey]);
     const [note, setNote] = useState("waiting for the language server…");
     // V15: what a node with nothing said about it does. Not the state of the
     // bar's button -- that is read off the graph (countFolded) -- and not
@@ -838,6 +889,7 @@ function App() {
     const slidesRef = useRef(slides);
     slidesRef.current = slides;
     const [laid, setLaid] = useState<ElkNode>();
+    const [laidSourceKey, setLaidSourceKey] = useState("");
     const slideMotion = useRef<(() => void) | null>(null);
     const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
     // 8.6: zoom is the type size. The scale everything else derives from it.
@@ -876,15 +928,24 @@ function App() {
         const onMessage = (event: MessageEvent<ToWebview>) => {
             const message = event.data;
             switch (message.type) {
+                case "localization":
+                    configureLocalization(message.bundle);
+                    document.documentElement.lang = message.language;
+                    setVocabulary(graphVocabulary());
+                    break;
                 case "tree":
                     setReply(message.reply);
                     setUri(message.uri);
+                    setVersion(message.version);
                     break;
                 case "pending":
                     setNote("waiting for the language server…");
                     break;
                 case "error":
                     setNote(message.message);
+                    break;
+                case "renameResult":
+                    if (message.error) setNote(message.error);
                     break;
                 case "focus":
                     setWanted({ start: message.start, end: message.end });
@@ -916,6 +977,9 @@ function App() {
         if (viewWidth === 0) return;
         let stale = false;
         const graph = toElk(reply, {
+            vocabulary,
+            literalValues: literalSizes.sourceKey === sourceKey ? literalSizes.values : undefined,
+            nameValues: nameSizes.sourceKey === sourceKey ? nameSizes.values : undefined,
             collapse: foldByDefault,
             folds,
             root: view.path.length > 0 ? view.root : undefined,
@@ -927,13 +991,14 @@ function App() {
             if (stale) return;
             const done = stackWideDefinitions(result as ElkNode, viewWidth - 16);
             setLaid(done);
+            setLaidSourceKey(sourceKey);
             const folded = countFolded(done);
             setNote(`${countNodes(done)} nodes, ` +
                 `${Math.round(performance.now() - started)}ms` +
                 (folded > 0 ? `, ${folded} folded` : ""));
         });
         return () => { stale = true; };
-    }, [reply, view, foldByDefault, folds, scale, viewWidth]);
+    }, [reply, view, foldByDefault, folds, scale, viewWidth, vocabulary, literalSizes, nameSizes, sourceKey]);
 
     // What the bar's button says and does, both from the picture itself. One
     // definition still folded is enough to make the press an unfold: the way
@@ -1249,7 +1314,7 @@ function App() {
         const el = flowRef.current;
         if (el === null) return;
         const onWheel = (event: WheelEvent) => {
-            if ((event.target as Element).closest?.(".literal-editor") != null) return;
+            if ((event.target as Element).closest?.(".literal-editor, .name-input") != null) return;
             paneFling.current?.();
             paneFling.current = null;
             stopSlide();
@@ -1370,7 +1435,10 @@ function App() {
     }, [flow.exec, flow.definitions, flow.nodes, setEdges]);
 
     return (
-        <LiteralEditProvider sourceKey={`${uri}\0${reply?.source ?? ""}`}>
+        <RenameProvider value={{ sourceKey, version: laidSourceKey === sourceKey ? version : undefined,
+            sizes: nameSizes.sourceKey === sourceKey ? nameSizes.values : {}, resize: resizeName,
+            post: message => vscode.postMessage(message) }}>
+        <LiteralEditProvider sourceKey={sourceKey} onCommit={commitLiteral}>
         <div id="app">
             <div id="bar">
                 <button
@@ -1436,7 +1504,7 @@ function App() {
                             <button type="button" className="crumb"
                                 onMouseDown={keepFocusOff}
                                 onClick={() => setTrail(trail.slice(0, index + 1))}>
-                                {titleOf(step, reply.source)}
+                                {titleOf(step, reply.source, vocabulary)}
                             </button>
                         </React.Fragment>
                     ))}
@@ -1521,9 +1589,12 @@ function App() {
                         </button>
                     </Panel>}
                 </ReactFlow>
+                <ReferenceLine flow={flowRef} source={reply?.source ?? ""}
+                    version={laidSourceKey === sourceKey ? version : undefined} post={post} />
             </div>
         </div>
         </LiteralEditProvider>
+        </RenameProvider>
     );
 }
 

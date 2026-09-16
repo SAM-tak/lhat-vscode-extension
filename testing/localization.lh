@@ -1,0 +1,14 @@
+module^examples.localization
+
+# Visual labels follow VS Code's display language; these names and values stay unchanged.
+let^message:string^ = "let^ string^ number^"
+var^金額:number^ = 1234567890123456789
+let^empty = ""
+let^lines = "first\nsecond"
+
+let^convert = f^text:string^, count:number^-> string^ {
+    var^result:string^ = text
+    return^result
+}
+
+let^table = { name = "日本語", count = 42 }

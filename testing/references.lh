@@ -1,0 +1,11 @@
+# 参照線: 引数、ローカル名、require の名前空間と別名。
+require^"reference-library.lh"
+let^library = require^"reference-library.lh"
+
+let^build = f^sku:string^, name:string^ {
+    let^copy = sku
+    return^{ sku = copy, name = name }
+}
+
+let^fromModule = examples.referenceLibrary.code
+let^fromAlias = library.code

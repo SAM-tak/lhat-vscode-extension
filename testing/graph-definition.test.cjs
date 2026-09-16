@@ -167,13 +167,16 @@ test('table member pairs wrap using both boxes; positional comparisons stay leav
         assert.equal(positional.length, 2);
         assert(positional.every(n => !n.children && !n.lhat.definitionRole));
         assert(flatten(graph).flatMap(n => n.edges ?? []).every(e => !e.drawn || e.definition));
-        assert.equal(elements(graph).length, width === 1500 ? 1 : 2, 'one or more horizontal rows fit the viewport');
+        assert(width === 1500 ? elements(graph).length === 1 : elements(graph).length > 1,
+            'rows wrap using the full labeled value width, including the type caption');
         assert.equal(graph.children.at(-1).lhat.synthetic, 'add', 'insertion affordance follows all rows');
         for (const line of elements(graph)) {
             assert.equal(line.layoutOptions['elk.direction'], 'RIGHT');
             for (let i = 1; i < line.children.length; i++) {
                 assert(line.children[i].x >= line.children[i - 1].x + line.children[i - 1].width);
-                assert.equal(line.children[i].y, line.children[i - 1].y, 'pairs in one table row share a horizontal baseline');
+                assert.equal(line.children[i].y + line.children[i].height / 2,
+                    line.children[i - 1].y + line.children[i - 1].height / 2,
+                    'mixed-height pairs and values in one table row share a horizontal centerline');
             }
         }
     }

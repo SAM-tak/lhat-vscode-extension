@@ -18,19 +18,29 @@ test('minimap starts at the compact portrait size without enforcing an aspect ra
 test('left and top drags resize only their own axis while keeping bottom/right fixed', () => {
     const bounds = { width: 900, height: 600 };
     const start = { width: 140, height: 220 };
-    assert.deepEqual(resizeMinimap(start, 'left', -51, bounds), { width: 191, height: 220 });
-    assert.deepEqual(resizeMinimap(start, 'top', -37, bounds), { width: 140, height: 257 });
-    assert.deepEqual(resizeMinimap(start, 'left', 20, bounds), { width: 120, height: 220 });
-    assert.deepEqual(resizeMinimap(start, 'top', 30, bounds), { width: 140, height: 190 });
+    assert.deepEqual(resizeMinimap(start, 'left', { x: -51, y: -37 }, bounds), { width: 191, height: 220 });
+    assert.deepEqual(resizeMinimap(start, 'top', { x: -51, y: -37 }, bounds), { width: 140, height: 257 });
+    assert.deepEqual(resizeMinimap(start, 'left', { x: 20, y: 30 }, bounds), { width: 120, height: 220 });
+    assert.deepEqual(resizeMinimap(start, 'top', { x: 20, y: 30 }, bounds), { width: 140, height: 190 });
     assert.deepEqual(start, DEFAULT_MINIMAP_SIZE, 'resizing does not mutate the drag-start snapshot');
+});
+
+test('top-left drags resize both axes freely and clamp each dimension independently', () => {
+    const size = { width: 140, height: 220 }, bounds = { width: 400, height: 300 };
+    assert.deepEqual(resizeMinimap(size, 'top-left', { x: -51, y: -37 }, bounds), { width: 191, height: 257 });
+    assert.deepEqual(resizeMinimap(size, 'top-left', { x: 20, y: 30 }, bounds), { width: 120, height: 190 });
+    assert.deepEqual(resizeMinimap(size, 'top-left', { x: -1000, y: 1000 }, bounds), { width: 400, height: 80 });
+    assert.deepEqual(resizeMinimap(size, 'top-left', { x: 1000, y: -1000 }, bounds), { width: 80, height: 300 });
+    assert.deepEqual(resizeMinimap(size, 'top-left', { x: 0, y: 0 }, { width: 50, height: 40 }), { width: 50, height: 40 });
+    assert.deepEqual(size, DEFAULT_MINIMAP_SIZE);
 });
 
 test('minimap resizing cannot invert dimensions or escape the available pane', () => {
     const size = { width: 140, height: 220 }, bounds = { width: 400, height: 300 };
-    assert.deepEqual(resizeMinimap(size, 'left', 1000, bounds), { width: 80, height: 220 });
-    assert.deepEqual(resizeMinimap(size, 'top', 1000, bounds), { width: 140, height: 80 });
-    assert.deepEqual(resizeMinimap(size, 'left', -1000, bounds), { width: 400, height: 220 });
-    assert.deepEqual(resizeMinimap(size, 'top', -1000, bounds), { width: 140, height: 300 });
+    assert.deepEqual(resizeMinimap(size, 'left', { x: 1000, y: 0 }, bounds), { width: 80, height: 220 });
+    assert.deepEqual(resizeMinimap(size, 'top', { x: 0, y: 1000 }, bounds), { width: 140, height: 80 });
+    assert.deepEqual(resizeMinimap(size, 'left', { x: -1000, y: 0 }, bounds), { width: 400, height: 220 });
+    assert.deepEqual(resizeMinimap(size, 'top', { x: 0, y: -1000 }, bounds), { width: 140, height: 300 });
     assert.deepEqual(fitMinimapSize(size, { width: 50, height: 40 }), { width: 50, height: 40 });
     assert.deepEqual(fitMinimapSize(size, { width: -10, height: 0 }), { width: 0, height: 0 });
 });

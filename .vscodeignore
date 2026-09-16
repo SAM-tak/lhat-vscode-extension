@@ -40,6 +40,7 @@ devdocs/**
 # Sample sources for driving the extension by hand (README's "testing").
 # The extension does not read them; they are for whoever is working on it.
 testing/**
+scripts/**
 
 # Earlier packages, when one is built in place.
 *.vsix
