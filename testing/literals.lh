@@ -1,0 +1,19 @@
+module^examples.literals
+
+# These slots edit the graph only; they do not write back to this file yet.
+let^amount = -3.5
+let^message = "  Hello, 世界  "
+let^precise = 1234567890123456789
+let^hex = 0xFF
+let^empty = ""
+let^multiline = "first\nsecond"
+let^raw = 'C:\temp\file.txt'
+
+let^values = { 10, 15, 1_000, 2.5e-3, "sample" }
+let^nested = def^{ count = 42, read = f^{ "inside" } }
+enum^Mode { Idle, Label = "ready", Code = 7 }
+errordef^Problem { Missing { name = "", code = 404 } }
+
+# Complex expressions and interpolation still use source labels.
+let^expression = 1 + 2
+let^interpolation = $"amount: {amount}"

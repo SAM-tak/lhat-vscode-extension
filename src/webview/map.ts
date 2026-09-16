@@ -12,6 +12,7 @@
 // Element lists (5.3.1) obey neither: they wrap into rows of a set width.
 
 import type { AstNode, AstReply } from "../protocol.js";
+import { literalOf, type LiteralValue } from "./literals";
 
 const CH = 7.2; // mono advance at 12px
 const LEAF_H = 30;
@@ -96,6 +97,10 @@ export interface ElkNode {
     /** Not ELK's: what this node was made from, for clicks and folding. */
     lhat?: {
         kind: string; start: number; end: number;
+        /** Whole literal leaves expose an editable display value. */
+        literal?: LiteralValue;
+        /** Member values are data, not executable statement rows. */
+        noExecutionHandles?: boolean;
         collapsed?: boolean;
         /** Whether this one can be folded shut at all, open or not. */
         foldable?: boolean;
@@ -422,13 +427,27 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         kind: node.kind, start: node.start, end: node.end, ...extra,
     });
 
-    const leaf = (node: AstNode, label: string): ElkNode => ({
-        id: nextId(node.kind),
-        labels: [{ text: label }],
-        width: widthFor(label),
-        height: px(LEAF_H),
-        lhat: from(node),
-    });
+    const leaf = (node: AstNode, label: string): ElkNode => {
+        const literal = literalOf(node, source);
+        const lines = literal?.value.split("\n") ?? [];
+        const longest = lines.reduce((length, line) => Math.max(length, line.length), 0);
+        return {
+            id: nextId(node.kind),
+            labels: [{ text: label }],
+            width: literal === undefined ? widthFor(label)
+                : widthFor(" ".repeat(Math.min(MAX_LABEL, longest) + (literal.kind === "string" ? 2 : 0))),
+            height: px(LEAF_H + (literal?.kind === "string" ? Math.min(3, lines.length - 1) * 16 : 0)),
+            lhat: { ...from(node), ...(literal === undefined ? {} : { literal }) },
+        };
+    };
+
+    const memberHandles = (node: ElkNode): void => {
+        if (node.lhat !== undefined) node.lhat.noExecutionHandles = true;
+        // A callable is data here, but its body opens a new execution scope.
+        if (node.lhat?.kind !== "func") {
+            for (const child of node.children ?? []) memberHandles(child);
+        }
+    };
 
     const markerNode = (scope: AstNode, kind: "start" | "add"): ElkNode => ({
         id: nextId(kind),
@@ -564,6 +583,8 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         if (row.length > 0) slices.push(row);
         return slices.map((slice, i) => {
             const rid = `${id}__r${i}`;
+            // No source metadata: this is only an ELK row, not a visible
+            // graph box. The renderer retains it solely as a layout parent.
             return {
                 id: rid,
                 layoutOptions: {
@@ -833,6 +854,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         if (ELEMENT_LIST.has(kind)) {
             const items = kids.map(
                 (c) => build(c.node, "expr", childUnfold, inner_avail));
+            items.forEach(memberHandles);
             const content = WRAPS.has(kind) && items.length > 1
                 ? fittedRows(id, items, inner_avail) : items;
             // Keep the insertion control below the whole final row, even

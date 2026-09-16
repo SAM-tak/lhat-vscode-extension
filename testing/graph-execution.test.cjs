@@ -271,8 +271,70 @@ test('member lists have no execution start, and disabled nested code has no acti
     assert.equal(starts(entered.graph).length, 0);
     assert.equal(entered.flow.exec.length, 0);
     assert.equal(entered.flow.definitions.length, 1);
+    assert(entered.flow.nodes.filter(n => !n.data.isAdd && !n.data.layoutOnly).every(n => n.data.noExecutionHandles));
     const file = await draw({ source, root });
     assert.deepEqual(labelsOfEdges(file.flow), ['<start> -> enum^Mode']);
+});
+
+test('table wrapping rows are invisible layout parents, not boxes or interaction targets', async () => {
+    const values = ['10', '12', '15', '18', '20', '24', '30', '36', '40', '48', '60', '72', '90', '120', '150', '180'];
+    const tableText = `{ ${values.join(', ')} }`;
+    const source = `let^prices = ${tableText}`;
+    const n = nodesFor(source);
+    const table = n('table', tableText, { items: values.map(v =>
+        n('table-entry', v, { value: n('int', v) })) });
+    const root = n('block', source, { items: [n('define', source, {
+        targets: [n('ident', 'prices')], values: [table],
+    })] });
+    for (const width of [300, 900]) {
+        for (const scale of [1, 1.5]) {
+            const { graph, flow } = await draw({ source, root }, { width, scale, collapse: false });
+            const mapped = flatten(graph).find(c => c.lhat?.kind === 'table');
+            const rows = mapped.children.filter(c => c.lhat === undefined);
+            assert(rows.length > 1, 'fixture wraps into multiple rows');
+            assert.deepEqual(rows.flatMap(row => row.children.map(c => c.lhat.literal.value)), values);
+            for (const row of rows) {
+                const node = flow.nodes.find(c => c.id === row.id);
+                assert(node.data.layoutOnly);
+                assert.equal(node.selectable, false);
+                assert.equal(node.focusable, false);
+                assert.equal(node.data.branchOffset, undefined);
+                assert.equal(node.data.definitionBranchOffset, undefined);
+                assert.equal(node.data.start, undefined);
+                assert(!flow.exec.concat(flow.definitions).some(e => e.source === row.id || e.target === row.id));
+                assert(row.children.every(c => flow.nodes.find(n => n.id === c.id).parentId === row.id));
+            }
+            assert(!flow.nodes.find(c => c.id === mapped.id).data.layoutOnly, 'table outer box stays visible');
+            assert.equal(flow.definitions.length, 1, 'table still defines prices');
+            assert(flow.nodes.some(c => c.data.isAdd && c.parentId === mapped.id));
+            assert(flow.nodes.filter(c => c.data.literal).every(c => !c.data.layoutOnly));
+            const footer = mapped.children.at(-1);
+            assert(rows.every(row => footer.y >= row.y + row.height));
+        }
+    }
+});
+
+test('list member rows hide execution handles without hiding definitions or callable body handles', async () => {
+    for (const [kind, head] of [['table', ''], ['def', 'def^'], ['self-table', 'self^']]) {
+        const source = head + '{ count = 42, run = p^{ return^9 } }';
+        const n = nodesFor(source);
+        const fn = n('func', 'p^{ return^9 }', { body: n('block', '{ return^9 }', {
+            items: [n('return', 'return^9', { value: n('int', '9') })],
+        }) });
+        const root = n(kind, source, { members: [
+            n('table-entry', 'count = 42', { key: n('ident', 'count'), value: n('int', '42') }),
+            n('table-entry', 'run = p^{ return^9 }', { key: n('ident', 'run'), value: fn }),
+        ] });
+        const { flow } = await draw({ source, root }, { collapse: false });
+        const outside = flow.nodes.filter(n => !n.data.isAdd && n.data.start < fn.start);
+        assert(outside.length > 0);
+        assert(outside.every(n => n.data.noExecutionHandles), kind);
+        assert(flow.nodes.find(n => n.data.start === fn.start && n.data.isContainer).data.noExecutionHandles);
+        assert(flow.nodes.some(n => n.data.isStart && !n.data.noExecutionHandles));
+        assert(flow.nodes.some(n => n.data.isReturn && !n.data.noExecutionHandles));
+        assert.equal(flow.definitions.length, 3, 'count, run and returned value retain their definition handles');
+        assert.equal(flow.exec.length, 1, 'callable body start still reaches its return');
+    }
 });
 
 test('active scroll owners cover outer execution lines but retain internal lines and disabled-code bypasses', async () => {

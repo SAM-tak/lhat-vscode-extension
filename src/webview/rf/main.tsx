@@ -18,7 +18,7 @@ import React, {
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
-    Background, BaseEdge, ConnectionLineType, Handle, MarkerType, MiniMap, PanOnScrollMode, Position,
+    Background, BaseEdge, ConnectionLineType, Handle, MarkerType, MiniMap, Panel, PanOnScrollMode, Position,
     ReactFlow, addEdge, getSmoothStepPath, useEdgesState, useReactFlow, ReactFlowProvider,
     useUpdateNodeInternals,
     type BuiltInEdge, type Connection, type ConnectionLineComponentProps,
@@ -29,6 +29,10 @@ import "./rf.css";
 import ELK from "elkjs/lib/elk.bundled.js";
 import type { AstNode, AstReply, FromWebview, ToWebview } from "../../protocol";
 import { graphViewportX, nodeAt, stackWideDefinitions, titleOf, toElk, type ElkNode } from "../map";
+import type { LiteralValue } from "../literals";
+import { LiteralEditProvider, LiteralEditStatus, LiteralInput } from "./LiteralInput";
+import { DEFAULT_MINIMAP_SIZE, fitMinimapSize } from "../minimap";
+import { MinimapResizeHandles } from "./MinimapResizeHandles";
 
 declare function acquireVsCodeApi(): {
     postMessage(message: FromWebview): void;
@@ -95,6 +99,7 @@ interface SlideData {
 
 interface BoxData extends Record<string, unknown>, SlideData {
     label: string;
+    literal?: LiteralValue;
     depth: number;
     isContainer: boolean;
     layoutOnly: boolean;
@@ -103,6 +108,7 @@ interface BoxData extends Record<string, unknown>, SlideData {
     isAdd: boolean;
     isReturn: boolean;
     isCondition: boolean;
+    noExecutionHandles: boolean;
     branchOffset?: number;
     definitionBranchOffset?: number;
     definitionRole?: "declaration" | "value";
@@ -248,7 +254,10 @@ function toFlow(
             const condition = c.lhat?.condition;
             const isCondition = condition !== undefined;
             const synthetic = c.lhat?.synthetic !== undefined;
-            const layoutOnly = c.lhat?.definitionRole === "row" || c.lhat?.layoutOnly === true;
+            // Wrapping rows have no source node. Keep their parent-relative
+            // coordinates, but do not draw an extra box or expose handles.
+            const layoutOnly = c.lhat === undefined ||
+                c.lhat.definitionRole === "row" || c.lhat.layoutOnly === true;
             const disabled = c.lhat?.disabled === true;
             const detachedValue = parent.lhat?.stackedDefinition === true &&
                 c.lhat?.definitionRole === "value";
@@ -338,6 +347,7 @@ function toFlow(
                 // and every click. Selectable is the cheapest way to keep
                 // events flowing.
                 selectable: !layoutOnly,
+                focusable: !layoutOnly,
                 ariaLabel: isStart ? "Execution start" : isReturn ? "Return"
                     : isAdd ? "Add element (not yet available)" : undefined,
                 data: {
@@ -350,6 +360,8 @@ function toFlow(
                     isAdd,
                     isReturn,
                     isCondition,
+                    noExecutionHandles: c.lhat?.noExecutionHandles === true,
+                    literal: c.lhat?.literal,
                     branchOffset: c.lhat?.branchOffset,
                     definitionBranchOffset: c.lhat?.definitionBranchOffset,
                     layoutOnly,
@@ -516,7 +528,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
     // Flow's ResizeObserver. Re-measure it so arrows follow the visible port.
     useEffect(() => {
         updateNodeInternals(id);
-    }, [id, data.flowHandleX, data.definitionRole, data.definitionHandleY, updateNodeInternals]);
+    }, [id, data.flowHandleX, data.definitionRole, data.definitionHandleY, data.noExecutionHandles, updateNodeInternals]);
     const drag = useRef<{
         x: number; y: number; moved: boolean; samples: Sample[];
     } | null>(null);
@@ -624,6 +636,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
     if (data.isStart) classes.push("start-node");
     if (data.isReturn) classes.push("return-node");
     if (data.isCondition) classes.push("condition-node");
+    if (data.literal !== undefined) classes.push("literal-node", `literal-${data.literal.kind}`);
     if (data.isAdd) classes.push("add-node");
     if (data.flashed) classes.push("flash");
     if (data.collapsed) classes.push("folded");
@@ -686,12 +699,13 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                     <svg className="add-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M 12 6 V 18 M 6 12 H 18" />
                     </svg>
-                ) : <div className="boxlabel">{data.label}</div>}
+                ) : data.literal !== undefined ? <LiteralInput key={data.literal.key} literal={data.literal} />
+                    : <div className="boxlabel">{data.label}</div>}
             </div>}
             {/* Use the execution lines' own endpoints as the visible ports:
                 incoming at the top, outgoing at the bottom. flowHandleX
                 keeps the ports and arrows together while the box slides. */}
-            {!data.isAdd && !data.isCondition && data.definitionRole !== "value" &&
+            {!data.isAdd && !data.isCondition && !data.noExecutionHandles && data.definitionRole !== "value" &&
                 data.definitionBranchOffset === undefined && (
                 <>
                     {!data.isStart && <Handle type="target" position={Position.Top} id="flow-in"
@@ -788,7 +802,7 @@ function ConnectionPreview({
 // The app
 
 function countNodes(n: ElkNode, root = true): number {
-    let total = root || n.lhat?.definitionRole === "row" || n.lhat?.layoutOnly ? 0 : 1;
+    let total = root || n.lhat === undefined || n.lhat.definitionRole === "row" || n.lhat.layoutOnly ? 0 : 1;
     for (const c of n.children ?? []) total += countNodes(c, false);
     return total;
 }
@@ -810,6 +824,7 @@ function countFolded(n: ElkNode): number {
 function App() {
     const { setViewport, getViewport } = useReactFlow();
     const [reply, setReply] = useState<AstReply>();
+    const [uri, setUri] = useState("");
     const [note, setNote] = useState("waiting for the language server…");
     // V15: what a node with nothing said about it does. Not the state of the
     // bar's button -- that is read off the graph (countFolded) -- and not
@@ -827,6 +842,8 @@ function App() {
     const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
     // 8.6: zoom is the type size. The scale everything else derives from it.
     const [fontPx, setFontPx] = useState(DEFAULT_FONT_PX);
+    const [minimapCollapsed, setMinimapCollapsed] = useState(false);
+    const [preferredMinimapSize, setPreferredMinimapSize] = useState(DEFAULT_MINIMAP_SIZE);
     const scale = fontPx / DEFAULT_FONT_PX;
     // 8.6: the width the view has -- a ceiling for wrapping, re-measured on
     // resize. Zero until first measured; nothing lays out before that.
@@ -861,6 +878,7 @@ function App() {
             switch (message.type) {
                 case "tree":
                     setReply(message.reply);
+                    setUri(message.uri);
                     break;
                 case "pending":
                     setNote("waiting for the language server…");
@@ -936,13 +954,63 @@ function App() {
     // view is a different thing to look at (another definition, Fold/Unfold
     // All); a re-layout in place keeps it.
     const place = useRef(true);
+    const viewportHomeX = useRef<number | undefined>(undefined);
+    const horizontalReturn = useRef<(() => void) | null>(null);
+    const minimapPointer = useRef<number | undefined>(undefined);
+    const stopHorizontalReturn = useCallback(() => {
+        horizontalReturn.current?.();
+        horizontalReturn.current = null;
+    }, []);
+    const returnHorizontal = useCallback(() => {
+        const target = viewportHomeX.current;
+        // MiniMap pans via programmatic viewport changes, so onMoveEnd fires
+        // for every drag step too. Wait for release, and ignore our own frames.
+        if (target === undefined || minimapPointer.current !== undefined ||
+            horizontalReturn.current !== null || Math.abs(getViewport().x - target) < 0.01) return;
+        horizontalReturn.current = springTo(() => getViewport().x, target, (x) => {
+            // Read y on every frame: vertical scrolling remains independent.
+            void setViewport({ ...getViewport(), x });
+            if (x === target) horizontalReturn.current = null;
+        });
+    }, [getViewport, setViewport]);
+    const onMinimapPointerDown = useCallback((event: React.PointerEvent) => {
+        if (event.button !== 0 || !event.isPrimary ||
+            (event.target as Element).closest(".react-flow__minimap") === null) return;
+        stopHorizontalReturn();
+        minimapPointer.current = event.pointerId;
+    }, [stopHorizontalReturn]);
+    useEffect(() => {
+        const release = (event: PointerEvent) => {
+            if (minimapPointer.current !== event.pointerId) return;
+            minimapPointer.current = undefined;
+            returnHorizontal();
+        };
+        const blur = () => {
+            minimapPointer.current = undefined;
+            returnHorizontal();
+        };
+        // Release can occur outside the small map. Capture precedes d3's
+        // mouse handlers; the return starts on the next animation frame.
+        window.addEventListener("pointerup", release, true);
+        window.addEventListener("pointercancel", release, true);
+        window.addEventListener("blur", blur);
+        return () => {
+            stopHorizontalReturn();
+            window.removeEventListener("pointerup", release, true);
+            window.removeEventListener("pointercancel", release, true);
+            window.removeEventListener("blur", blur);
+        };
+    }, [returnHorizontal, stopHorizontalReturn]);
+    useEffect(() => stopHorizontalReturn, [trail, stopHorizontalReturn]);
     useEffect(() => {
         if (laid === undefined) return;
         const w = flowRef.current?.clientWidth ?? 0;
         const y = place.current ? 8 : getViewport().y;
         place.current = false;
-        setViewport({ x: graphViewportX(laid, w), y, zoom: 1 });
-    }, [laid, viewWidth, setViewport, getViewport]);
+        stopHorizontalReturn();
+        viewportHomeX.current = graphViewportX(laid, w);
+        setViewport({ x: viewportHomeX.current, y, zoom: 1 });
+    }, [laid, viewWidth, setViewport, getViewport, stopHorizontalReturn]);
 
     const slideBounds = useRef(new Map<string, SlideBounds>());
     const onSlide = useCallback((key: string, dx: number, mode?: "drag" | "glide") => {
@@ -1100,12 +1168,12 @@ function App() {
             const target = event.target as Element;
             const over = target.closest("[data-id]")?.getAttribute("data-id");
             stopSlide(event.button === 0 && over != null &&
-                target.closest("button, .react-flow__handle") === null
+                target.closest("button, input, textarea, .react-flow__handle") === null
                 ? slidablesRef.current.get(over) : undefined);
             if (event.button !== 0) return;
             if (target.closest(
                 ".react-flow__node, .react-flow__handle," +
-                " .react-flow__minimap, .react-flow__edge, button") !== null) {
+                " .document-minimap-panel, .react-flow__minimap, .react-flow__edge, button") !== null) {
                 return;
             }
             dragging = true;
@@ -1181,6 +1249,7 @@ function App() {
         const el = flowRef.current;
         if (el === null) return;
         const onWheel = (event: WheelEvent) => {
+            if ((event.target as Element).closest?.(".literal-editor") != null) return;
             paneFling.current?.();
             paneFling.current = null;
             stopSlide();
@@ -1229,6 +1298,10 @@ function App() {
         place.current = true;
     }, [flowKey]);
     const paneReady = readyKey === flowKey;
+    // Numeric dimensions are needed by MiniMap's SVG viewBox calculation.
+    // Remember the user's independent width/height even in a smaller split.
+    const minimapAvailable = { width: Math.max(0, viewWidth - 24), height: Math.max(0, viewHeight - 24) };
+    const minimapSize = fitMinimapSize(preferredMinimapSize, minimapAvailable);
 
     // The outline picked something: scroll to the box that covers it and mark
     // it. Not necessarily the box for that node -- what the outline names may
@@ -1297,6 +1370,7 @@ function App() {
     }, [flow.exec, flow.definitions, flow.nodes, setEdges]);
 
     return (
+        <LiteralEditProvider sourceKey={`${uri}\0${reply?.source ?? ""}`}>
         <div id="app">
             <div id="bar">
                 <button
@@ -1349,6 +1423,7 @@ function App() {
                     onClick={() => setFontPx(DEFAULT_FONT_PX)}
                 >A↺</button>
                 <span id="status">{note}</span>
+                <LiteralEditStatus />
             </div>
             {view !== undefined && view.path.length > 0 && reply !== undefined && (
                 <div id="trail">
@@ -1383,6 +1458,7 @@ function App() {
                     nodes={nodes}
                     edges={flow.exec.concat(flow.definitions, edges)}
                     onEdgesChange={onEdgesChange}
+                    onMoveEnd={returnHorizontal}
                     onConnect={onConnect}
                     isValidConnection={validConnection}
                     connectionLineType={ConnectionLineType.SmoothStep}
@@ -1417,12 +1493,37 @@ function App() {
                     ]}
                 >
                     <Background />
-                    {paneReady && <MiniMap pannable
-                        nodeClassName={(node) => node.data.layoutOnly ? "layout-only"
-                            : node.data.isStart || node.data.isReturn ? "start-marker" : ""} />}
+                    {paneReady && <Panel position="bottom-right"
+                        className={`document-minimap-panel${minimapCollapsed ? " collapsed" : ""}`}
+                        onPointerDownCapture={onMinimapPointerDown}>
+                        {!minimapCollapsed && minimapSize.width > 0 && minimapSize.height > 0 && <>
+                            <MiniMap pannable
+                                style={minimapSize}
+                                ariaLabel="Document overview"
+                                nodeClassName={(node) => node.data.layoutOnly ? "layout-only"
+                                    : node.data.isStart || node.data.isReturn ? "start-marker" : ""} />
+                            <MinimapResizeHandles size={minimapSize} preferredSize={preferredMinimapSize}
+                                available={minimapAvailable} onResize={setPreferredMinimapSize} />
+                        </>}
+                        <button type="button" className="minimap-toggle"
+                            title={minimapCollapsed ? "Expand minimap" : "Collapse minimap"}
+                            aria-label={minimapCollapsed ? "Expand minimap" : "Collapse minimap"}
+                            aria-expanded={!minimapCollapsed}
+                            onMouseDown={keepFocusOff}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={() => setMinimapCollapsed((value) => !value)}>
+                            <svg viewBox="0 0 24 24" aria-hidden="true">
+                                {minimapCollapsed ? <>
+                                    <rect x="5" y="3" width="14" height="18" rx="2" />
+                                    <path d="M 8 7 H 16 M 8 11 H 13 M 8 15 H 16" />
+                                </> : <path d="M 6 9 L 12 15 L 18 9" />}
+                            </svg>
+                        </button>
+                    </Panel>}
                 </ReactFlow>
             </div>
         </div>
+        </LiteralEditProvider>
     );
 }
 
