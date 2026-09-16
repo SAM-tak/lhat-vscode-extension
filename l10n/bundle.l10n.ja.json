@@ -147,5 +147,20 @@
     "Uppercase": "大文字に変換",
     "Value": "値",
     "Values": "値一覧",
-    "Pack as table": "テーブルにまとめる"
+    "Pack as table": "テーブルにまとめる",
+    "The source changed. Choose a type again in the updated graph.": "ソースが変更されました。更新後のグラフで型を選び直してください。",
+    "This location cannot have a type annotation.": "この位置には型注釈を指定できません。",
+    "Type candidates are unavailable. Update or restart the language server.": "型候補を取得できません。言語サーバーを更新または再起動してください。",
+    "Current annotation": "現在の型注釈",
+    "Use inferred type": "型推論に戻す",
+    "Remove the annotation": "型注釈を削除します",
+    "No compatible types are available at this location.": "この位置で指定できる型候補がありません。",
+    "Type of {0}": "{0} の型",
+    "Filter compatible types; select to write an annotation": "指定できる型を絞り込み、選択すると型注釈として反映します",
+    "Could not apply the type annotation.": "型注釈を適用できませんでした。",
+    "Type editing is not available yet.": "現在、型を編集できません。",
+    "Explicit type annotation": "明示した型注釈",
+    "Inferred type": "推論された型",
+    "{0}: {1}. Choose type": "{0}: {1}。型を選択",
+    "Click to choose a type": "クリックして型を選択"
 }

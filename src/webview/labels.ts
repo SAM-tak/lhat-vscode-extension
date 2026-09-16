@@ -1,4 +1,5 @@
-import type { AstNode, SourceSpan } from "../protocol";
+import type { AstNode, SourceSpan, TypeSite } from "../protocol";
+import { typeSites } from "../graphTypes";
 import { HATS, type LabelCategory } from "./vocabulary";
 
 export type LabelRole = "constant" | "variable" | "string" | "number";
@@ -15,7 +16,7 @@ export interface RenameTarget { start: number; end: number; value: string }
 export const renameTargetKey = (name: RenameTarget): string => `${name.start}:${name.end}`;
 /** Shared by the input and graph layout so their minimum/Unicode widths agree. */
 export const nameColumns = (value: string): number => Math.max(3, labelColumns(value));
-export interface LabelPart { text: string; role?: string; category?: LabelCategory; source?: string; name?: RenameTarget; symbol?: SourceSpan }
+export interface LabelPart { text: string; role?: string; category?: LabelCategory; source?: string; name?: RenameTarget; symbol?: SourceSpan; typeSite?: TypeSite; typeLabel?: string }
 export interface DisplayLabel { text: string; parts: LabelPart[] }
 interface Token { start: number; end: number; word?: string; depth?: number; name?: RenameTarget; tableDefinition?: boolean; symbol?: SourceSpan }
 
@@ -142,11 +143,11 @@ function compact(parts: LabelPart[], fallback: string, max: number): LabelPart[]
     if (chars[chars.length - 1]?.text === " ") chars.pop();
     if (chars.length === 0) return fallback ? [{ text: fallback }] : [];
     // A source-backed editable name must never become a truncated rename target.
-    if (!parts.some(p => p.name) && chars.length > max) chars.splice(max - 1, chars.length, { text: "…" });
+    if (!parts.some(p => p.name || p.typeSite) && chars.length > max) chars.splice(max - 1, chars.length, { text: "…" });
     const result: LabelPart[] = [];
     for (const ch of chars) {
         const last = result[result.length - 1];
-        if (last !== undefined && last.role === ch.role && last.name === ch.name && last.source === ch.source && last.symbol === ch.symbol) last.text += ch.text;
+        if (last !== undefined && last.role === ch.role && last.name === ch.name && last.source === ch.source && last.symbol === ch.symbol && last.typeSite === ch.typeSite) last.text += ch.text;
         else result.push({ ...ch });
     }
     return result;
@@ -158,8 +159,10 @@ export const labelText = (label: DisplayLabel | string): string =>
 /** Source spans decide what may be localized; user text is never searched/replaced. */
 export function createLabeler(source: string, root: AstNode, vocabulary: Vocabulary = ENGLISH_VOCABULARY) {
     const tokens = semanticTokens(source, root);
-    return (node: AstNode, drawn: AstNode[], max = 48): DisplayLabel => {
-        const pieces: (string | { start: number; end: number })[] = [];
+    const sites = typeSites({ source, root });
+    return (node: AstNode, drawn: AstNode[], max = 48, typed = false): DisplayLabel => {
+        let pieces: (string | { start: number; end: number })[] = [];
+        const shownSites = typed ? sites.filter(site => site.start >= node.start && site.end <= node.end) : [];
         const name = node.fields?.name;
         if (["errordef", "error-kind", "enumdef"].includes(node.kind) && name !== undefined && !Array.isArray(name)) {
             pieces.push({ start: node.start, end: name.end });
@@ -176,11 +179,22 @@ export function createLabeler(source: string, root: AstNode, vocabulary: Vocabul
         }
         const raw = pieces.map((p) => typeof p === "string" ? p : source.slice(p.start, p.end)).join("")
             .replace(/\s+/g, " ").replace(/(…\s*)+/g, "… ").trim() || node.kind;
+        for (const site of shownSites) {
+            if (!site.annotation || site.colon === undefined) continue;
+            const start = site.colon, end = site.annotation.end;
+            pieces = pieces.flatMap(piece => typeof piece === "string" || piece.end <= start || piece.start >= end ? [piece]
+                : [piece.start < start ? { start: piece.start, end: start } : undefined,
+                    piece.end > end ? { start: end, end: piece.end } : undefined].filter((p): p is SourceSpan => !!p));
+        }
+        const shownTokens = shownSites.length ? [
+            ...tokens.filter(token => !shownSites.some(site => token.start >= site.start && token.end <= site.end)),
+            ...shownSites.map(site => ({ ...tokens.find(token => token.start === site.start && token.end === site.end), start: site.start, end: site.end })),
+        ].sort((a, b) => a.start - b.start) : tokens;
         const parts: LabelPart[] = [];
         for (const piece of pieces) {
             if (typeof piece === "string") { parts.push({ text: piece }); continue; }
             let cursor = piece.start;
-            for (const token of tokens) {
+            for (const token of shownTokens) {
                 if (token.start < cursor || token.end > piece.end) continue;
                 parts.push({ text: source.slice(cursor, token.start) });
                 if (token.name) parts.push({ text: token.name.value, name: token.name, symbol: token.symbol });
@@ -205,6 +219,13 @@ export function createLabeler(source: string, root: AstNode, vocabulary: Vocabul
                     if (/^[\p{L}\p{N}_]/u.test(source.slice(token.end, piece.end))) parts.push({ text: " " });
                 }
                 cursor = token.end;
+                const site = shownSites.find(site => site.start === token.start && site.end === token.end);
+                if (site) {
+                    const part = parts[parts.length - 1];
+                    part.typeSite = site;
+                    const typeNode: AstNode = { kind: "graph-type", start: 0, end: site.typeText.length, line: 1, column: 1 };
+                    part.typeLabel = labelText(createLabeler(site.typeText, typeNode, vocabulary)(typeNode, [], 64));
+                }
             }
             parts.push({ text: source.slice(cursor, piece.end) });
         }

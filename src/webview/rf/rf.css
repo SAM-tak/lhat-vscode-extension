@@ -297,6 +297,31 @@ html, body, #root {
     font-size: calc(10px * var(--lhat-scale));
     white-space: nowrap;
 }
+.typed-name { display: inline-flex; flex-direction: column; align-items: flex-start; vertical-align: bottom; }
+.type-label {
+    display: block;
+    box-sizing: border-box;
+    height: calc(14px * var(--lhat-scale));
+    line-height: calc(13px * var(--lhat-scale));
+    font: italic calc(10px * var(--lhat-scale)) var(--vscode-editor-font-family, monospace);
+    white-space: nowrap;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+}
+.type-explicit { text-decoration: underline solid; text-underline-offset: 2px; }
+.type-inferred { opacity: 0.75; text-decoration: underline dotted; text-underline-offset: 2px; }
+.vscode-high-contrast .type-inferred, .vscode-high-contrast-light .type-inferred { opacity: 1; }
+button.type-label { cursor: pointer; }
+button.type-label:hover, button.type-label:focus-visible { opacity: 1; outline: 1px solid var(--vscode-focusBorder); }
+button.type-label:disabled { cursor: default; }
+button.type-label[aria-invalid="true"] { outline: 1px solid var(--vscode-inputValidation-errorBorder, #f48771); }
+.type-error {
+    position: absolute; z-index: 10; padding: 4px 8px; font-size: 11px; white-space: normal;
+    background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+    color: var(--vscode-editor-foreground); max-width: 320px;
+}
 
 .leaf .boxlabel {
     display: flex;

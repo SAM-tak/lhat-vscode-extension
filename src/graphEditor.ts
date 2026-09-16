@@ -3,7 +3,8 @@
 // A CustomTextEditorProvider rather than a plain webview panel: the document
 // stays a text document, so the text editor and the graph are two views of
 // one thing and VSCode handles saving, undo and dirty state. Name edits use
-// the registered rename provider; literal edits remain graph-only.
+// the rename provider, type annotations use WorkspaceEdit, and literal edits
+// remain graph-only.
 //
 // The webview cannot reach lhatls (07 の L3), so this asks on its behalf and
 // forwards the answer.
@@ -13,6 +14,7 @@ import type { LanguageClient } from "vscode-languageclient/node";
 import type { AstReply, FromWebview, ToWebview } from "./protocol";
 import { renameFromGraph } from "./graphRename";
 import { referenceFromGraph } from "./graphReference";
+import { chooseTypeFromGraph } from "./graphTypeEditor";
 
 export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider {
     public static readonly viewType = "lhat.graph";
@@ -82,6 +84,7 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
         let localizationRevision = 0;
         let treeRevision = 0;
         let renaming = false;
+        let choosingType = false;
         let referenceRevision = 0;
         let currentTree: AstReply | undefined;
         const post = (message: ToWebview) => {
@@ -177,6 +180,21 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
                             error: error instanceof Error ? error.message : String(error) });
                     }).finally(() => { renaming = false; });
                     break;
+                case "chooseType": {
+                    const client = this.client();
+                    if (choosingType || !currentTree || !client) {
+                        post({ type: "typeResult", id: message.id, error: vscode.l10n.t("Type editing is not available yet.") });
+                        break;
+                    }
+                    choosingType = true;
+                    void chooseTypeFromGraph(document, currentTree, message, client, () => !disposed).then(() => {
+                        post({ type: "typeResult", id: message.id });
+                        void send();
+                    }, (error: unknown) => {
+                        post({ type: "typeResult", id: message.id, error: error instanceof Error ? error.message : String(error) });
+                    }).finally(() => { choosingType = false; });
+                    break;
+                }
                 case "reference": {
                     const revision = ++referenceRevision;
                     const active = () => !disposed && revision === referenceRevision && document.version === message.version;

@@ -32,6 +32,7 @@ import { graphViewportX, nodeAt, stackWideDefinitions, titleOf, toElk, type ElkN
 import type { LiteralValue } from "../literals";
 import { LiteralEditProvider, LiteralEditStatus, LiteralInput } from "./LiteralInput";
 import { NameInput, RenameProvider } from "./NameInput";
+import { TypeLabel, TypeProvider } from "./TypeLabel";
 import { ReferenceLine } from "./ReferenceLine";
 import { DEFAULT_MINIMAP_SIZE, fitMinimapSize } from "../minimap";
 import { MinimapResizeHandles } from "./MinimapResizeHandles";
@@ -716,9 +717,14 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                         <path d="M 12 6 V 18 M 6 12 H 18" />
                     </svg>
                 ) : data.literal !== undefined ? <>
-                    <div className="literal-type-label semantic-label" data-category="type">{data.literalTypeLabel}</div>
+                    <div className="literal-type-label"><TypeLabel label={data.literalTypeLabel ?? "?"} /></div>
                     <LiteralInput key={data.literal.key} literal={data.literal} />
-                </> : <div className="boxlabel"><span>{data.labelParts?.map((part, i) => part.name !== undefined
+                </> : <div className="boxlabel"><span>{data.labelParts?.map((part, i) => part.typeSite !== undefined
+                    ? <span key={`${part.typeSite.start}:${part.typeSite.typeText}`} className="typed-name">
+                        <TypeLabel site={part.typeSite} label={part.typeLabel ?? "?"} />
+                        {part.name ? <NameInput name={part.name} /> : <span data-reference-start={part.symbol?.start}
+                            data-reference-end={part.symbol?.end}>{part.text}</span>}
+                      </span> : part.name !== undefined
                     ? <NameInput key={i} name={part.name} /> : part.role === undefined
                     ? <span key={i} data-reference-start={part.symbol?.start} data-reference-end={part.symbol?.end}>{part.text}</span>
                     : <span key={i} className="semantic-label" data-role={part.role} data-category={part.category}
@@ -1314,7 +1320,7 @@ function App() {
         const el = flowRef.current;
         if (el === null) return;
         const onWheel = (event: WheelEvent) => {
-            if ((event.target as Element).closest?.(".literal-editor, .name-input") != null) return;
+            if ((event.target as Element).closest?.(".literal-editor, .name-input, .type-label") != null) return;
             paneFling.current?.();
             paneFling.current = null;
             stopSlide();
@@ -1439,6 +1445,7 @@ function App() {
             sizes: nameSizes.sourceKey === sourceKey ? nameSizes.values : {}, resize: resizeName,
             post: message => vscode.postMessage(message) }}>
         <LiteralEditProvider sourceKey={sourceKey} onCommit={commitLiteral}>
+        <TypeProvider value={{ version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <div id="app">
             <div id="bar">
                 <button
@@ -1593,6 +1600,7 @@ function App() {
                     version={laidSourceKey === sourceKey ? version : undefined} post={post} />
             </div>
         </div>
+        </TypeProvider>
         </LiteralEditProvider>
         </RenameProvider>
     );

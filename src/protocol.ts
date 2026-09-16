@@ -14,6 +14,10 @@ export interface AstNode {
     line: number;
     column: number;
     comments?: AstComment[];
+    /** Checker metadata, available in servers supporting graph type editing. */
+    inferredType?: string;
+    declared?: boolean;
+    computed?: boolean;
     /**
      * Children, keyed by the union member they came from in ast.h. A member
      * holding a list is an array even when it holds one.
@@ -34,6 +38,15 @@ export interface AstReply {
 }
 
 export interface SourceSpan { start: number; end: number }
+export interface TypeSite extends SourceSpan {
+    name: string;
+    insert: number;
+    annotation?: SourceSpan;
+    colon?: number;
+    explicit: boolean;
+    required: boolean;
+    typeText: string;
+}
 export interface ReferenceTarget extends SourceSpan {
     /** Import/require endpoints belong to the statement/expression box. */
     box?: boolean;
@@ -44,6 +57,7 @@ export type ToWebview =
     | { type: "localization"; language: string; bundle?: Record<string, string> }
     | { type: "tree"; reply: AstReply; uri: string; version?: number }
     | { type: "renameResult"; id: string; error?: string }
+    | { type: "typeResult"; id: string; error?: string }
     | { type: "referenceResult"; id: string; version: number; target?: ReferenceTarget }
     /** The unit is not part of any checked root yet (06 の 4.3). */
     | { type: "pending" }
@@ -57,6 +71,7 @@ export type FromWebview =
     /** Ask for the tree again -- after an edit, or after "pending". */
     | { type: "refresh" }
     | { type: "rename"; id: string; start: number; end: number; oldName: string; newName: string; version: number }
+    | { type: "chooseType"; id: string; start: number; end: number; version: number }
     | { type: "reference"; id: string; start: number; end: number; text: string; version: number }
     /** Put the text cursor on what was clicked in the graph. */
     | { type: "reveal"; start: number; end: number };

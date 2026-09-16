@@ -12,6 +12,7 @@
 // Element lists (5.3.1) obey neither: they wrap into rows of a set width.
 
 import type { AstNode, AstReply } from "../protocol.js";
+import { declaredEntry } from "../graphTypes";
 import { literalOf, type LiteralValue } from "./literals";
 import { createLabeler, ENGLISH_VOCABULARY, labelColumns, labelText, nameColumns, renameTargetKey, type DisplayLabel, type LabelPart, type Vocabulary } from "./labels";
 
@@ -203,7 +204,8 @@ const DEFINITION_FIELDS: Record<string, [string[], string[]]> = {
 
 // The parser also wraps an expression-only function body in RETURN. It uses
 // the same visible return/value pair, even when return^ was omitted in text.
-function definitionParts(node: AstNode): { targets: Child[]; values: Child[] } | undefined {
+function definitionParts(node: AstNode, source = ""): { targets: Child[]; values: Child[] } | undefined {
+    if (declaredEntry(node, source)) return undefined;
     const parts = DEFINITION_FIELDS[node.kind];
     if (parts === undefined) return undefined;
     const children = allChildren(node);
@@ -403,6 +405,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     };
     findEntries(viewRoot);
     let counter = 0;
+    const declarationLabelEnd = new WeakMap<AstNode, number>();
     const nextId = (kind: string) => `${kind}-${counter++}`;
 
     // 8.6: zoom is a re-layout at another type size, so every metric scales.
@@ -410,9 +413,9 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     const px = (v: number) => Math.round(v * S);
     const widthFor = (label: DisplayLabel | string) => {
         const parts = typeof label === "string" ? [{ text: label }] : label.parts;
-        const columns = parts.reduce((width, part) => width + (part.name
+        const columns = parts.reduce((width, part) => width + Math.max(part.typeSite ? labelColumns(part.typeLabel ?? "?") * 10 / 12 + 1 : 0, (part.name
             ? nameColumns(options.nameValues?.[renameTargetKey(part.name)] ?? part.name.value)
-            : labelColumns(part.text)), 0);
+            : labelColumns(part.text))), 0);
         const inputPadding = parts.filter(part => part.name !== undefined).length * px(8);
         return Math.max(px(56), Math.ceil(columns * CH * S) + px(20) + inputPadding);
     };
@@ -425,6 +428,11 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     });
 
     const leaf = (node: AstNode, label: DisplayLabel | string): ElkNode => {
+        if (["define", "table-entry", "member-decl"].includes(node.kind)) {
+            // Only the declaration's span belongs here; the RHS remains its own box.
+            const end = typeof label === "string" ? node.end : declarationLabelEnd.get(node) ?? node.end;
+            label = makeLabel({ ...node, end }, [], MAX_LABEL, true);
+        }
         const literal = literalOf(node, source);
         const lines = literal === undefined ? [] : (options.literalValues?.[literal.key] ?? literal.value).split("\n");
         const longest = lines.reduce((length, line) => Math.max(length, labelColumns(line)), 0);
@@ -434,7 +442,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             labels: [{ text: typeof label === "string" ? label : label.text }],
             width: literal === undefined ? widthFor(label)
                 : Math.max(widthFor(literalTypeLabel!), widthFor(" ".repeat(Math.min(MAX_LABEL, longest) + (literal.kind === "string" ? 2 : 0)))),
-            height: px(LEAF_H + (literal === undefined ? 0 : 14) + (literal?.kind === "string" ? Math.min(3, lines.length - 1) * 16 : 0)),
+            height: px(LEAF_H + (literal !== undefined || (typeof label !== "string" && label.parts.some(part => part.typeSite)) ? 14 : 0) + (literal?.kind === "string" ? Math.min(3, lines.length - 1) * 16 : 0)),
             lhat: { ...from(node), labelParts: typeof label === "string" ? undefined : label.parts,
                 ...(literal === undefined ? {} : { literal, literalTypeLabel }) },
         };
@@ -616,7 +624,8 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
 
         // The declaration/key remains visible while its value folds alone.
         // This exception to 5.2 also splits simple initializers such as '= 1'.
-        const parts = definitionParts(node);
+        const parts = definitionParts(node, source);
+        if (declaredEntry(node, source)) return leaf(node, labelFor(node, []));
         const isReturn = node.kind === "return";
         if (isReturn && parts === undefined) return returnNode(node);
         if (parts !== undefined) {
@@ -649,6 +658,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 declarationEnd = ++i;
             }
             const label = labelFor({ ...node, end: declarationEnd }, []);
+            declarationLabelEnd.set(node, declarationEnd);
             const declaration = isReturn ? returnNode(node) : leaf(node, label);
             const handleY = (declaration.height ?? px(LEAF_H)) / 2;
             declaration.lhat = {

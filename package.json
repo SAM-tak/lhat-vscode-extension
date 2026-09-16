@@ -343,7 +343,7 @@
     "bundle:rf": "esbuild src/webview/rf/main.tsx --bundle --minify --outdir=media/rf --entry-names=bundle --jsx=automatic --sourcemap --log-level=warning",
     "check:rf": "tsc -p ./tsconfig.rf.json",
     "l10n:extract": "vscode-l10n-dev export --outDir ./l10n ./src && node scripts/extract-graph-vocabulary.cjs",
-    "test": "node --test testing/graph-definition.test.cjs testing/graph-execution.test.cjs testing/graph-literal.test.cjs testing/graph-minimap.test.cjs testing/graph-localization.test.cjs testing/graph-rename.test.cjs testing/graph-reference.test.cjs testing/enum-highlighting.test.cjs",
+    "test": "node --test testing/graph-definition.test.cjs testing/graph-execution.test.cjs testing/graph-literal.test.cjs testing/graph-minimap.test.cjs testing/graph-localization.test.cjs testing/graph-rename.test.cjs testing/graph-reference.test.cjs testing/graph-types.test.cjs testing/enum-highlighting.test.cjs",
     "watch": "tsc -watch -p ./",
     "package": "vsce package --githubBranch main --no-dependencies -o lhat.vsix",
     "install-extension": "npm run package && code --install-extension lhat.vsix --force",
