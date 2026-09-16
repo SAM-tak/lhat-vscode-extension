@@ -108,6 +108,7 @@ host callbacks. Regenerate it whenever the host API changes.
 | Setting | Default | Purpose |
 | --- | --- | --- |
 | `lhat.serverPath` | empty | Override the bundled language server with a path, or use `lhatls` from `PATH` when no bundled server exists. |
+| `lhat.messagesPath` | empty | Directory of the server's message catalogs, for diagnostics in VS Code's display language. When empty, the `messages` folder beside the server is used if present. |
 | `lhat.serverAutoRestart` | `true` | Restart an unexpectedly stopped server. Disable it temporarily while repeatedly rebuilding a local server on Windows. |
 | `lhat.runtimePath` | empty | Path to the standalone `lhat` runtime used by Run and Debug. |
 | `lhat.graph.openBeside` | `false` | Open the graph in an editor split instead of replacing the current editor. |

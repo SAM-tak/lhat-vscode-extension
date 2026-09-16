@@ -106,6 +106,7 @@ lhat --dump-host-api lhat-host.json
 | 設定 | 既定値 | 用途 |
 | --- | --- | --- |
 | `lhat.serverPath` | 空 | 同梱言語サーバーを任意のパスで置き換えます。同梱されない場合は `PATH` 上の `lhatls` を使います。 |
+| `lhat.messagesPath` | 空 | 診断を VS Code の表示言語で出すための、言語サーバーのメッセージカタログのディレクトリです。空の場合、サーバーの隣に `messages` フォルダーがあればそれを使います。 |
 | `lhat.serverAutoRestart` | `true` | 予期せず停止したサーバーを再起動します。Windows でローカルサーバーを繰り返しビルドする間だけ無効にできます。 |
 | `lhat.runtimePath` | 空 | 実行・デバッグに使うスタンドアロン `lhat` ランタイムへのパスです。 |
 | `lhat.graph.openBeside` | `false` | 現在のエディターを置き換えず、エディター分割にグラフを開きます。 |

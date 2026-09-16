@@ -190,6 +190,11 @@
           "default": "",
           "description": "Path to lhatls(.exe). If empty, uses the server bundled with this extension, then looks on PATH."
         },
+        "lhat.messagesPath": {
+          "type": "string",
+          "default": "",
+          "description": "Directory of lhatls's message catalogs (the one holding ja/ and the other language folders), used to report diagnostics in VS Code's display language. If empty, uses the messages folder beside lhatls, when there is one; otherwise diagnostics are in English."
+        },
         "lhat.serverAutoRestart": {
           "type": "boolean",
           "default": true,

@@ -9,6 +9,8 @@
 // through this same client, and the debug side of 09 (debug.ts), which does
 // not -- the debugger is the runtime, on a socket of its own.
 
+import * as fs from "fs";
+import * as path from "path";
 import * as vscode from "vscode";
 import {
     CloseAction,
@@ -83,6 +85,29 @@ function resolveServerCommand(): string {
     return process.platform === "win32" ? "lhatls.exe" : "lhatls";
 }
 
+// 10 §7.4: lhatls answers in the editor's language (LSP's `locale`, which the
+// client sends on its own) from catalogs the editor says the place of --
+// `<dir>/<language tag>/<source>.txt`. The CLI finds its own as `messages/`
+// beside its executable, so a server that ships them keeps them in the same
+// place: next to the lhatls being started, bundled or not. A self-built one
+// has none beside it (the catalogs stay in the lhat checkout), so the setting
+// comes first. With neither, nothing is sent and the server speaks English.
+function resolveMessagesDirectory(command: string): string | undefined {
+    const configured = vscode.workspace
+        .getConfiguration("lhat")
+        .get<string>("messagesPath");
+    if (configured && configured.trim().length > 0) {
+        return configured;
+    }
+    // A bare name is resolved off PATH by the OS, and where it lands is not
+    // known here.
+    if (path.basename(command) === command) {
+        return undefined;
+    }
+    const beside = path.join(path.dirname(command), "messages");
+    return fs.existsSync(beside) ? beside : undefined;
+}
+
 function autoRestartEnabled(): boolean {
     // Whether this is a Marketplace/vsix install versus a self-built one
     // sideloaded over it is not something the extension API exposes --
@@ -135,6 +160,9 @@ function startClient(command: string): LanguageClient {
             { scheme: "file", language: "lhat" },
             { scheme: "file", language: "lton" },
         ],
+        initializationOptions: {
+            messages: resolveMessagesDirectory(command),
+        },
         // The default ErrorHandler restarts lhatls on its own once its
         // process closes -- the right behaviour recovering from a real
         // crash, which is why it is the default. Turned off by
