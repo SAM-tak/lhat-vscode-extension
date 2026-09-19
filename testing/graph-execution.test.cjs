@@ -13,13 +13,20 @@ mapping._compile(buildSync({
     entryPoints: [mappingPath], bundle: true, platform: 'node', format: 'cjs', write: false,
 }).outputFiles[0].text, mapping.id);
 const { toElk, graphViewportX, stackWideDefinitions } = mapping.exports;
+const gesturePath = path.resolve(__dirname, '../src/webview/rf/gesture.ts');
+const gesture = new Module(gesturePath);
+gesture._compile(buildSync({
+    entryPoints: [gesturePath], bundle: true, platform: 'node', format: 'cjs', write: false,
+}).outputFiles[0].text, gesture.id);
+const { ownsHorizontalSlide } = gesture.exports;
 // Exercise the renderer's actual endpoint resolution as well as the mapping.
 const renderer = fs.readFileSync(path.resolve(__dirname, '../src/webview/rf/main.tsx'), 'utf8').replace(/\r\n/g, '\n');
 const first = renderer.indexOf('type Slides =');
 const last = renderer.indexOf('/**\n * 8.6: inertia.');
 assert(first >= 0 && last > first);
 const toFlow = vm.runInNewContext(`const MarkerType={ArrowClosed:'arrowclosed'};
-    ${transformSync(renderer.slice(first, last), { loader: 'tsx' }).code}; toFlow`, { graphViewportX });
+    ${transformSync(renderer.slice(first, last), { loader: 'tsx' }).code}; toFlow`,
+    { graphViewportX, ownsHorizontalSlide });
 const noop = () => {};
 const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
 const starts = graph => flatten(graph).filter(n => n.lhat?.synthetic === 'start');
@@ -542,7 +549,7 @@ test('return pictograms survive simple branch clauses, disabled code and implici
     assert.equal(drilled.flow.nodes.filter(n => n.data.isReturn).length, 1, 'drilling restores both editing anchors');
 });
 
-test('implicit tuple returns retain their values and marker when partially scrolled', async () => {
+test('implicit tuple returns and their outer callable retain independent partial scrolling', async () => {
     const values = Array.from({ length: 20 }, (_, i) => String(100 + i));
     const expression = `(${values.join(', ')})`, source = `f^{ ${expression} }`, n = nodesFor(source);
     const fn = n('func', source, { body: n('block', source.slice(source.indexOf('{')), {
@@ -557,15 +564,25 @@ test('implicit tuple returns retain their values and marker when partially scrol
         assert.equal(value.y, marker.y + marker.height);
         assert.deepEqual(value.children.map(n => n.labels[0].text), values);
         const convert = slides => toFlow(stacked, slides, 450, undefined, noop, noop, noop, noop, { current: null }, noop);
-        const flow = convert({}), owner = flow.nodes.find(n => n.data.slideOwner);
+        const flow = convert({});
+        const owners = flow.nodes.filter(n => n.data.slideOwner);
+        const owner = owners.find(n => n.id === value.id);
+        const outerOwner = owners.find(n => n.id !== value.id);
         const icon = flow.nodes.find(n => n.data.isReturn);
-        assert.equal(owner.id, value.id);
+        assert(owner, 'the wide returned value overrides horizontal motion in its subtree');
+        assert(outerOwner, 'the wide callable still scrolls from the rest of its box');
+        assert.equal(icon.data.slideKey, outerOwner.data.slideKey,
+            'the fixed return marker belongs to the outer scrolling region');
         assert.equal(source.slice(icon.data.start, icon.data.end), expression);
         assert.equal(flow.nodes.filter(n => n.data.isStart).length, 1);
         assert(flow.exec.some(e => e.target === icon.id));
         const moved = convert({ [owner.data.slideKey]: { dx: -100, dy: 0 } });
         assert(moved.nodes.find(n => n.id === owner.id).position.x < owner.position.x);
         assert.deepEqual(moved.nodes.find(n => n.id === icon.id).position, icon.position);
+        const outerMoved = convert({ [outerOwner.data.slideKey]: { dx: -100, dy: 0 } });
+        assert(outerMoved.nodes.find(n => n.id === outerOwner.id).position.x < outerOwner.position.x);
+        assert.deepEqual(outerMoved.nodes.find(n => n.id === owner.id).position,
+            owner.position, 'the inner owner keeps its parent-relative position while the callable moves');
         assert.equal(stackWideDefinitions(laid, 10000), laid, 'fitting expressions need no vertical offset');
     }
 });

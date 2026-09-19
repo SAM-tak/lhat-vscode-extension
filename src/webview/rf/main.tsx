@@ -43,7 +43,7 @@ import { DEFAULT_MINIMAP_SIZE, fitMinimapSize } from "../minimap";
 import { MinimapResizeHandles } from "./MinimapResizeHandles";
 import { renameTargetKey, type LabelPart, type RenameTarget } from "../labels";
 import { configureLocalization, graphVocabulary } from "../localization";
-import { dragAxis, type DragAxis } from "./gesture";
+import { dragAxis, ownsHorizontalSlide, type DragAxis } from "./gesture";
 import type { ReorderSite } from "../../graphReorder";
 
 declare function acquireVsCodeApi(): {
@@ -298,8 +298,6 @@ function toFlow(
             const disabled = c.lhat?.disabled === true;
             const detachedValue = parent.lhat?.stackedDefinition === true &&
                 c.lhat?.definitionRole === "value";
-            const containsDetached = (node: ElkNode): boolean => node.lhat?.stackedDefinition === true ||
-                (node.children ?? []).some(containsDetached);
             let x = c.x ?? 0;
             let y = c.y ?? 0;
             if (condition !== undefined) {
@@ -336,8 +334,8 @@ function toFlow(
             // only its lowered value owns the offset. Other wide top-level
             // containers still move as a whole. Deeper boxes never acquire
             // another offset; gestures there are routed to the same owner.
-            const canSlide = detachedValue ||
-                (topLevel && !layoutOnly && isContainer && !containsDetached(c) && usable > 0 && w > usable);
+            const canSlide = ownsHorizontalSlide(
+                detachedValue, topLevel, layoutOnly, isContainer, usable, w);
             const key = canSlide && c.lhat !== undefined ? slideKeyOf(c.lhat) : undefined;
             // Normal boxes stop at the viewport's side margins; a lowered
             // value stops at its initial x or at the viewport's right margin.

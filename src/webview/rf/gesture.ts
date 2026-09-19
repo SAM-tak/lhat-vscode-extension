@@ -18,3 +18,20 @@ export function dragAxis(dx: number, dy: number, canScrollHorizontally: boolean)
     if (!canScrollHorizontally) return "vertical";
     return Math.abs(dy) >= Math.abs(dx) * verticalSlope ? "vertical" : "horizontal";
 }
+
+/**
+ * Decide whether this layout box owns horizontal motion. A detached value may
+ * override the owner inside its own subtree; that does not disqualify its wide
+ * top-level ancestor from owning the rest of the visible box.
+ */
+export function ownsHorizontalSlide(
+    detachedValue: boolean,
+    topLevel: boolean,
+    layoutOnly: boolean,
+    isContainer: boolean,
+    usableWidth: number,
+    width: number,
+): boolean {
+    return detachedValue ||
+        (topLevel && !layoutOnly && isContainer && usableWidth > 0 && width > usableWidth);
+}
