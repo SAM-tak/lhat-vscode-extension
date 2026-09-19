@@ -157,7 +157,7 @@ html, body, #root {
     position: absolute;
     top: 2px;
     right: 2px;
-    z-index: 1;
+    z-index: 5;
     width: calc(14px * var(--lhat-scale, 1));
     height: calc(14px * var(--lhat-scale, 1));
     padding: 0;
@@ -192,6 +192,49 @@ html, body, #root {
 .box:hover {
     border-color: var(--vscode-focusBorder);
 }
+
+/* A marked source-list item exposes these strips. They do not move the React
+   Flow node: they begin one shared insertion D&D interaction. The body,
+   including blank space around children, remains free for reading scroll. */
+.node-reorder {
+    position: absolute;
+    z-index: 4;
+    touch-action: none;
+    cursor: grab;
+}
+.node-reorder-top { top: 0; left: 0; right: 0; height: 5px; }
+.node-reorder-right { top: 5px; right: 0; bottom: 5px; width: 5px; }
+.node-reorder-bottom { right: 0; bottom: 0; left: 0; height: 5px; }
+.node-reorder-left { top: 5px; bottom: 5px; left: 0; width: 5px; }
+.node-reorder:hover {
+    background: color-mix(in srgb, var(--vscode-focusBorder) 35%, transparent);
+}
+.reorder-ghost {
+    position: fixed;
+    z-index: 12000;
+    box-sizing: border-box;
+    padding: 3px 8px;
+    overflow: hidden;
+    color: var(--vscode-editor-foreground);
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-focusBorder);
+    border-radius: 4px;
+    font-family: var(--vscode-editor-font-family, monospace);
+    font-size: 11px;
+    line-height: 20px;
+    white-space: nowrap;
+    opacity: 0.65;
+    pointer-events: none;
+}
+.reorder-insertion {
+    position: fixed;
+    z-index: 12001;
+    pointer-events: none;
+    background: var(--vscode-focusBorder);
+    box-shadow: 0 0 3px var(--vscode-focusBorder);
+}
+.reorder-insertion.horizontal { height: 2px; }
+.reorder-insertion.vertical { width: 2px; }
 
 /* Start and return share a red circle, with distinct white pictograms. */
 .box.start-node,
@@ -316,12 +359,47 @@ html, body, #root {
 button.type-label { cursor: pointer; }
 button.type-label:hover, button.type-label:focus-visible { opacity: 1; outline: 1px solid var(--vscode-focusBorder); }
 button.type-label:disabled { cursor: default; }
-button.type-label[aria-invalid="true"] { outline: 1px solid var(--vscode-inputValidation-errorBorder, #f48771); }
-.type-error {
-    position: absolute; z-index: 10; padding: 4px 8px; font-size: 11px; white-space: normal;
-    background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
-    color: var(--vscode-editor-foreground); max-width: 320px;
+/* Portalled outside the graph's transforms and node clipping. */
+.type-menu {
+    position: fixed;
+    z-index: 30000;
+    box-sizing: border-box;
+    width: min(380px, calc(100vw - 16px));
+    max-height: calc(100vh - 16px);
+    overflow: auto;
+    padding: 6px;
+    color: var(--vscode-editorWidget-foreground, var(--vscode-editor-foreground, #ddd));
+    background: var(--vscode-editorWidget-background, #252526);
+    border: 1px solid var(--vscode-widget-border, #555);
+    border-radius: 5px;
+    box-shadow: 0 4px 16px var(--vscode-widget-shadow, #0006);
+    font: 12px var(--vscode-font-family, sans-serif);
 }
+.type-menu-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 2px 6px 6px; }
+.type-menu button { cursor: pointer; }
+.type-menu-close { background: transparent; color: inherit; border: 0; font-size: 18px; padding: 0 5px; }
+.type-menu-infer {
+    display: block; width: 100%; padding: 6px 7px; margin-bottom: 6px; text-align: left;
+    font: inherit; color: inherit; background: transparent;
+    border: 0; border-bottom: 1px solid var(--vscode-widget-border, #555);
+}
+.type-menu-infer:hover:enabled { background: var(--vscode-list-hoverBackground, #ffffff12); }
+.type-menu .type-menu-infer:disabled { opacity: 0.5; cursor: default; }
+.type-menu input {
+    box-sizing: border-box; width: 100%; padding: 5px 7px;
+    font: inherit; color: var(--vscode-input-foreground, #ddd);
+    background: var(--vscode-input-background, #333);
+    border: 1px solid var(--vscode-input-border, #555);
+}
+.type-menu input:focus, .type-menu button:focus-visible { outline: 1px solid var(--vscode-focusBorder, #007fd4); }
+.type-menu-options { max-height: min(300px, 45vh); overflow: auto; margin-top: 5px; overscroll-behavior: contain; }
+.type-menu-option { padding: 5px 7px; cursor: pointer; overflow-wrap: anywhere; }
+.type-menu-option > span { font-family: var(--vscode-editor-font-family, monospace); }
+.type-menu-option small { display: block; opacity: 0.8; margin-top: 2px; }
+.type-menu-option[aria-selected="true"] { color: var(--vscode-list-activeSelectionForeground, #fff); background: var(--vscode-list-activeSelectionBackground, #094771); }
+.type-menu-status { padding: 10px 7px; line-height: 1.5; }
+.type-menu-status [role="alert"] { color: var(--vscode-errorForeground, #f48771); }
+.type-menu-status button { margin-top: 8px; padding: 4px 10px; border: 0; color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, #0e639c); }
 
 .leaf .boxlabel {
     display: flex;
@@ -421,38 +499,55 @@ button.type-label[aria-invalid="true"] { outline: 1px solid var(--vscode-inputVa
     border-style: dashed;
 }
 
-/* Execution/definition ports appear when their box or handle is pointed at. */
+/* Invisible geometry anchors only. Lines have no editing gestures. */
 .react-flow__handle {
     width: 7px;
     height: 7px;
-    background: var(--vscode-charts-blue, #58a);
-    border: none;
-    opacity: 0;
-    transition: opacity 120ms;
+    visibility: hidden;
+    pointer-events: none !important;
 }
 
-.box:hover ~ .react-flow__handle,
-.react-flow__node:hover .react-flow__handle,
-.react-flow__handle.connectingfrom,
-.react-flow__handle.connectingto {
-    opacity: 1;
-}
-
-.react-flow__edge.exec path,
-.react-flow__connection-path.exec {
+.react-flow__edge.exec path {
     stroke: var(--lhat-exec);
     stroke-width: calc(2.1px * var(--lhat-scale, 1));
 }
 
-.react-flow__edge-path,
-.react-flow__connection-path.definition {
+.react-flow__edge-path {
     stroke: var(--vscode-charts-blue, #58a);
     stroke-width: 1.5;
 }
 
-/* Keep the interactive preview visible even inside an active scroll owner
-   (z=4000, plus descendants and selection). The SVG wrapper owns the layer,
-   not its inner connection group. Finished edges use their endpoint layers. */
-.react-flow__connectionline {
-    z-index: 8000;
+.react-flow__edge { pointer-events: none !important; }
+
+.statement-button {
+    box-sizing: border-box;
+    width: calc(15.4px * var(--lhat-scale, 1));
+    height: calc(15.4px * var(--lhat-scale, 1));
+    border: 1px solid var(--vscode-descriptionForeground, #aaa);
+    border-radius: 50%;
+    padding: 0;
+    background: var(--vscode-editor-background);
+    color: var(--vscode-descriptionForeground, #aaa);
+    cursor: pointer;
+    pointer-events: auto;
 }
+.statement-button svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.7; pointer-events: none; }
+.statement-button:hover, .statement-button:focus-visible { color: var(--vscode-focusBorder); border-color: currentColor; outline: none; }
+.statement-button:disabled { opacity: 0.45; cursor: default; }
+.statement-button.insert-statement { position: absolute; top: calc(-18.7px * var(--lhat-scale, 1)); z-index: 1; }
+.statement-button.append-statement { width: 100%; height: 100%; }
+.statement-button.floating-add {
+    position: absolute;
+    z-index: 2;
+    width: calc(15.4px * var(--lhat-scale, 1));
+    height: calc(15.4px * var(--lhat-scale, 1));
+    right: calc(-18.7px * var(--lhat-scale, 1));
+    top: calc(50% - 7.7px * var(--lhat-scale, 1));
+}
+.box.add-node:has(.append-statement) { border: none; }
+.statement-menu .type-menu-option { align-items: flex-start; flex-direction: column; }
+.operator-cell { display: flex; flex-direction: column; align-items: center; padding: calc(3px * var(--lhat-scale)); }
+.operator-cell > :first-child { font-size: calc(10px * var(--lhat-scale)); font-style: italic; color: var(--vscode-descriptionForeground); }
+.operator-box { cursor: context-menu; }
+.box.decoration { background: transparent; border-color: transparent; display: flex; align-items: center; justify-content: center; }
+.box.decoration .boxlabel { padding: 0; }

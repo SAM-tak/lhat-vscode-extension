@@ -138,7 +138,8 @@ test('var declarations use the same definition lines, types and execution endpoi
     assert.equal(statements(graph)[1].labels[0].text, 'var^ pending:number^');
     assert.equal(statements(graph)[2].labels[0].text, 'count := 1');
     assert.equal(graph.edges[1].sources[0], `${statements(graph)[0].id}__flow-out`);
-    assert(graph.edges.every(e => e.drawn && !e.definition));
+    assert(graph.edges.filter(e => !e.targets.includes(graph.children.at(-1).id)).every(e => e.drawn && !e.definition));
+    assert.equal(graph.children.at(-1).lhat.synthetic, 'add');
 });
 
 test('table member pairs wrap using both boxes; positional comparisons stay leaves', async () => {
@@ -370,7 +371,9 @@ test('container minimum width includes its title and fold button at each font sc
         const min = Math.round(box.labels[0].text.length * 7.2 * scale) + 2 * Math.round(18 * scale);
         assert(box.width >= min, 'small children must not shrink a long header');
         assert.equal(box.children[0].labels[0].text, 'Missing');
-        assert.equal(box.children[0].children, undefined, 'a payload-free kind is still visible as a leaf');
+        assert.equal(box.children[0].labels[0].text, 'Missing', 'a payload-free kind remains visible');
+        assert.equal(flatten(box.children[0]).filter(n => n.lhat?.synthetic === 'add').length, 1,
+            'an empty error payload has its field insertion point');
     }
 });
 

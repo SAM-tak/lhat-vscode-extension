@@ -2,12 +2,15 @@ import type { AstNode, SourceSpan, TypeSite } from "../protocol";
 import { typeSites } from "../graphTypes";
 import { HATS, type LabelCategory } from "./vocabulary";
 
-export type LabelRole = "constant" | "variable" | "string" | "number";
+export type LabelRole = "variableDefinition" | "mutableVariableDefinition" |
+    "variableDeclaration" | "mutableVariableDeclaration" | "string" | "number";
 export type Vocabulary = Record<LabelRole, string> & {
     hats?: Record<string, string>; outer?: string; levels?: string; tableDefinition?: string;
 };
 export const ENGLISH_VOCABULARY: Vocabulary = {
-    constant: "Define constant", variable: "Define variable", string: "Text", number: "Number",
+    variableDefinition: "Variable Definition", mutableVariableDefinition: "Mutable Variable Definition",
+    variableDeclaration: "Variable Declaration", mutableVariableDeclaration: "Mutable Variable Declaration",
+    string: "Text", number: "Number",
     hats: Object.fromEntries(Object.entries(HATS).map(([word, entry]) => [word, entry.text])),
     outer: "Outer {0}: {1}", levels: "{0} ({1} levels)",
     tableDefinition: "Table type definition",
@@ -18,7 +21,10 @@ export const renameTargetKey = (name: RenameTarget): string => `${name.start}:${
 export const nameColumns = (value: string): number => Math.max(3, labelColumns(value));
 export interface LabelPart { text: string; role?: string; category?: LabelCategory; source?: string; name?: RenameTarget; symbol?: SourceSpan; typeSite?: TypeSite; typeLabel?: string }
 export interface DisplayLabel { text: string; parts: LabelPart[] }
-interface Token { start: number; end: number; word?: string; depth?: number; name?: RenameTarget; tableDefinition?: boolean; symbol?: SourceSpan }
+interface Token {
+    start: number; end: number; word?: string; depth?: number; name?: RenameTarget;
+    tableDefinition?: boolean; symbol?: SourceSpan; definition?: boolean; typeSite?: TypeSite;
+}
 
 /** Conservative monospace columns: CJK/full-width glyphs do not fit in one Latin cell. */
 export function labelColumns(text: string): number {
@@ -37,6 +43,7 @@ function semanticTokens(source: string, root: AstNode): Token[] {
     const protectedSpans: { start: number; end: number }[] = [];
     const declaredHats = new Set<string>();
     const tableDefinitions = new Set<number>();
+    const bindings = new Map<number, boolean>();
     const symbols = new Map<number, SourceSpan>();
     const protectName = (node: AstNode | AstNode[] | undefined) => {
         if (node === undefined || Array.isArray(node)) return;
@@ -55,6 +62,7 @@ function semanticTokens(source: string, root: AstNode): Token[] {
         // The definition's keyword starts a DEF node. References such as
         // def^.foo (even inside that definition) are separate HAT_IDENTs.
         if (node.kind === "def") tableDefinitions.add(node.start);
+        if (node.kind === "define") bindings.set(node.start, !!node.fields?.values);
         if (node.kind === "string") { protectedSpans.push(node); return; }
         if (["table-entry", "param", "enumdef", "errordef", "error-kind"].includes(node.kind)) {
             const name = node.fields?.name ?? node.fields?.key;
@@ -62,6 +70,11 @@ function semanticTokens(source: string, root: AstNode): Token[] {
             // not a user declaration shadowing every self^ in this file.
             if (!(node.kind === "param" && name && !Array.isArray(name) &&
                 /^self\^+$/.test(source.slice(name.start, name.end)))) protectName(name);
+            if (node.kind === "param" && name && !Array.isArray(name) &&
+                !/^self\^+$/.test(source.slice(name.start, name.end))) {
+                tokens.push({ start: name.start, end: name.end,
+                    name: { start: name.start, end: name.end, value: source.slice(name.start, name.end) } });
+            }
         }
         if (node.kind === "define") {
             const targets = node.fields?.targets;
@@ -114,7 +127,8 @@ function semanticTokens(source: string, root: AstNode): Token[] {
             if (hat && Object.prototype.hasOwnProperty.call(HATS, hat[1]) && !declaredHats.has(word!) &&
                 (hat[2].length === 1 || ["break", "next", "skip", "continue", "it", "self", "def", "Self", "this"].includes(hat[1]))) {
                 tokens.push({ start: i, end: i + word!.length, word: hat[1], depth: hat[2].length,
-                    tableDefinition: hat[1] === "def" && tableDefinitions.has(i) });
+                    tableDefinition: hat[1] === "def" && tableDefinitions.has(i),
+                    definition: (hat[1] === "let" || hat[1] === "var") ? bindings.get(i) : undefined });
             }
             i += word?.length ?? 1;
         }
@@ -156,6 +170,16 @@ function compact(parts: LabelPart[], fallback: string, max: number): LabelPart[]
 export const labelText = (label: DisplayLabel | string): string =>
     typeof label === "string" ? label : label.parts.map((p) => p.text).join("");
 
+/** Full visual spelling for menus/tooltips, short structural captions for nodes. */
+export function displayType(typeText: string, vocabulary: Vocabulary = ENGLISH_VOCABULARY, brief = false): string {
+    if (brief) {
+        const kind = /^[\s(]*([tfp])\^(?!\^)/.exec(typeText)?.[1];
+        if (kind) return `${vocabulary.hats?.[kind] ?? HATS[kind].text}…`;
+    }
+    const node: AstNode = { kind: "graph-type", start: 0, end: typeText.length, line: 1, column: 1 };
+    return labelText(createLabeler(typeText, node, vocabulary)(node, [], brief ? 64 : Infinity));
+}
+
 /** Source spans decide what may be localized; user text is never searched/replaced. */
 export function createLabeler(source: string, root: AstNode, vocabulary: Vocabulary = ENGLISH_VOCABULARY) {
     const tokens = semanticTokens(source, root);
@@ -188,7 +212,11 @@ export function createLabeler(source: string, root: AstNode, vocabulary: Vocabul
         }
         const shownTokens = shownSites.length ? [
             ...tokens.filter(token => !shownSites.some(site => token.start >= site.start && token.end <= site.end)),
-            ...shownSites.map(site => ({ ...tokens.find(token => token.start === site.start && token.end === site.end), start: site.start, end: site.end })),
+            ...shownSites.map(site => {
+                const anchor = site.anchor ?? site;
+                return { ...tokens.find(token => token.start === anchor.start && token.end === anchor.end),
+                    start: anchor.start, end: anchor.end, typeSite: site };
+            }),
         ].sort((a, b) => a.start - b.start) : tokens;
         const parts: LabelPart[] = [];
         for (const piece of pieces) {
@@ -202,10 +230,18 @@ export function createLabeler(source: string, root: AstNode, vocabulary: Vocabul
                 else {
                     const word = token.word!;
                     const entry = HATS[word];
-                    const role = word === "let" ? "constant" : word === "var" ? "variable" : word;
+                    const role = word === "let"
+                        ? token.definition === false ? "variableDeclaration" : "variableDefinition"
+                        : word === "var"
+                            ? token.definition === false ? "mutableVariableDeclaration" : "mutableVariableDefinition"
+                            : word;
                     let text = token.tableDefinition
                         ? vocabulary.tableDefinition ?? ENGLISH_VOCABULARY.tableDefinition!
-                        : vocabulary.hats?.[word] ?? vocabulary[role as LabelRole] ?? entry.text;
+                        : (word === "let" || word === "var" ? vocabulary[role as LabelRole]
+                            : vocabulary.hats?.[word]) ?? vocabulary[role as LabelRole] ?? entry.text;
+                    // Braces already identify a structural table type. Keep
+                    // def^ and named types distinct, but don't prefix t^{...}.
+                    if (word === "t" && /^\s*\{/.test(source.slice(token.end))) text = "";
                     if (token.depth! > 1) {
                         const exit = ["break", "next", "skip", "continue"].includes(word);
                         const format = exit ? vocabulary.levels ?? ENGLISH_VOCABULARY.levels!
@@ -218,14 +254,12 @@ export function createLabeler(source: string, root: AstNode, vocabulary: Vocabul
                     parts.push({ text, role, category: entry.category, source: source.slice(token.start, token.end), symbol: token.symbol });
                     if (/^[\p{L}\p{N}_]/u.test(source.slice(token.end, piece.end))) parts.push({ text: " " });
                 }
-                cursor = token.end;
-                const site = shownSites.find(site => site.start === token.start && site.end === token.end);
-                if (site) {
+                if (token.typeSite) {
                     const part = parts[parts.length - 1];
-                    part.typeSite = site;
-                    const typeNode: AstNode = { kind: "graph-type", start: 0, end: site.typeText.length, line: 1, column: 1 };
-                    part.typeLabel = labelText(createLabeler(site.typeText, typeNode, vocabulary)(typeNode, [], 64));
+                    part.typeSite = token.typeSite;
+                    part.typeLabel = displayType(token.typeSite.typeText, vocabulary, true);
                 }
+                cursor = token.end;
             }
             parts.push({ text: source.slice(cursor, piece.end) });
         }

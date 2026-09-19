@@ -12,12 +12,15 @@ function load(file) {
     mod._compile(buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
     return mod.exports;
 }
-const { createLabeler, labelText, labelColumns, nameColumns, renameTargetKey, ENGLISH_VOCABULARY } = load('labels.ts');
+const { createLabeler, displayType, labelText, labelColumns, nameColumns, renameTargetKey, ENGLISH_VOCABULARY } = load('labels.ts');
 const { toElk, titleOf } = load('map.ts');
 const { configureLocalization, graphVocabulary } = load('localization.ts');
 const ja = require('../l10n/bundle.l10n.ja.json');
 const { HATS, HAT_GROUPS } = load('vocabulary.ts');
-const japanese = { constant: ja['Define constant'], variable: ja['Define variable'], string: ja.Text, number: ja.Number,
+const japanese = {
+    variableDefinition: ja['Variable Definition'], mutableVariableDefinition: ja['Mutable Variable Definition'],
+    variableDeclaration: ja['Variable Declaration'], mutableVariableDeclaration: ja['Mutable Variable Declaration'],
+    string: ja.Text, number: ja.Number,
     tableDefinition: ja['Table type definition'],
     hats: Object.fromEntries(Object.entries(HATS).map(([word, entry]) => [word, ja[entry.text]])),
     outer: ja['Outer {0}: {1}'], levels: ja['{0} ({1} levels)'] };
@@ -42,6 +45,55 @@ test('VS Code bundles select Japanese, default English and per-message English f
     assert.deepEqual(graphVocabulary(), ENGLISH_VOCABULARY);
 });
 
+test('type menu spellings use the graph vocabulary and structural tables need only braces', () => {
+    for (const [vocabulary, number, text, fn, proc] of [
+        [ENGLISH_VOCABULARY, 'Number', 'Text', 'Function', 'Procedure'],
+        [japanese, '数値', '文字列', '関数', '手続き'],
+    ]) {
+        assert.equal(displayType('number^', vocabulary), number);
+        assert.equal(displayType('godot.Area2D', vocabulary), 'godot.Area2D');
+        assert.equal(displayType('t^{ count:number^, child:t^{ name:string^ } }', vocabulary),
+            `{ count:${number}, child:{ name:${text} } }`);
+        assert.equal(displayType('f^number^ -> t^{ text:string^ };', vocabulary), `${fn} ${number} -> { text:${text} };`);
+        assert.equal(displayType('p^string^;', vocabulary), `${proc} ${text};`);
+        assert.equal(displayType('t^{ ["t^"]:string^ }', vocabulary), `{ ["t^"]:${text} }`);
+        assert.equal(displayType('t^{}', vocabulary, true), `${vocabulary.hats.t}…`);
+        assert.equal(displayType('f^number^ -> string^;', vocabulary, true), `${fn}…`);
+        assert.equal(displayType('p^number^;', vocabulary, true), `${proc}…`);
+        const source = 't^{ count:number^ }';
+        const root = fixture(source)('table-type', source);
+        assert.equal(labelText(createLabeler(source, root, vocabulary)(root, [])), `{ count:${number} }`);
+    }
+});
+
+test('long structural types do not widen variable nodes; complete types remain available for editing', async () => {
+    const source = 'let^nested = def^{}', n = fixture(source);
+    for (const [short, long] of [
+        ['t^{}', `t^{ ${Array.from({ length: 30 }, (_, i) => `member${i}:string^`).join(', ')} }`],
+        ['f^number^ -> string^;', `f^${Array(30).fill('number^').join(', ')} -> string^;`],
+        ['p^number^;', `p^${Array(30).fill('number^').join(', ')};`],
+    ]) {
+        for (const vocabulary of [ENGLISH_VOCABULARY, japanese]) {
+            for (const scale of [1, 2]) {
+                const layout = async type => {
+                    const root = n('define', source, { targets: [{ ...n('ident', 'nested'), inferredType: type }],
+                        values: [n('def', 'def^{}')] });
+                    return flatten(await new ELK().layout(toElk({ source, root }, { vocabulary, scale })));
+                };
+                const brief = (await layout(short)).find(n => n.lhat?.definitionRole === 'declaration');
+                const nodes = await layout(long), declaration = nodes.find(n => n.lhat?.definitionRole === 'declaration');
+                assert.equal(declaration.width, brief.width, 'signature length must not enlarge the declaration');
+                assert(declaration.width < 280 * scale);
+                const part = declaration.lhat.labelParts.find(p => p.typeSite);
+                assert.equal(part.typeLabel, displayType(long, vocabulary, true));
+                assert.equal(part.typeSite.typeText, long, 'the summary never replaces editable source syntax');
+                assert.equal(part.name.value, 'nested');
+                assert(nodes.find(n => n.lhat?.definitionRole === 'value').x >= declaration.x + declaration.width);
+            }
+        }
+    }
+});
+
 test('declaration roles, names and built-in types have separate source-safe display runs', () => {
     const source = 'public^#[ var^ number^ ]#let^名前:string^ = "let^ number^"\nvar^number:number^ = 42';
     const n = fixture(source);
@@ -61,18 +113,35 @@ test('declaration roles, names and built-in types have separate source-safe disp
     for (const vocabulary of [ENGLISH_VOCABULARY, japanese]) {
         const graph = toElk({ source, root }, { vocabulary });
         const left = flatten(graph).filter(n => n.lhat?.definitionRole === 'declaration');
-        assert(display(left[0]).includes(`${vocabulary.constant} 名前`));
+        assert(display(left[0]).includes(`${vocabulary.variableDefinition} 名前`));
         assert.equal(left[0].lhat.labelParts.find(p => p.typeSite).typeLabel, vocabulary.string);
         assert(display(left[0]).includes('#[ var^ number^ ]#'), 'comments are not keyword replacements');
-        assert.equal(display(left[1]), `${vocabulary.variable} number`);
+        assert.equal(display(left[1]), `${vocabulary.mutableVariableDefinition} number`);
         assert.equal(left[1].lhat.labelParts.find(p => p.typeSite).typeLabel, vocabulary.number);
-        assert.deepEqual(left[1].lhat.labelParts.filter(p => p.role).map(p => p.role), ['variable']);
+        assert.deepEqual(left[1].lhat.labelParts.filter(p => p.role).map(p => p.role), ['mutableVariableDefinition']);
         assert.equal(left[1].labels[0].text, 'var^number:number^', 'raw labels remain available for source inspection');
         const string = flatten(graph).find(n => n.lhat?.literal?.kind === 'string');
         assert.equal(string.lhat.literal.value, 'let^ number^');
         assert.equal(string.lhat.literalTypeLabel, vocabulary.string);
     }
     assert.equal(JSON.stringify({ source, root }), before, 'localization never mutates source/AST');
+});
+
+test('invalid value-less let/var bindings are not presented as declarations', () => {
+    const source = 'let^fixed:number^\nvar^pending:string^';
+    const n = fixture(source);
+    const root = n('block', source, { items: [
+        n('define', 'let^fixed:number^', { targets: [n('param', 'fixed:number^', {
+            name: n('ident', 'fixed'), type: n('type-name', 'number^'),
+        })] }),
+        n('define', 'var^pending:string^', { targets: [n('param', 'pending:string^', {
+            name: n('ident', 'pending'), type: n('type-name', 'string^'),
+        })] }),
+    ] });
+    for (const vocabulary of [ENGLISH_VOCABULARY, japanese]) {
+        const labels = flatten(toElk({ source, root }, { vocabulary })).filter(node => node.lhat?.kind === 'define');
+        assert.deepEqual(labels.map(display), ['let^fixed:number^', 'var^pending:string^']);
+    }
 });
 
 test('every standard hat has a bilingual label and registered graph-specific color', () => {
@@ -162,8 +231,9 @@ test('functions and procedures use independent cool/warm theme colors in every d
             const n = fixture(source), body = n('block', '{}');
             const root = n('func', source, { body });
             for (const collapse of [true, false]) {
-                const node = flatten(toElk({ source, root }, { vocabulary, collapse })).find(n => n.lhat?.kind === 'func');
-                assert.equal(node.lhat.labelParts.find(part => part.role === word).category, category);
+                const nodes = flatten(toElk({ source, root }, { vocabulary, collapse }));
+                const marker = nodes.find(n => n.lhat?.kind === 'signature-title');
+                assert.equal(marker.lhat.labelParts.find(part => part.role === word).category, category);
             }
         }
     }
@@ -257,20 +327,23 @@ test('function signatures, folds, breadcrumbs and drilled views share the locali
     });
     for (const collapse of [true, false]) {
         const graph = toElk({ source, root: fn }, { vocabulary: japanese, collapse });
-        const title = flatten(graph).find(n => n.lhat?.kind === 'func').lhat.labelParts.map(p => p.text).join('');
-        assert(title.includes('x:文字列-> 数値'));
-        assert(!title.includes('string^') && !title.includes('number^'));
+        const functionNode = flatten(graph).find(n => n.lhat?.kind === 'func');
+        const signature = flatten(functionNode).find(n => n.lhat?.kind === 'signature');
+        const parts = flatten(signature).flatMap(n => n.lhat?.labelParts ?? []);
+        const title = parts.map(p => p.text).join('');
+        assert(title.includes('x'));
+        assert.deepEqual(parts.filter(p => p.typeSite).map(p => p.typeLabel), ['文字列', '数値']);
     }
     assert.equal(titleOf(fn, source, japanese), '関数 x:文字列-> 数値');
     assert.equal(titleOf(fn, source), 'f^x:string^-> number^', 'source-oriented callers can retain the source title');
     const drilled = toElk({ source, root: fn }, { vocabulary: japanese, root: fn, collapse: true });
-    assert(flatten(drilled).some(n => display(n) === '変数定義 result' && n.lhat.labelParts.some(p => p.typeLabel === '数値')));
+    assert(flatten(drilled).some(n => display(n) === '可変変数定義 result' && n.lhat.labelParts.some(p => p.typeLabel === '数値')));
     assert(flatten(drilled).some(n => n.lhat?.literalTypeLabel === '数値'));
 });
 
 test('translated text, wide glyphs and literal type captions determine geometry at every font size', async () => {
     assert.equal(labelColumns('abc'), 3);
-    assert.equal(labelColumns('定数定義'), 8);
+    assert.equal(labelColumns('可変変数定義'), 12);
     assert.equal(labelColumns('数値😀'), 6);
     assert.equal(labelColumns('e\u0301'), 1);
     const source = 'let^金額:number^ = 42';

@@ -16,12 +16,14 @@
 import React, {
     useCallback, useEffect, useMemo, useRef, useState,
 } from "react";
+import * as l10n from "@vscode/l10n";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import {
-    Background, BaseEdge, ConnectionLineType, Handle, MarkerType, MiniMap, Panel, PanOnScrollMode, Position,
-    ReactFlow, addEdge, getSmoothStepPath, useEdgesState, useReactFlow, ReactFlowProvider,
+    Background, BaseEdge, Handle, MarkerType, MiniMap, Panel, PanOnScrollMode, Position,
+    ReactFlow, getSmoothStepPath, useReactFlow, ReactFlowProvider,
     useUpdateNodeInternals,
-    type BuiltInEdge, type Connection, type ConnectionLineComponentProps,
+    type BuiltInEdge,
     type Edge, type EdgeProps, type EdgeTypes, type Node, type NodeProps, type NodeTypes,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -33,11 +35,16 @@ import type { LiteralValue } from "../literals";
 import { LiteralEditProvider, LiteralEditStatus, LiteralInput } from "./LiteralInput";
 import { NameInput, RenameProvider } from "./NameInput";
 import { TypeLabel, TypeProvider } from "./TypeLabel";
+import { StatementProvider, StatementButton, useStatementActions } from "./StatementMenu";
+import type { InsertionSite, OperatorSite } from "../../graphLists";
+import type { StatementSite, StatementInsertion } from "../../graphStatements";
 import { ReferenceLine } from "./ReferenceLine";
 import { DEFAULT_MINIMAP_SIZE, fitMinimapSize } from "../minimap";
 import { MinimapResizeHandles } from "./MinimapResizeHandles";
 import { renameTargetKey, type LabelPart, type RenameTarget } from "../labels";
 import { configureLocalization, graphVocabulary } from "../localization";
+import { dragAxis, type DragAxis } from "./gesture";
+import type { ReorderSite } from "../../graphReorder";
 
 declare function acquireVsCodeApi(): {
     postMessage(message: FromWebview): void;
@@ -49,6 +56,7 @@ const vscode = acquireVsCodeApi();
 const post = (message: FromWebview) => vscode.postMessage(message);
 const elk = new ELK();
 const DEFAULT_FONT_PX = 12;
+let reorderSequence = 0;
 
 // ---------------------------------------------------------------------------
 // Laid-out ELK graph -> React Flow nodes
@@ -132,12 +140,22 @@ interface BoxData extends Record<string, unknown>, SlideData {
     onSlide: (key: string, dx: number, mode?: "drag" | "glide") => void;
     /** Return a stretched box to its nearest viewport edge. */
     onSpring: (key: string) => void;
-    /**
-     * 8.6: where the execution line crosses this box, in its own pixels.
-     * Undefined means the middle. A base-left shift moves the box, not the
-     * line: the handles stay on the chain's axis -- where the centre was
-     * before the shift -- so the line stays vertical and only the box slid.
-     */
+    /** The document's vertical drag, shared by the background and node bodies. */
+    onDocumentStart: () => void;
+    onDocumentSlide: (dy: number, mode?: "drag" | "glide") => number;
+    onDocumentRelease: (velocity: number) => void;
+    onDocumentSpring: () => void;
+    /** Source sibling-list item which uses the common insertion D&D control. */
+    reorder?: ReorderSite;
+    statement?: StatementSite;
+    insertion?: InsertionSite;
+    appendInsertion?: InsertionSite;
+    insertionAxis?: "horizontal" | "vertical";
+    operator?: OperatorSite;
+    inline?: boolean;
+    decoration?: boolean;
+    onReorder: (source: ReorderSite, target: ReorderSite, before: boolean) => void;
+    /** Execution ports counter the box's slide to stay on the document axis. */
     flowHandleX?: number;
     /** Left click: go into a folded definition. Nothing otherwise. */
     onEnter: (data: BoxData) => void;
@@ -158,12 +176,16 @@ type BoxNodeType = Node<BoxData, "box">;
 // unrelated execution line, while its own descendant edges stay above it.
 const EXECUTION_Z = 2000;
 const ACTIVE_SCROLL_Z = EXECUTION_Z * 2;
-// Above internal edges (up to 7000 with selection) and their preview (8000).
+// Above internal edges (up to 7000 with selection).
 // Conditions have no execution handles, so this lift cannot lift an edge too.
 const CONDITION_Z = EXECUTION_Z * 5;
 
 const executionEdge = {
     type: "smoothstep",
+    selectable: false,
+    focusable: false,
+    deletable: false,
+    reconnectable: false,
     className: "exec",
     zIndex: EXECUTION_Z,
     pathOptions: { borderRadius: 6, offset: 6 },
@@ -191,12 +213,6 @@ const definitionEdge = {
 const definitionBranchEdge = { ...definitionEdge, type: "definition-branch",
     className: "definition definition-branch", markerEnd: undefined };
 
-const validConnection = (connection: Connection | Edge): boolean =>
-    ((connection.sourceHandle === "flow-out" || connection.sourceHandle === "flow-branch") &&
-        connection.targetHandle === "flow-in") ||
-    (connection.sourceHandle === "definition-out" &&
-        (connection.targetHandle === "definition-in" || connection.targetHandle === "definition-branch"));
-
 function toFlow(
     laid: ElkNode,
     slides: Slides,
@@ -208,6 +224,11 @@ function toFlow(
     onFold: BoxData["onFold"],
     slideMotion: BoxData["slideMotion"],
     onSpring: BoxData["onSpring"],
+    onDocumentStart: BoxData["onDocumentStart"],
+    onDocumentSlide: BoxData["onDocumentSlide"],
+    onDocumentRelease: BoxData["onDocumentRelease"],
+    onDocumentSpring: BoxData["onDocumentSpring"],
+    onReorder: BoxData["onReorder"],
 ): { nodes: BoxNodeType[]; exec: Edge[]; definitions: Edge[] } {
     const nodes: BoxNodeType[] = [];
     // 8.6: the execution lines. The layout's own order-pinning edges (6.3),
@@ -251,6 +272,8 @@ function toFlow(
         depth: number,
         inheritedSlide: SlideData,
         parentX: number,
+        inheritedReorder?: ReorderSite,
+        inheritedStatement?: StatementSite,
     ): void => {
         for (const c of parent.children ?? []) {
             const topLevel = parentId === undefined;
@@ -267,9 +290,16 @@ function toFlow(
             // coordinates, but do not draw an extra box or expose handles.
             const layoutOnly = c.lhat === undefined ||
                 c.lhat.definitionRole === "row" || c.lhat.layoutOnly === true;
+            // A definition row is a source item without a visible box. Its
+            // two immediate visible halves share one reorder handle; a normal
+            // item's descendants do not inherit that handle.
+            const reorder = c.lhat?.reorder ?? inheritedReorder;
+            const statement = c.lhat?.statement ?? inheritedStatement;
             const disabled = c.lhat?.disabled === true;
             const detachedValue = parent.lhat?.stackedDefinition === true &&
                 c.lhat?.definitionRole === "value";
+            const containsDetached = (node: ElkNode): boolean => node.lhat?.stackedDefinition === true ||
+                (node.children ?? []).some(containsDetached);
             let x = c.x ?? 0;
             let y = c.y ?? 0;
             if (condition !== undefined) {
@@ -307,7 +337,7 @@ function toFlow(
             // containers still move as a whole. Deeper boxes never acquire
             // another offset; gestures there are routed to the same owner.
             const canSlide = detachedValue ||
-                (topLevel && !layoutOnly && isContainer && usable > 0 && w > usable);
+                (topLevel && !layoutOnly && isContainer && !containsDetached(c) && usable > 0 && w > usable);
             const key = canSlide && c.lhat !== undefined ? slideKeyOf(c.lhat) : undefined;
             // Normal boxes stop at the viewport's side margins; a lowered
             // value stops at its initial x or at the viewport's right margin.
@@ -347,18 +377,21 @@ function toFlow(
                 // draws nothing at all.
                 width: w,
                 height: h,
+                // These dimensions are fixed by ELK. Keep them on every
+                // update: React Flow treats a missing `measured` as a request
+                // to discard handle bounds, hiding ALL edges until the next
+                // DOM measurement even when only a scroll offset changed.
+                measured: { width: w, height: h },
+                // ELK always owns positions. Source list items expose their
+                // own insertion D&D control inside BoxNode instead.
                 draggable: false,
-                // Not for selection itself: React Flow turns a node's
-                // pointer-events off entirely when it is neither selectable
-                // nor draggable and no node-level handlers are installed
-                // (hasPointerEvents in NodeWrapper) -- which would kill our
-                // own pointer handlers, the hover that shows the handles,
-                // and every click. Selectable is the cheapest way to keep
-                // events flowing.
+                connectable: false,
+                // Selection keeps pointer events alive for the reading and
+                // source-edit gestures without giving React Flow any layout.
                 selectable: !layoutOnly,
                 focusable: !layoutOnly,
                 ariaLabel: isStart ? "Execution start" : isReturn ? "Return"
-                    : isAdd ? "Add element (not yet available)" : undefined,
+                    : isAdd ? c.lhat?.insertion ? "Add statement" : "Add element (not yet available)" : undefined,
                 data: {
                     ...slide,
                     slideMotion,
@@ -373,6 +406,9 @@ function toFlow(
                     noExecutionHandles: c.lhat?.noExecutionHandles === true,
                     literal: c.lhat?.literal,
                     literalTypeLabel: c.lhat?.literalTypeLabel,
+                    inline: c.lhat?.inline,
+                    operator: c.lhat?.operator,
+                    decoration: ["signature-title", "signature-arrow", "delimiter", "binding-keyword"].includes(c.lhat?.kind ?? ""),
                     branchOffset: c.lhat?.branchOffset,
                     definitionBranchOffset: c.lhat?.definitionBranchOffset,
                     layoutOnly,
@@ -388,18 +424,23 @@ function toFlow(
                     flashed: c.lhat !== undefined &&
                         slideKeyOf(c.lhat) === flashKey,
                     foldable: c.lhat?.foldable === true,
-                    // The line does not follow the box: the handle counters
-                    // both the base-left landing and the reader's own slide,
-                    // staying on the chain's axis (clamped to the box, so a
-                    // slide past the axis bends the line rather than
-                    // detaching it).
+                    // Counter the base-left landing and horizontal slide,
+                    // clamping to the frame if it moves past the line's axis.
                     flowHandleX: baseShift > 0 || ownDx !== 0
-                        ? Math.min(Math.max(
-                            (c.width ?? 0) / 2 - baseShift - ownDx, 6),
-                            (c.width ?? 0) - 6)
+                        ? Math.min(Math.max(w / 2 - baseShift - ownDx, 6), w - 6)
                         : undefined,
                     onSlide,
                     onSpring,
+                    onDocumentStart,
+                    onDocumentSlide,
+                    onDocumentRelease,
+                    onDocumentSpring,
+                    reorder: !layoutOnly && !isStart && !isReturn && !isAdd ? reorder : undefined,
+                    statement: synthetic ? undefined : statement,
+                    insertion: c.lhat?.definitionRole === "row" && !c.lhat?.insertionAxis ? undefined : c.lhat?.insertion,
+                    appendInsertion: c.lhat?.appendInsertion,
+                    insertionAxis: c.lhat?.insertionAxis,
+                    onReorder,
                     onEnter,
                     onReveal,
                     onFold,
@@ -407,7 +448,8 @@ function toFlow(
             });
 
             if (isContainer) {
-                walk(c, c.id, depth + (layoutOnly ? 0 : 1), slide, parentX + x);
+                walk(c, c.id, depth + (layoutOnly ? 0 : 1), slide, parentX + x,
+                    layoutOnly ? reorder : undefined, statement);
             }
         }
         for (const e of parent.edges ?? []) {
@@ -533,22 +575,139 @@ const keepFocusOff = (event: React.MouseEvent) => event.preventDefault();
 // ---------------------------------------------------------------------------
 // One node
 
+type ReorderCandidate = {
+    site: ReorderSite;
+    before: boolean;
+    /** A vertical marker follows a horizontal list edge; otherwise horizontal. */
+    vertical: boolean;
+    rect: DOMRect;
+};
+
+type ReorderDrag = {
+    pointer: number;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    moved: boolean;
+    candidate?: ReorderCandidate;
+};
+
+function reorderCandidateAt(x: number, y: number, source: ReorderSite): ReorderCandidate | undefined {
+    const target = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-reorder-list]");
+    if (target === null || target === undefined || target.dataset.reorderList !== source.list) return undefined;
+    const start = Number(target.dataset.reorderStart), end = Number(target.dataset.reorderEnd);
+    const kind = target.dataset.reorderKind as ReorderSite["kind"] | undefined;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || kind !== source.kind ||
+        (start === source.start && end === source.end)) return undefined;
+    const rect = target.getBoundingClientRect();
+    // Statements are one vertical sequence. Wrapped element lists may be
+    // approached through any side, so the nearer axis selects that edge.
+    const vertical = kind === "element" && Math.abs(x - (rect.left + rect.width / 2)) >=
+        Math.abs(y - (rect.top + rect.height / 2));
+    const before = vertical ? x < rect.left + rect.width / 2 : y < rect.top + rect.height / 2;
+    return { site: { kind, list: source.list, start, end }, before, vertical, rect };
+}
+
+/** One common insertion D&D control, enabled solely by `data.reorder`. */
+function ReorderHandle({ site, label, onDrop }: {
+    site: ReorderSite;
+    label: string;
+    onDrop: (source: ReorderSite, target: ReorderSite, before: boolean) => void;
+}) {
+    const drag = useRef<ReorderDrag | null>(null);
+    const [visual, setVisual] = useState<ReorderDrag | null>(null);
+    const down = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (event.button !== 0 || !event.isPrimary) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const box = event.currentTarget.parentElement?.getBoundingClientRect();
+        drag.current = {
+            pointer: event.pointerId, x: event.clientX, y: event.clientY,
+            width: box?.width ?? 80, height: box?.height ?? 30, moved: false,
+        };
+        event.currentTarget.setPointerCapture(event.pointerId);
+    };
+    const move = (event: React.PointerEvent<HTMLDivElement>) => {
+        const current = drag.current;
+        if (current?.pointer !== event.pointerId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (!current.moved && Math.abs(event.clientX - current.x) + Math.abs(event.clientY - current.y) < 4) return;
+        current.moved = true;
+        current.x = event.clientX;
+        current.y = event.clientY;
+        current.candidate = reorderCandidateAt(event.clientX, event.clientY, site);
+        setVisual({ ...current });
+    };
+    const finish = (event: React.PointerEvent<HTMLDivElement>) => {
+        const current = drag.current;
+        if (current?.pointer !== event.pointerId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        drag.current = null;
+        setVisual(null);
+        if (current.moved && current.candidate !== undefined) {
+            onDrop(site, current.candidate.site, current.candidate.before);
+        }
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+    };
+    const cancel = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (drag.current?.pointer !== event.pointerId) return;
+        drag.current = null;
+        setVisual(null);
+    };
+    const insertion = visual?.candidate;
+    return <>
+        <div className="node-reorder node-reorder-top" aria-hidden="true"
+            onPointerDown={down} onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} />
+        <div className="node-reorder node-reorder-right" aria-hidden="true"
+            onPointerDown={down} onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} />
+        <div className="node-reorder node-reorder-bottom" aria-hidden="true"
+            onPointerDown={down} onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} />
+        <div className="node-reorder node-reorder-left" aria-hidden="true"
+            onPointerDown={down} onPointerMove={move} onPointerUp={finish} onPointerCancel={cancel} />
+        {visual !== null && createPortal(<>
+            <div className="reorder-ghost" style={{
+                left: visual.x + 12, top: visual.y + 12,
+                width: visual.width, minHeight: visual.height,
+            }}>{label}</div>
+            {insertion !== undefined && <div className={`reorder-insertion ${insertion.vertical ? "vertical" : "horizontal"}`}
+                style={insertion.vertical
+                    ? { left: insertion.before ? insertion.rect.left - 1 : insertion.rect.right - 1,
+                        top: insertion.rect.top, height: insertion.rect.height }
+                    : { left: insertion.rect.left,
+                        top: insertion.before ? insertion.rect.top - 1 : insertion.rect.bottom - 1,
+                        width: insertion.rect.width }} />}
+        </>, document.body)}
+    </>;
+}
+
 function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
+    const statements = useStatementActions();
     const { getZoom } = useReactFlow();
     const updateNodeInternals = useUpdateNodeInternals();
     // Moving a handle inside an unchanged-size box does not trigger React
     // Flow's ResizeObserver. Re-measure it so arrows follow the visible port.
     useEffect(() => {
         updateNodeInternals(id);
-    }, [id, data.flowHandleX, data.definitionRole, data.definitionHandleY, data.noExecutionHandles, updateNodeInternals]);
+    }, [id, data.flowHandleX,
+        data.definitionRole, data.definitionHandleY, data.noExecutionHandles, updateNodeInternals]);
     const drag = useRef<{
-        x: number; y: number; moved: boolean; samples: Sample[];
+        x: number; y: number; moved: boolean; axis?: DragAxis; samples: Sample[];
     } | null>(null);
     const flingStop = data.slideMotion;
 
-    // A drag anywhere in a wide subtree moves its top-level box horizontally.
-    // React Flow's flat DOM requires explicit routing via the inherited key.
+    // The body of a node belongs to reading. Wide subtrees route horizontal
+    // pulls to their top-level box; the narrow vertical cone, and every pull
+    // on a node that already fits, route to the document instead. Once chosen,
+    // the axis is never changed during this press.
     const onPointerDown = (event: React.PointerEvent) => {
+        // An insertion handle owns its frame press. The node body remains a
+        // reading surface, so it must not start a partial/document scroll.
+        if ((event.target as Element).closest(".node-reorder") !== null) return;
         // Middle press: the browser would start its own autoscroll here, and
         // the click that follows is what shows the text.
         if (event.button === 1) {
@@ -561,13 +720,11 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         event.stopPropagation();
         flingStop.current?.();
         flingStop.current = null;
+        data.onDocumentStart();
         (event.target as Element).setPointerCapture(event.pointerId);
         drag.current = {
             x: event.clientX, y: event.clientY, moved: false,
-            samples: [{
-                t: performance.now(),
-                p: event.clientX,
-            }],
+            samples: [],
         };
     };
     const onPointerMove = (event: React.PointerEvent) => {
@@ -576,19 +733,32 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         const dx = event.clientX - d.x;
         const dy = event.clientY - d.y;
         if (!d.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+        const now = performance.now();
+        if (d.axis === undefined) {
+            const horizontal = data.slideKey !== undefined &&
+                data.slideMin !== undefined && data.slideMax !== undefined &&
+                data.slideMin < data.slideMax;
+            d.axis = dragAxis(dx, dy, horizontal);
+            d.samples.push({
+                t: performance.now(),
+                p: d.axis === "horizontal" ? d.x : d.y,
+            });
+        }
         d.moved = true;
         d.x = event.clientX;
         d.y = event.clientY;
-        if (data.slideKey === undefined) return;
-        const now = performance.now();
         d.samples.push({
             t: now,
-            p: event.clientX,
+            p: d.axis === "horizontal" ? event.clientX : event.clientY,
         });
         trimSamples(d.samples, now);
-        // Screen pixels over canvas zoom = graph units.
-        const zoom = getZoom() || 1;
-        data.onSlide(data.slideKey, dx / zoom, "drag");
+        if (d.axis === "vertical") {
+            data.onDocumentSlide(dy, "drag");
+        } else if (data.slideKey !== undefined) {
+            // Screen pixels over canvas zoom = graph units.
+            const zoom = getZoom() || 1;
+            data.onSlide(data.slideKey, dx / zoom, "drag");
+        }
     };
     const onPointerUp = (event: React.PointerEvent) => {
         if (event.button !== 0 || drag.current === null) return;
@@ -601,12 +771,19 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
             data.onEnter(data);
             return;
         }
-        if (data.slideKey === undefined) return;
-        const key = data.slideKey;
         const now = performance.now();
-        dragged.samples.push({ t: now, p: event.clientX });
+        dragged.samples.push({
+            t: now,
+            p: dragged.axis === "horizontal" ? event.clientX : event.clientY,
+        });
         trimSamples(dragged.samples, now);
         const velocity = releaseVelocity(dragged.samples);
+        if (dragged.axis === "vertical") {
+            data.onDocumentRelease(velocity);
+            return;
+        }
+        if (data.slideKey === undefined) return;
+        const key = data.slideKey;
         const min = data.slideMin;
         const max = data.slideMax;
         if (min !== undefined && max !== undefined &&
@@ -629,9 +806,15 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
             });
         }
     };
+    const onPointerCancel = () => {
+        const cancelled = drag.current;
+        drag.current = null;
+        if (cancelled?.axis === "vertical") data.onDocumentSpring();
+        else if (data.slideKey !== undefined) data.onSpring(data.slideKey);
+    };
 
     // Showing the text is the middle button's. On the left it kept firing
-    // when a slide or a connection was what was meant -- the gestures start
+    // when a scroll was what was meant -- the gestures start
     // the same way, and only the one that turns out not to be a drag can be
     // told apart, by which time the text has already been jumped to.
     const onAuxClick = (event: React.MouseEvent) => {
@@ -642,7 +825,8 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
 
     // Match arms share their FOR's box. The invisible grouping still owns
     // the branch junction, unlike a declaration row with no handles at all.
-    if (data.layoutOnly && data.branchOffset === undefined && data.definitionBranchOffset === undefined) return null;
+    if (data.layoutOnly && !data.insertion && data.definitionRole === undefined &&
+        data.branchOffset === undefined && data.definitionBranchOffset === undefined) return null;
 
     const classes = ["box"];
     if (data.isStart) classes.push("start-node");
@@ -665,26 +849,44 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
 
     return (
         <>
+            {data.insertion && !data.isAdd && <StatementButton site={data.insertion}
+                axis={data.insertionAxis}
+                style={data.insertionAxis === "horizontal" ? { left: "calc(-18.7px * var(--lhat-scale))", top: "calc(50% - 7.7px * var(--lhat-scale))" }
+                    : { left: data.insertionAxis ? "calc(50% - 7.7px * var(--lhat-scale))"
+                        : data.flowHandleX === undefined ? "calc(50% - 24px * var(--lhat-scale))"
+                        : `calc(${data.flowHandleX}px - 24px * var(--lhat-scale))` }} />}
+            {data.appendInsertion && <StatementButton site={data.appendInsertion} append floating />}
             {!data.layoutOnly && <div
-                className={classes.join(" ")}
+                className={[...classes, data.inline ? "inline-box" : "", data.operator ? "operator-box" : "", data.decoration ? "decoration" : ""].join(" ")}
                 data-source-start={data.start} data-source-end={data.sourceEnd}
+                data-vscode-context={statements.context(data.statement)}
                 data-reference-start={leafSymbol?.start} data-reference-end={leafSymbol?.end}
+                data-reorder-list={data.reorder?.list}
+                data-reorder-kind={data.reorder?.kind}
+                data-reorder-start={data.reorder?.start}
+                data-reorder-end={data.reorder?.end}
                 title={data.isStart ? "Execution start"
                     : data.isReturn ? "Return"
-                    : data.isAdd ? "Add element (editing is not yet available)" : undefined}
-                role={data.isStart || data.isReturn ? "img" : data.isAdd ? "button" : undefined}
+                    : data.isAdd && !data.insertion ? "Add element (editing is not yet available)" : undefined}
+                role={data.isStart || data.isReturn ? "img" : data.isAdd && !data.insertion ? "button" : undefined}
                 aria-label={data.isStart ? "Execution start" : data.isReturn ? "Return"
                     : data.isAdd ? "Add element" : undefined}
-                aria-disabled={data.isAdd ? true : undefined}
+                aria-disabled={data.isAdd && !data.insertion ? true : undefined}
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
-                onPointerCancel={() => {
-                    drag.current = null;
-                    if (data.slideKey !== undefined) data.onSpring(data.slideKey);
-                }}
+                onPointerCancel={onPointerCancel}
                 onAuxClick={onAuxClick}
+                onContextMenu={data.operator ? event => { event.preventDefault(); event.stopPropagation(); statements.operator(data.operator!, event.currentTarget); } : undefined}
+                tabIndex={data.operator ? 0 : undefined}
+                onKeyDown={data.operator ? event => {
+                    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+                        event.preventDefault(); event.stopPropagation(); statements.operator(data.operator!, event.currentTarget);
+                    }
+                } : undefined}
             >
+                {data.reorder !== undefined && <ReorderHandle site={data.reorder} label={data.label}
+                    onDrop={data.onReorder} />}
                 {data.foldable && (
                     // Its own gestures, kept off the box's: a press here must
                     // not start a slide, and the click must not be read as
@@ -712,15 +914,16 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                         {/* ↵ rotated clockwise: the bent arrow points up. */}
                         <path d="M 18 17 H 9 V 6 M 5 10 L 9 6 L 13 10" />
                     </svg>
-                ) : data.isAdd ? (
+                ) : data.isAdd && data.insertion ? <StatementButton site={data.insertion} append /> : data.isAdd ? (
                     <svg className="add-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M 12 6 V 18 M 6 12 H 18" />
                     </svg>
-                ) : data.literal !== undefined ? <>
+                ) : data.operator ? <div className="operator-cell"><span>{l10n.t("Operator")}</span><span>{data.operator.text}</span></div>
+                : data.inline && data.isContainer ? null : data.literal !== undefined ? <>
                     <div className="literal-type-label"><TypeLabel label={data.literalTypeLabel ?? "?"} /></div>
                     <LiteralInput key={data.literal.key} literal={data.literal} />
-                </> : <div className="boxlabel"><span>{data.labelParts?.map((part, i) => part.typeSite !== undefined
-                    ? <span key={`${part.typeSite.start}:${part.typeSite.typeText}`} className="typed-name">
+                </> : <div className="boxlabel"><span>{data.labelParts?.map((part, i) => part.typeSite !== undefined || part.typeLabel !== undefined
+                    ? <span key={i} className="typed-name">
                         <TypeLabel site={part.typeSite} label={part.typeLabel ?? "?"} />
                         {part.name ? <NameInput name={part.name} /> : <span data-reference-start={part.symbol?.start}
                             data-reference-end={part.symbol?.end}>{part.text}</span>}
@@ -731,41 +934,40 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                         data-reference-start={part.symbol?.start} data-reference-end={part.symbol?.end}
                         title={part.source}>{part.text}</span>) ?? data.label}</span></div>}
             </div>}
-            {/* Use the execution lines' own endpoints as the visible ports:
-                incoming at the top, outgoing at the bottom. flowHandleX
-                keeps the ports and arrows together while the box slides. */}
+            {/* Execution ports counter the box's horizontal slide, keeping
+                the outer execution chain on the document's axis. */}
             {!data.isAdd && !data.isCondition && !data.noExecutionHandles && data.definitionRole !== "value" &&
                 data.definitionBranchOffset === undefined && (
                 <>
                     {!data.isStart && <Handle type="target" position={Position.Top} id="flow-in"
-                            className="flowhandle" title="Execution input"
+                            className="flowhandle" isConnectable={false}
                             style={data.flowHandleX !== undefined
                                 ? { left: data.flowHandleX } : undefined} />}
                     {data.branchOffset !== undefined && (
                         <Handle type="source" position={Position.Top} id="flow-branch"
-                                className="flowhandle" title="Execution branches"
+                                className="flowhandle" isConnectable={false}
                                 style={data.flowHandleX !== undefined
                                     ? { left: data.flowHandleX } : undefined} />
                     )}
                     <Handle type="source" position={Position.Bottom} id="flow-out"
-                            className="flowhandle" title="Execution output"
+                            className="flowhandle" isConnectable={false}
                             style={data.flowHandleX !== undefined
                                 ? { left: data.flowHandleX } : undefined} />
                 </>
             )}
             {data.definitionRole === "declaration" && (
                 <Handle type="target" position={Position.Right} id="definition-in"
-                        className="definitionhandle" title="Definition input"
+                        className="definitionhandle" isConnectable={false}
                         style={{ top: data.definitionHandleY }} />
             )}
             {data.definitionBranchOffset !== undefined && (
                 <Handle type="target" position={Position.Left} id="definition-branch"
-                        className="definitionhandle" title="Definition alternatives"
+                        className="definitionhandle" isConnectable={false}
                         style={{ top: data.definitionHandleY }} />
             )}
             {(data.definitionRole === "value" || data.definitionBranchOffset !== undefined) && (
                 <Handle type="source" position={Position.Left} id="definition-out"
-                        className="definitionhandle" title="Definition output"
+                        className="definitionhandle" isConnectable={false}
                         style={{ top: data.definitionHandleY }} />
             )}
         </>
@@ -797,35 +999,6 @@ function DefinitionBranchEdge({ id, sourceX, sourceY, targetX, targetY, style, d
 }
 
 const edgeTypes: EdgeTypes = { branch: BranchEdge, "definition-branch": DefinitionBranchEdge };
-
-/** Preview the same line shape as the connection being drawn. */
-function ConnectionPreview({
-    fromX, fromY, toX, toY, fromHandle, fromPosition, fromNode, toHandle, toNode, connectionLineStyle,
-}: ConnectionLineComponentProps) {
-    const endpoints = { sourceX: fromX, sourceY: fromY, targetX: toX, targetY: toY };
-    const fromDefinitionBranch = fromHandle.id === "definition-branch";
-    const definition = fromHandle.id === "definition-out" || fromHandle.id === "definition-in" || fromDefinitionBranch;
-    const branch = fromHandle.id === "flow-branch";
-    const sourcePosition = fromDefinitionBranch ? Position.Right : branch ? Position.Bottom : fromPosition;
-    const definitionJunction = fromDefinitionBranch ? { x: fromX, node: fromNode }
-        : toHandle?.id === "definition-branch" ? { x: toX, node: toNode } : undefined;
-    const [path] = getSmoothStepPath({
-        ...endpoints,
-        ...(definition ? definitionEdge.pathOptions : executionEdge.pathOptions),
-        sourcePosition,
-        // Both endpoints keep their axis, including reverse drags from an input.
-        targetPosition: definition
-            ? sourcePosition === Position.Left ? Position.Right : Position.Left
-            : sourcePosition === Position.Top ? Position.Bottom : Position.Top,
-        ...(branch ? { centerY: fromY + (typeof fromNode.data.branchOffset === "number"
-            ? fromNode.data.branchOffset : 18) } : {}),
-        ...(definitionJunction ? { centerX: definitionJunction.x +
-            (typeof definitionJunction.node?.data.definitionBranchOffset === "number"
-                ? definitionJunction.node.data.definitionBranchOffset : 18) } : {}),
-    });
-    return <path className={`react-flow__connection-path ${definition ? "definition" : "exec"}`} d={path}
-                 style={connectionLineStyle} fill="none" />;
-}
 
 // ---------------------------------------------------------------------------
 // The app
@@ -897,7 +1070,9 @@ function App() {
     const [laid, setLaid] = useState<ElkNode>();
     const [laidSourceKey, setLaidSourceKey] = useState("");
     const slideMotion = useRef<(() => void) | null>(null);
-    const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+    const paneFling = useRef<(() => void) | null>(null);
+    // The document's vertical rubber band is also used by node-body drags.
+    const scrollBounds = useRef({ min: 8, max: 8 });
     // 8.6: zoom is the type size. The scale everything else derives from it.
     const [fontPx, setFontPx] = useState(DEFAULT_FONT_PX);
     const [minimapCollapsed, setMinimapCollapsed] = useState(false);
@@ -912,6 +1087,7 @@ function App() {
     const [wanted, setWanted] = useState<{ start: number; end: number }>();
     const [flashKey, setFlashKey] = useState<string>();
     const flashTimer = useRef<number | undefined>(undefined);
+    const reorderRequest = useRef<string | undefined>(undefined);
 
     useEffect(() => {
         const el = flowRef.current;
@@ -951,7 +1127,14 @@ function App() {
                     setNote(message.message);
                     break;
                 case "renameResult":
+                case "statementResult":
                     if (message.error) setNote(message.error);
+                    break;
+                case "reorderResult":
+                    if (message.id === reorderRequest.current) {
+                        reorderRequest.current = undefined;
+                        if (message.error) setNote(message.error);
+                    }
                     break;
                 case "focus":
                     setWanted({ start: message.start, end: message.end });
@@ -1126,6 +1309,49 @@ function App() {
         slideMotion.current = () => cancel();
     }, []);
 
+    const onDocumentStart = useCallback(() => {
+        paneFling.current?.();
+        paneFling.current = null;
+    }, []);
+    const onDocumentSlide = useCallback((dy: number, mode?: "drag" | "glide") => {
+        const viewport = getViewport();
+        const bounds = scrollBounds.current;
+        const y = mode === "drag" ? rubberSlide(viewport.y, dy, bounds)
+            : mode === "glide"
+                ? clampSlide(viewport.y + dy, bounds.min - 96, bounds.max + 96)
+                : clampSlide(viewport.y + dy, bounds.min, bounds.max);
+        setViewport({ ...viewport, y });
+        return y;
+    }, [getViewport, setViewport]);
+    const onDocumentSpring = useCallback(() => {
+        paneFling.current?.();
+        const bounds = scrollBounds.current;
+        const read = () => getViewport().y;
+        const apply = (y: number) => {
+            const viewport = getViewport();
+            setViewport({ ...viewport, y });
+        };
+        paneFling.current = springTo(read,
+            clampSlide(read(), bounds.min, bounds.max), apply);
+    }, [getViewport, setViewport]);
+    const onDocumentRelease = useCallback((velocity: number) => {
+        const bounds = scrollBounds.current;
+        const y = getViewport().y;
+        if (y < bounds.min || y > bounds.max) {
+            onDocumentSpring();
+            return;
+        }
+        if (Math.abs(velocity) <= 0.05) return;
+        paneFling.current = fling(velocity, (d) => {
+            const next = onDocumentSlide(d, "glide");
+            const currentBounds = scrollBounds.current;
+            if (next < currentBounds.min || next > currentBounds.max) {
+                onDocumentSpring();
+                return false;
+            }
+        });
+    }, [getViewport, onDocumentSlide, onDocumentSpring]);
+
     // Re-grabbing the same box takes over from its current spring position.
     // Switching to another box or using the wheel ends any old stretch.
     const stopSlide = useCallback((keepKey?: string) => {
@@ -1175,13 +1401,30 @@ function App() {
         setFolds((f) => ({ ...f, [start]: !data.collapsed }));
     }, []);
 
+    // The visual gesture never carries a coordinate. It names two source
+    // siblings and an insertion side; the host rewrites that one list and
+    // the next AST/ELK pass chooses every displayed position again.
+    const onReorder = useCallback((source: ReorderSite, target: ReorderSite, before: boolean) => {
+        const editableVersion = laidSourceKey === sourceKey ? version : undefined;
+        if (editableVersion === undefined || reorderRequest.current !== undefined ||
+            source.list !== target.list || source.kind !== target.kind) return;
+        const id = `reorder-${++reorderSequence}`;
+        reorderRequest.current = id;
+        vscode.postMessage({ type: "reorder", id,
+            sourceStart: source.start, sourceEnd: source.end,
+            targetStart: target.start, targetEnd: target.end,
+            before, version: editableVersion });
+    }, [laidSourceKey, sourceKey, version]);
+
     const flow = useMemo(
         () => (laid !== undefined
             ? toFlow(laid, slides, viewWidth, flashKey,
-                     onSlide, onEnter, onReveal, onFold, slideMotion, onSpring)
+                     onSlide, onEnter, onReveal, onFold, slideMotion, onSpring,
+                     onDocumentStart, onDocumentSlide, onDocumentRelease, onDocumentSpring, onReorder)
             : { nodes: [], exec: [], definitions: [] }),
         [laid, slides, viewWidth, flashKey,
-            onSlide, onEnter, onReveal, onFold, onSpring]);
+            onSlide, onEnter, onReveal, onFold, onSpring,
+            onDocumentStart, onDocumentSlide, onDocumentRelease, onDocumentSpring, onReorder]);
     const nodes = flow.nodes;
     slideBounds.current = new Map(nodes.flatMap(({ data }) =>
         data.slideOwner && data.slideKey !== undefined &&
@@ -1208,7 +1451,6 @@ function App() {
     // 8.6: how far the document may scroll -- the rubber band's home range.
     // Top of the document at the top margin down to its bottom at the
     // bottom edge; a document shorter than the view just sits at the top.
-    const scrollBounds = useRef({ min: 8, max: 8 });
     useEffect(() => {
         const gh = laid?.height ?? 0;
         scrollBounds.current = {
@@ -1226,7 +1468,6 @@ function App() {
     // listener on the wrapper instead, taking only presses that began on the
     // background -- a native listener here fires before React's synthetic
     // ones, so it filters by target rather than trusting stopPropagation.
-    const paneFling = useRef<(() => void) | null>(null);
     useEffect(() => {
         const el = flowRef.current;
         if (el === null) return;
@@ -1234,8 +1475,7 @@ function App() {
         let lastY = 0;
         let samples: Sample[] = [];
         const down = (event: PointerEvent) => {
-            paneFling.current?.();
-            paneFling.current = null;
+            onDocumentStart();
             const target = event.target as Element;
             const over = target.closest("[data-id]")?.getAttribute("data-id");
             stopSlide(event.button === 0 && over != null &&
@@ -1252,50 +1492,19 @@ function App() {
             samples = [{ t: performance.now(), p: event.clientY }];
             el.setPointerCapture(event.pointerId);
         };
-        const readY = () => getViewport().y;
-        const writeY = (y: number) => {
-            const v = getViewport();
-            setViewport({ ...v, y });
-        };
-        const spring = () => {
-            const b = scrollBounds.current;
-            const target = Math.min(Math.max(readY(), b.min), b.max);
-            paneFling.current = springTo(readY, target, writeY);
-        };
         const move = (event: PointerEvent) => {
             if (!dragging) return;
-            let dy = event.clientY - lastY;
+            const dy = event.clientY - lastY;
             lastY = event.clientY;
             const now = performance.now();
             samples.push({ t: now, p: event.clientY });
             trimSamples(samples, now);
-            const y = readY();
-            const b = scrollBounds.current;
-            // Past either end the drag pulls against the band.
-            if ((y > b.max && dy > 0) || (y < b.min && dy < 0)) dy /= 3;
-            writeY(y + dy);
+            onDocumentSlide(dy, "drag");
         };
         const up = () => {
             if (!dragging) return;
             dragging = false;
-            const b = scrollBounds.current;
-            const y = readY();
-            if (y < b.min || y > b.max) {
-                spring();
-                return;
-            }
-            const velocity = releaseVelocity(samples);
-            if (Math.abs(velocity) > 0.05) {
-                paneFling.current = fling(velocity, (d) => {
-                    const ny = readY() + d;
-                    writeY(ny);
-                    const bounds = scrollBounds.current;
-                    if (ny < bounds.min || ny > bounds.max) {
-                        spring();
-                        return false;
-                    }
-                });
-            }
+            onDocumentRelease(releaseVelocity(samples));
         };
         el.addEventListener("pointerdown", down);
         el.addEventListener("pointermove", move);
@@ -1308,7 +1517,7 @@ function App() {
             el.removeEventListener("pointerup", up);
             el.removeEventListener("pointercancel", up);
         };
-    }, [getViewport, setViewport, stopSlide]);
+    }, [onDocumentRelease, onDocumentSlide, onDocumentStart, stopSlide]);
 
     // 8.6's wheel, ahead of React Flow's own: Ctrl resizes the type, Shift
     // scrolls the top-level box containing the node under the pointer.
@@ -1417,35 +1626,13 @@ function App() {
             () => setFlashKey(undefined), 1600);
     }, [wanted, laid, getViewport, setViewport]);
 
-    const onConnect = useCallback((connection: Connection) => {
-        // Reconnecting an existing execution arrow must not draw a duplicate.
-        if (!validConnection(connection)) return;
-        if (flow.exec.concat(flow.definitions).some((edge) =>
-            edge.source === connection.source && edge.target === connection.target &&
-            edge.sourceHandle === connection.sourceHandle &&
-            edge.targetHandle === connection.targetHandle)) return;
-        // Use the same relative layer as the generated edges. React Flow
-        // raises it with the endpoints when drawing inside a scroll owner.
-        setEdges((current) =>
-            addEdge({ ...connection,
-                ...(connection.sourceHandle === "definition-out" ? definitionEdge : executionEdge),
-                ...(connection.targetHandle === "definition-branch" ? {
-                    ...definitionBranchEdge,
-                    data: { definitionBranchOffset: flow.nodes.find(n => n.id === connection.target)?.data.definitionBranchOffset },
-                } : {}),
-                ...(connection.sourceHandle === "flow-branch" ? {
-                    ...branchEdge,
-                    data: { branchOffset: flow.nodes.find(n => n.id === connection.source)?.data.branchOffset },
-                } : {}),
-            }, current));
-    }, [flow.exec, flow.definitions, flow.nodes, setEdges]);
-
     return (
         <RenameProvider value={{ sourceKey, version: laidSourceKey === sourceKey ? version : undefined,
             sizes: nameSizes.sourceKey === sourceKey ? nameSizes.values : {}, resize: resizeName,
             post: message => vscode.postMessage(message) }}>
         <LiteralEditProvider sourceKey={sourceKey} onCommit={commitLiteral}>
         <TypeProvider value={{ version: laidSourceKey === sourceKey ? version : undefined, post }}>
+        <StatementProvider value={{ tree: reply, uri, version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <div id="app">
             <div id="bar">
                 <button
@@ -1531,13 +1718,12 @@ function App() {
                     // the reader off a diagram they had not finished reading.
                     key={flowKey}
                     nodes={nodes}
-                    edges={flow.exec.concat(flow.definitions, edges)}
-                    onEdgesChange={onEdgesChange}
+                    edges={flow.exec.concat(flow.definitions)}
+                    nodesConnectable={false}
+                    edgesReconnectable={false}
+                    edgesFocusable={false}
+                    deleteKeyCode={null}
                     onMoveEnd={returnHorizontal}
-                    onConnect={onConnect}
-                    isValidConnection={validConnection}
-                    connectionLineType={ConnectionLineType.SmoothStep}
-                    connectionLineComponent={ConnectionPreview}
                     nodeTypes={nodeTypes}
                     edgeTypes={edgeTypes}
                     // 8.6: a document, not a canvas. The zoom is locked at 1
@@ -1600,6 +1786,7 @@ function App() {
                     version={laidSourceKey === sourceKey ? version : undefined} post={post} />
             </div>
         </div>
+        </StatementProvider>
         </TypeProvider>
         </LiteralEditProvider>
         </RenameProvider>

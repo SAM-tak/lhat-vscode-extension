@@ -23,7 +23,7 @@ const toFlow = vm.runInNewContext(`const MarkerType={ArrowClosed:'arrowclosed'};
 const noop = () => {};
 const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
 const starts = graph => flatten(graph).filter(n => n.lhat?.synthetic === 'start');
-const statementsOf = clause => clause.children.filter(n => !n.lhat?.condition);
+const statementsOf = clause => clause.children.filter(n => !n.lhat?.condition && n.lhat?.synthetic !== 'add');
 const conditionOf = clause => clause.children.find(n => n.lhat?.condition);
 const draw = async (reply, options = {}) => {
     const graph = await new ELK().layout(toElk(reply, options));
@@ -42,16 +42,17 @@ function nodesFor(source) {
     };
 }
 
-test('an empty file is one source-free start pictogram at every font scale', async () => {
+test('an empty file has a source-free start and append control at every font scale', async () => {
     for (const source of ['', '# only a comment\n']) {
         const root = { kind: 'block', start: 0, end: source.length, line: 1, column: 1 };
         for (const scale of [1, 1.5, 2]) {
             const { graph, flow } = await draw({ source, root }, { scale });
-            assert.equal(graph.children.length, 1);
+            assert.equal(graph.children.length, 2);
             assert.equal(starts(graph).length, 1);
             assert.equal(graph.children[0].width, 24 * scale);
             assert.equal(graph.children[0].height, 24 * scale);
-            assert.equal(flow.nodes.length, 1, 'no placeholder block node');
+            assert.equal(flow.nodes.length, 2, 'start and append, with no placeholder block node');
+            assert(flow.nodes[1].data.isAdd && flow.nodes[1].data.insertion);
             const start = flow.nodes[0];
             assert(start.data.isStart);
             assert.equal(start.data.label, '');
@@ -77,11 +78,15 @@ test('the first top-level statement always has an incoming line; disabled statem
     assert.equal(starts(graph).length, 1);
     assert.deepEqual(labelsOfEdges(flow), ['<start> -> let^ x', 'let^ x -> last()']);
     for (const edge of flow.exec) {
+        assert.equal(edge.selectable, false);
+        assert.equal(edge.deletable, false);
+        assert.equal(edge.reconnectable, false);
         assert.equal(edge.sourceHandle, 'flow-out');
         assert.equal(edge.targetHandle, 'flow-in');
         assert.equal(edge.zIndex, 2000, 'execution lines are above nested container backgrounds');
     }
     assert.equal(flow.definitions.length, 1);
+    assert(flow.nodes.every(node => node.connectable === false));
     const only = n('block', 'last()', { items: [n('call-stmt', 'last()')] });
     assert.deepEqual(labelsOfEdges((await draw({ source, root: only })).flow), ['<start> -> last()']);
 });
@@ -101,8 +106,8 @@ test('functions and procedures have independent starts, including empty bodies a
     const open = await draw(reply);
     assert.equal(starts(open.graph).length, 3, 'file plus both callables');
     const functions = flatten(open.graph).filter(n => n.lhat?.kind === 'func');
-    assert.deepEqual(functions[0].children.map(n => n.lhat.kind), ['start', 'call-stmt', 'call-stmt']);
-    assert.deepEqual(functions[1].children.map(n => n.lhat.kind), ['start']);
+    assert.deepEqual(functions[0].children.map(n => n.lhat.kind), ['signature', 'start', 'call-stmt', 'call-stmt', 'add']);
+    assert.deepEqual(functions[1].children.map(n => n.lhat.kind), ['signature', 'start', 'add']);
     assert(functions.every(n => n.layoutOptions['elk.direction'] === 'DOWN'));
     assert(functions.every(n => n.lhat.executionEntry === undefined), 'callable bodies remain independent chains');
     assert.deepEqual(labelsOfEdges(open.flow).sort(), [
@@ -111,13 +116,17 @@ test('functions and procedures have independent starts, including empty bodies a
     assert.equal(starts((await draw(reply, { collapse: true })).graph).length, 1, 'folded contents are hidden');
     const drilled = await draw(reply, { root: fn, collapse: true, folds: { [fn.start]: true } });
     assert.equal(starts(drilled.graph).length, 1);
-    assert.equal(drilled.graph.children[0].lhat.synthetic, 'start', 'drill-down has no extra body container');
+    const drilledFunction = flatten(drilled.graph).find(n => n.lhat?.kind === 'func');
+    assert.equal(drilledFunction.children[0].lhat.kind, 'signature', 'drill-down retains the editable declaration');
+    assert.equal(drilledFunction.children[1].lhat.synthetic, 'start', 'the body begins directly below the signature');
     assert.deepEqual(labelsOfEdges(drilled.flow), ['<start> -> one()', 'one() -> two()']);
     const empty = await draw(reply, { root: proc, collapse: true });
     assert.equal(starts(empty.graph).length, 1);
     assert.equal(empty.flow.exec.length, 0);
     assert(empty.flow.nodes.some(n => n.data.isStart));
-    assert.equal(empty.flow.nodes.length, 1, 'empty callable drill-down is just its start');
+    assert(flatten(empty.graph).some(n => n.lhat?.kind === 'signature'));
+    assert.equal(empty.flow.nodes.filter(n => n.data.isStart || n.data.isAdd).length, 4,
+        'empty callable has argument/result insertion controls plus body start/append');
 });
 
 test('only the immediate callable body is hoisted; nested blocks, statements and inner functions survive', async () => {
@@ -134,10 +143,11 @@ test('only the immediate callable body is hoisted; nested blocks, statements and
     ] });
     const root = n('func', source, { body });
     const { graph, flow } = await draw({ source, root });
-    assert.deepEqual(graph.children.map(n => n.lhat.kind), ['start', 'call-stmt', 'block', 'define-row', 'call-stmt']);
-    assert.equal(graph.children[2].lhat.start, nestedBlock.start);
+    const outer = flatten(graph).find(n => n.lhat?.kind === 'func' && n.lhat.start === root.start);
+    assert.deepEqual(outer.children.map(n => n.lhat.kind), ['signature', 'start', 'call-stmt', 'block', 'define-row', 'call-stmt', 'add']);
+    assert.equal(outer.children[3].lhat.start, nestedBlock.start);
     const inner = flatten(graph).find(n => n.lhat?.kind === 'func' && n.lhat.start === nestedFunction.start);
-    assert.deepEqual(inner.children.map(n => n.lhat.kind), ['start', 'call-stmt']);
+    assert.deepEqual(inner.children.map(n => n.lhat.kind), ['signature', 'start', 'call-stmt', 'add']);
     assert.deepEqual(labelsOfEdges(flow).sort(), [
         '<start> -> before()', 'before() -> nested()', 'nested() -> let^ inner',
         'let^ inner -> after()', '<start> -> value()',
@@ -159,8 +169,8 @@ test('every supported list ends with one source-free add marker, even when empty
             assert.equal(graph.children.length, 1, `${kind}: empty list contains its insertion point`);
             const add = graph.children[0];
             assert.equal(add.lhat.synthetic, 'add');
-            assert.equal(add.width, 24 * scale);
-            assert.equal(add.height, 24 * scale);
+            assert.equal(add.width, Math.round(15.4 * scale));
+            assert.equal(add.height, Math.round(15.4 * scale));
             assert.equal(starts(graph).length, 0);
             assert.equal(flow.exec.length, 0);
             assert.equal(flow.definitions.length, 0);
@@ -212,7 +222,7 @@ test('nonempty list footers follow all members and wrapping rows, and hide with 
         if (kind !== 'table') {
             const { flow } = await draw(reply, { collapse: true });
             assert(flow.nodes.some(n => n.data.collapsed));
-            assert(!flow.nodes.some(n => n.data.isAdd), 'folded list hides its insertion control');
+            assert(!flow.nodes.some(n => n.data.isAdd && !n.data.insertion), 'folded member list hides its own insertion control');
         }
     }
 });
@@ -395,6 +405,63 @@ test('active scroll owners cover outer execution lines but retain internal lines
     }
 });
 
+test('scroll updates retain every execution and definition endpoint before DOM remeasurement', async () => {
+    const { adoptUserNodes, getEdgePosition, ConnectionMode, Position } = await import('@xyflow/system');
+    const box = (id, kind, x, y, width = 80, height = 30, extra = {}) => ({
+        id, x, y, width, height, lhat: { kind, start: y, end: y + 1, ...extra },
+    });
+    const line = (id, source, target) => ({ id, sources: [source], targets: [target], drawn: true });
+    const wide = box('wide', 'block', 80, 50, 1600, 220);
+    wide.children = [box('first', 'start', 300, 30), box('last', 'call-stmt', 300, 100)];
+    wide.edges = [line('inside', 'first', 'last')];
+    const declaration = box('declaration', 'define', 80, 350, 80, 30, { definitionRole: 'declaration' });
+    const value = box('value', 'int', 200, 350, 80, 30, { definitionRole: 'value' });
+    const graph = { id: 'root', width: 1680, height: 430,
+        children: [box('before', 'start', 80, 0), wide, declaration, value],
+        edges: [line('enter', 'before', 'wide'), line('outside', 'wide', 'declaration'),
+            { ...line('definition', 'value', 'declaration'), definition: true }],
+    };
+    const render = dx => toFlow(graph, { 'block:50:51': { dx, dy: 0 } }, 947, undefined,
+        noop, noop, noop, noop, { current: null }, noop);
+    const lookup = new Map(), parents = new Map();
+    const initial = render(0);
+    adoptUserNodes(initial.nodes, lookup, parents);
+    // Seed the first completed DOM measurement, then use React Flow's real
+    // adoption/edge resolution without another ResizeObserver notification.
+    for (const node of lookup.values()) {
+        node.measured = { width: node.width, height: node.height };
+        const handle = (id, position, x, y) => ({ id, position, x, y, width: 7, height: 7 });
+        node.internals.handleBounds = {
+            source: [handle('flow-out', Position.Bottom, node.width / 2, node.height),
+                handle('definition-out', Position.Left, 0, node.height / 2)],
+            target: [handle('flow-in', Position.Top, node.width / 2, 0),
+                handle('definition-in', Position.Right, node.width, node.height / 2)],
+        };
+    }
+    const endpoints = flow => new Map([...flow.exec, ...flow.definitions].map(edge => [edge.id,
+        getEdgePosition({ id: edge.id, sourceNode: lookup.get(edge.source), targetNode: lookup.get(edge.target),
+            sourceHandle: edge.sourceHandle, targetHandle: edge.targetHandle, connectionMode: ConnectionMode.Strict }),
+    ]));
+    const baseline = endpoints(initial);
+    assert([...baseline.values()].every(Boolean));
+    const baseX = lookup.get('first').internals.positionAbsolute.x;
+    for (const dx of [-30, -180, -75, 0]) {
+        const flow = render(dx);
+        adoptUserNodes(flow.nodes, lookup, parents);
+        const current = endpoints(flow);
+        assert.deepEqual([...current].filter(([, position]) => !position).map(([id]) => id), [],
+            `all lines must stay mounted immediately after scrolling to ${dx}`);
+        const moved = current.get('x__inside'), start = baseline.get('x__inside');
+        const shift = lookup.get('first').internals.positionAbsolute.x - baseX;
+        assert.equal(shift, dx, 'the fixture actually scrolls');
+        assert.equal(moved.sourceX, start.sourceX + shift, 'inner line follows its scrolled parent');
+        assert.equal(moved.targetX, start.targetX + shift);
+        assert.equal(moved.sourceY, start.sourceY);
+        assert.deepEqual(current.get('d__definition'), baseline.get('d__definition'),
+            'the unrelated definition line keeps its position and remains drawable');
+    }
+});
+
 test('explicit returns are source-backed pictograms with definition lines from their values', async () => {
     const source = 'before()\nreturn^ 42';
     const n = nodesFor(source);
@@ -426,8 +493,8 @@ test('explicit returns are source-backed pictograms with definition lines from t
         }
     }
     const bare = await draw({ source: 'return^', root: nodesFor('return^')('return', 'return^') });
-    assert.equal(bare.flow.nodes.length, 1);
-    assert(bare.flow.nodes[0].data.isReturn);
+    assert.equal(bare.flow.nodes.filter(n => n.data.isReturn || n.data.isAdd).length, 2);
+    assert(bare.flow.nodes.some(n => n.data.isReturn));
     assert.equal(bare.flow.definitions.length, 0, 'no placeholder expression or line for a bare return');
 });
 
@@ -465,8 +532,9 @@ test('return pictograms survive simple branch clauses, disabled code and implici
     assert.equal(tail.flow.exec.length, 1);
     assert.equal(tail.flow.exec[0].source, start.id);
     assert.equal(tail.flow.exec[0].target, marker.id);
-    assert.equal(tail.graph.children[0].lhat.synthetic, 'start');
-    assert.equal(tail.graph.children[1].lhat.kind, 'return-row');
+    const callable = flatten(tail.graph).find(n => n.lhat?.kind === 'func');
+    assert.equal(callable.children[1].lhat.synthetic, 'start');
+    assert.equal(callable.children[2].lhat.kind, 'return-row');
     const folded = await draw({ source: implicitSource, root: implicit }, { collapse: true });
     assert(!folded.flow.nodes.some(n => n.data.isReturn), 'folded callable hides its contents together');
     const drilled = await draw({ source: implicitSource, root: implicit }, { root: implicit, collapse: true });
@@ -483,7 +551,7 @@ test('implicit tuple returns retain their values and marker when partially scrol
     for (const scale of [1, 2]) {
         const laid = await new ELK().layout(toElk({ source, root: fn }, { root: fn, width: 450, scale }));
         const stacked = stackWideDefinitions(laid, 434);
-        const row = stacked.children.find(n => n.lhat?.kind === 'return-row');
+        const row = flatten(stacked).find(n => n.lhat?.kind === 'return-row');
         assert(row.lhat.stackedDefinition);
         const [marker, value] = row.children;
         assert.equal(value.y, marker.y + marker.height);
@@ -513,7 +581,7 @@ test('wide return values reuse the marker-height offset and outermost-only parti
     for (const scale of [1, 2]) {
         const laid = await new ELK().layout(toElk(reply, { root: fn, width: 450, scale }));
         const stacked = stackWideDefinitions(laid, 434);
-        const row = stacked.children.find(n => n.lhat?.kind === 'return-row');
+        const row = flatten(stacked).find(n => n.lhat?.kind === 'return-row');
         const [marker, value] = row.children;
         assert(row.lhat.stackedDefinition);
         assert.equal(value.y, marker.y + marker.height);
@@ -619,7 +687,8 @@ test('nested ifs have separate junctions; empty and disabled-only clauses have n
     const empty = branches[0].children.at(-1);
     assert.equal(empty.labels[0].text, '');
     assert(empty.width > 0 && empty.height > 0, 'empty else still has a visible box');
-    assert.equal(empty.children.length, 0, 'no empty body placeholder');
+    assert.equal(empty.children.length, 1, 'only the append control remains in an empty body');
+    assert.equal(empty.children[0].lhat.synthetic, 'add');
 });
 
 test('if expressions remain expression branches without execution fan-out', async () => {

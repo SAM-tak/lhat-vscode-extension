@@ -14,7 +14,11 @@ import type { LanguageClient } from "vscode-languageclient/node";
 import type { AstReply, FromWebview, ToWebview } from "./protocol";
 import { renameFromGraph } from "./graphRename";
 import { referenceFromGraph } from "./graphReference";
-import { chooseTypeFromGraph } from "./graphTypeEditor";
+import { applyTypeFromGraph, removeTypeFromGraph, typeOptionsFromGraph, type TypeSelection } from "./graphTypeEditor";
+import { reorderFromGraph } from "./graphReorderEditor";
+import { editStatementFromGraph } from "./graphStatementEditor";
+
+type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" }>;
 
 export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider {
     public static readonly viewType = "lhat.graph";
@@ -25,6 +29,19 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
      * have a graph in more than one group.
      */
     private readonly panels = new Map<string, Set<vscode.WebviewPanel>>();
+    private readonly statementEditors = new Map<vscode.WebviewPanel, (message: StatementRequest) => void>();
+
+    /** Native webview context menus carry the exact clicked statement, not a text-editor selection. */
+    public toggleStatement(context: Record<string, unknown> | undefined): void {
+        if (!context || typeof context.lhatGraphUri !== "string" ||
+            !Number.isInteger(context.lhatStatementStart) || !Number.isInteger(context.lhatStatementEnd) ||
+            !Number.isInteger(context.lhatGraphVersion)) return;
+        const panels = [...this.panels.get(context.lhatGraphUri) ?? []];
+        const panel = panels.find(panel => panel.active) ?? panels[0];
+        if (panel) this.statementEditors.get(panel)?.({ type: "toggleStatement", id: `toggle-${Date.now()}`,
+            start: context.lhatStatementStart as number, end: context.lhatStatementEnd as number,
+            version: context.lhatGraphVersion as number });
+    }
 
     public constructor(
         private readonly context: vscode.ExtensionContext,
@@ -83,15 +100,31 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
         let initialTreeRequested = false;
         let localizationRevision = 0;
         let treeRevision = 0;
+        let treeRetry: ReturnType<typeof setTimeout> | undefined;
+        let treeRetryDelay = 100;
         let renaming = false;
-        let choosingType = false;
+        let typeRequest: { id: string; cancel: vscode.CancellationTokenSource;
+            timeout?: ReturnType<typeof setTimeout> } | undefined;
+        let typeSelection: TypeSelection | undefined;
+        let applyingType = false;
+        let reordering = false;
+        let editingStatement = false;
         let referenceRevision = 0;
         let currentTree: AstReply | undefined;
+        const cancelTypeRequest = () => {
+            clearTimeout(typeRequest?.timeout);
+            typeRequest?.cancel.cancel();
+            typeRequest?.cancel.dispose();
+            typeRequest = undefined;
+        };
         const post = (message: ToWebview) => {
             if (!disposed) void panel.webview.postMessage(message);
         };
 
         const send = async (): Promise<void> => {
+            if (disposed) return;
+            clearTimeout(treeRetry);
+            treeRetry = undefined;
             const revision = ++treeRevision;
             const version = document.version;
             const client = this.client();
@@ -104,13 +137,23 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
                 const reply = await client.sendRequest<AstReply | null>("lhat/ast", {
                     textDocument: { uri: document.uri.toString() },
                 });
-                if (revision !== treeRevision || document.version !== version) return;
+                if (disposed || revision !== treeRevision || document.version !== version) return;
                 currentTree = reply ?? undefined;
+                const fresh = reply !== null && reply.source === document.getText();
                 post(reply === null
                     ? { type: "pending" }
                     : { type: "tree", reply, uri: document.uri.toString(),
-                        version: reply.source === document.getText() ? version : undefined });
+                        version: fresh ? version : undefined });
+                if (fresh) treeRetryDelay = 100;
+                else {
+                    // didChange only queues checking. Its immediate AST may
+                    // still be the old snapshot; don't leave all editing
+                    // disabled until the user happens to change text again.
+                    treeRetry = setTimeout(() => { void send(); }, treeRetryDelay);
+                    treeRetryDelay = Math.min(treeRetryDelay * 2, 1000);
+                }
             } catch (error: unknown) {
+                if (disposed || revision !== treeRevision || document.version !== version) return;
                 const reason = error instanceof Error ? error.message : String(error);
                 post({ type: "error", message: vscode.l10n.t("lhat/ast failed: {0}", reason) });
             }
@@ -130,11 +173,26 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
             }
         };
 
-        // V2, for now: ask again whenever this document changes. The server
-        // re-checks on didChange, so a request that lands before it finishes
-        // gets the previous tree or a null; the next change asks again.
+        const editStatement = (message: StatementRequest) => {
+            if (editingStatement || !currentTree) {
+                post({ type: "statementResult", id: message.id, error: vscode.l10n.t("Select a statement in the updated graph.") });
+                return;
+            }
+            editingStatement = true;
+            void editStatementFromGraph(document, currentTree, message, this.client(), () => !disposed).then(() => {
+                post({ type: "statementResult", id: message.id });
+                void send();
+            }, (error: unknown) => {
+                post({ type: "statementResult", id: message.id, error: error instanceof Error ? error.message : String(error) });
+            }).finally(() => { editingStatement = false; });
+        };
+        this.statementEditors.set(panel, editStatement);
+
+        // Start a new snapshot request on edits; send() follows the checker
+        // until it catches up, even when diagnostics themselves don't change.
         const changed = vscode.workspace.onDidChangeTextDocument((event) => {
             if (initialTreeRequested && event.document.uri.toString() === document.uri.toString()) {
+                treeRetryDelay = 100;
                 void send();
             }
         });
@@ -145,8 +203,11 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
         });
         panel.onDidDispose(() => {
             disposed = true;
+            clearTimeout(treeRetry);
+            cancelTypeRequest();
             changed.dispose();
             configurationChanged.dispose();
+            this.statementEditors.delete(panel);
             open.delete(panel);
             if (open.size === 0) this.panels.delete(key);
         });
@@ -162,6 +223,12 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
                     break;
                 case "refresh":
                     if (initialTreeRequested) void send();
+                    break;
+                case "insertStatement":
+                case "insertElement":
+                case "replaceOperator":
+                case "toggleStatement":
+                    editStatement(message);
                     break;
                 case "reveal":
                     void this.reveal(document, message.start, message.end);
@@ -182,19 +249,75 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
                     break;
                 case "chooseType": {
                     const client = this.client();
-                    if (choosingType || !currentTree || !client) {
-                        post({ type: "typeResult", id: message.id, error: vscode.l10n.t("Type editing is not available yet.") });
+                    cancelTypeRequest();
+                    typeSelection = undefined;
+                    if (applyingType || !currentTree || !client) {
+                        post({ type: "typeOptions", id: message.id, error: vscode.l10n.t("Type editing is not available yet.") });
                         break;
                     }
-                    choosingType = true;
-                    void chooseTypeFromGraph(document, currentTree, message, client, () => !disposed).then(() => {
+                    const request: NonNullable<typeof typeRequest> = { id: message.id, cancel: new vscode.CancellationTokenSource() };
+                    typeRequest = request;
+                    const active = () => !disposed && typeRequest === request;
+                    request.timeout = setTimeout(() => {
+                        if (!active()) return;
+                        cancelTypeRequest();
+                        post({ type: "typeOptions", id: message.id, error: vscode.l10n.t("Loading types took too long. Please retry.") });
+                    }, 12000);
+                    void typeOptionsFromGraph(document, currentTree, message, client, active, request.cancel.token).then(selection => {
+                        if (!active()) return;
+                        typeSelection = selection;
+                        post({ type: "typeOptions", id: message.id, candidates: selection.candidates });
+                    }, (error: unknown) => {
+                        if (active()) post({ type: "typeOptions", id: message.id, error: error instanceof Error ? error.message : String(error) });
+                    }).finally(() => {
+                        clearTimeout(request.timeout);
+                        request.cancel.dispose();
+                        if (typeRequest === request) typeRequest = undefined;
+                    });
+                    break;
+                }
+                case "cancelType":
+                    if (typeRequest?.id === message.id) {
+                        cancelTypeRequest();
+                    }
+                    if (typeSelection?.id === message.id) typeSelection = undefined;
+                    break;
+                case "applyType":
+                case "removeType": {
+                    const selection = typeSelection;
+                    if (applyingType || (message.type === "applyType" ? selection?.id !== message.id : !currentTree)) {
+                        post({ type: "typeResult", id: message.id, error: vscode.l10n.t("Choose a type again in the updated graph.") });
+                        break;
+                    }
+                    applyingType = true;
+                    typeSelection = undefined;
+                    cancelTypeRequest();
+                    const change = message.type === "removeType"
+                        ? removeTypeFromGraph(document, currentTree!, message, () => !disposed)
+                        : applyTypeFromGraph(document, selection!, message.typeText, () => !disposed);
+                    void change.then(() => {
                         post({ type: "typeResult", id: message.id });
                         void send();
                     }, (error: unknown) => {
                         post({ type: "typeResult", id: message.id, error: error instanceof Error ? error.message : String(error) });
-                    }).finally(() => { choosingType = false; });
+                    }).finally(() => { applyingType = false; });
                     break;
                 }
+                case "reorder":
+                    if (reordering || !currentTree) {
+                        post({ type: "reorderResult", id: message.id,
+                            error: vscode.l10n.t("Reordering is not available yet.") });
+                        break;
+                    }
+                    reordering = true;
+                    void reorderFromGraph(document, currentTree, message, () => !disposed).then(() => {
+                        post({ type: "reorderResult", id: message.id });
+                        void send();
+                    }, (error: unknown) => {
+                        post({ type: "reorderResult", id: message.id,
+                            error: error instanceof Error ? error.message : String(error) });
+                    }).finally(() => { reordering = false; });
+                    break;
                 case "reference": {
                     const revision = ++referenceRevision;
                     const active = () => !disposed && revision === referenceRevision && document.version === message.version;

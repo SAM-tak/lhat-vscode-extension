@@ -5,8 +5,8 @@
  */
 export type LabelCategory = "declaration" | "control" | "callable" | "function" | "procedure" | "type" | "value" | "module" | "modifier" | "operator" | "member";
 export const HAT_GROUPS: readonly (readonly [string, LabelCategory, string, string])[] = [
-    ["let", "declaration", "Define constant", "定数定義"],
-    ["var", "declaration", "Define variable", "変数定義"],
+    ["let", "declaration", "Variable Definition", "変数定義"],
+    ["var", "declaration", "Mutable Variable Definition", "可変変数定義"],
     ["with", "declaration", "Use resource", "リソース使用"],
     ["def", "declaration", "Type definition", "型定義"],
     ["enum", "declaration", "Enumeration", "列挙定義"],

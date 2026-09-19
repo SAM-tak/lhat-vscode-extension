@@ -227,6 +227,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // says so itself rather than being missing from the editor list.
     const graphs = new LhatGraphEditorProvider(context, () => client);
     context.subscriptions.push(
+        vscode.commands.registerCommand("lhat.graph.toggleStatement", context => graphs.toggleStatement(context)),
         vscode.window.registerCustomEditorProvider(
             LhatGraphEditorProvider.viewType,
             graphs,
