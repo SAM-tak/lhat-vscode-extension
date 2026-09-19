@@ -36,12 +36,10 @@ const FOLD_BTN = 18;
 // 5.3's table, by kind. Code switched off (01 の 6.5) lists statements the
 // way a block does, and is laid out as one.
 const STATEMENT_LIST = new Set(["block", "loop-clause", "disabled"]);
-// 04 の 4.5's try^{ } is here too: its items are if-clause nodes like an
-// if^ statement's, the first being the body and the rest the catch arms. The
-// body is not one of the alternatives, but it reads well enough at the left
-// of them, and leaving try-block out of every table is what collapsed a
-// whole try^{ } into a single leaf.
-const BRANCH = new Set(["if-stmt", "if-expr", "try-block"]);
+// 04 の 4.5's catch^ arms are if-clause nodes too, in an "arms" field beside
+// a block's statements or an if^ statement's clauses, so they are laid out
+// with whichever holds them.
+const BRANCH = new Set(["if-stmt", "if-expr"]);
 const ELEMENT_LIST = new Set([
     "table", "def", "self-table", "error-new", "errordef", "error-kind", "enumdef", "type-table",
 ]);
