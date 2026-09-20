@@ -331,12 +331,21 @@ export interface MapOptions {
     width?: number;
 }
 
-/** Split declaration rows read from the left when the whole view is wide. */
+/** Centre the view, keeping the actual declaration column inside its left margin. */
 export function graphViewportX(laid: ElkNode, width: number): number {
     const centered = (width - (laid.width ?? 0)) / 2;
-    return laid.lhat?.definitionRole === "row" ||
-        laid.children?.some((n) => n.lhat?.definitionRole === "row")
-        ? Math.max(8, centered) : centered;
+    const rootRow = laid.lhat?.definitionRole === "row";
+    let declarationLeft = Number.POSITIVE_INFINITY;
+    for (const row of rootRow ? [laid] : laid.children ?? []) {
+        if (row.lhat?.definitionRole !== "row") continue;
+        const declaration = row.children?.find((n) => n.lhat?.definitionRole === "declaration");
+        declarationLeft = Math.min(declarationLeft,
+            (rootRow ? 0 : row.x ?? 0) + (declaration?.x ?? 0));
+    }
+    // A wide sibling can leave hundreds of pixels before the declarations.
+    // Protect their left edge, not ELK's origin, or that empty space pushes
+    // otherwise visible statements and values off the right of the screen.
+    return Math.max(8 - declarationLeft, centered);
 }
 
 /**

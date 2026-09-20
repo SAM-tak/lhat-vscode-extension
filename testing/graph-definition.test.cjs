@@ -13,7 +13,7 @@ mapping._compile(buildSync({
     entryPoints: [mappingPath],
     bundle: true, platform: 'node', format: 'cjs', write: false,
 }).outputFiles[0].text, mapping.id);
-const { toElk, stackWideDefinitions, titleOf } = mapping.exports;
+const { toElk, graphViewportX, stackWideDefinitions, titleOf } = mapping.exports;
 const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
 const rows = graph => flatten(graph).filter(n => n.lhat?.definitionRole === 'row');
 const statements = graph => graph.children.filter(n => n.lhat?.synthetic !== 'start');
@@ -247,6 +247,28 @@ test('branch-free enclosing expressions expose nested member definitions', async
     assert.equal(rows(graph)[1].children[1].lhat.kind, 'table');
 });
 
+test('viewport centring protects declaration positions without preserving empty layout space', () => {
+    const row = {
+        id: 'definition', x: 666, width: 500,
+        lhat: { definitionRole: 'row' },
+        children: [{ id: 'declaration', x: 0, width: 234, lhat: { definitionRole: 'declaration' } }],
+    };
+    const graph = { id: 'root', width: 1566, children: [
+        { id: 'wide-call', x: 10, width: 1546 }, row,
+    ] };
+    const x = graphViewportX(graph, 1020);
+    assert.equal(x + graph.width / 2, 510, 'wide siblings must not move the document axis right');
+    assert(row.x + x >= 8 && row.x + row.width + x <= 1012, 'the fitting definition is fully visible');
+    assert.equal(graphViewportX({ ...graph, children: [] }, 1020), x, 'adding a visible declaration does not shift the graph');
+    assert.equal(graphViewportX(graph, 2000), (2000 - graph.width) / 2, 'a fitting graph remains centred');
+
+    const nearLeft = { ...row, x: 100, children: [{ ...row.children[0], x: 20 }] };
+    assert.equal(graphViewportX({ ...graph, children: [row, nearLeft] }, 450), 8 - 120,
+        'only actual declaration clipping limits centring, including the child offset');
+    assert.equal(graphViewportX({ ...nearLeft, width: 1200 }, 450), 8 - 20,
+        'a drilled-in row ignores its former parent-relative position');
+});
+
 test('only wide outermost values drop; later statements gain clearance without moving the declaration', () => {
     const makeRow = (id, width, y, declarationHeight = 30) => ({
         id, x: 40, y, width, height: 240,
@@ -279,7 +301,8 @@ test('only wide outermost values drop; later statements gain clearance without m
     assert.equal(result.height, original.height + 30);
     assert.equal(wide.children[1].y, 0, 'input layout is not mutated');
     assert.equal(stackWideDefinitions(original, 2000), original, 'wide viewport restores the original layout');
-    assert.equal(stackWideDefinitions(original, 1240), original, 'right edge at the margin needs no offset');
+    assert.equal(stackWideDefinitions(original, 1200), original, 'right edge at the margin needs no offset');
+    assert.equal(stackWideDefinitions(original, 1199).children[0].lhat.stackedDefinition, true);
     assert.equal(stackWideDefinitions(makeRow('scaled', 1200, 0, 45), 931).children[1].y, 45);
     const twoWide = stackWideDefinitions({ ...original, children: [wide, makeRow('second', 1300, 320, 45), container] }, 931);
     assert.equal(twoWide.children[1].y, 350);
@@ -301,7 +324,13 @@ test('a fitting-width table still scrolls when its positioned right edge is off 
                 lhat: { definitionRole: 'value' }, children: [{ id: 'row-1', x: 10, y: 34 }] },
         ],
     };
-    const graph = { id: 'root', width: 1200, height: 500, children: [row] };
+    // Another declaration anchors the left margin; this row is displaced
+    // within that shared column, not merely by empty space before all rows.
+    const anchor = { id: 'anchor', x: 0, y: 0, width: 80, height: 30,
+        lhat: { definitionRole: 'row' }, children: [
+            { id: 'anchor-decl', x: 0, width: 80, lhat: { definitionRole: 'declaration' } },
+        ] };
+    const graph = { id: 'root', width: 1200, height: 500, children: [row, anchor] };
     assert(row.width < 884, 'reproduces the old width-only false negative');
     const stacked = stackWideDefinitions(graph, 884).children[0];
     assert.equal(stacked.lhat.stackedDefinition, true);
@@ -309,9 +338,9 @@ test('a fitting-width table still scrolls when its positioned right edge is off 
     assert.equal(stacked.children[0], row.children[0]);
     assert.equal(stacked.children[1].children, row.children[1].children);
     assert.equal(stackWideDefinitions(graph, 1600), graph, 'actually visible values remain beside declarations');
-    const exact = { ...graph, children: [{ ...row, x: 78 }] };
+    const exact = { ...graph, children: [{ ...row, x: 78 }, anchor] };
     assert.equal(stackWideDefinitions(exact, 884), exact, 'actual right edge exactly at the margin');
-    assert.equal(stackWideDefinitions({ ...graph, children: [{ ...row, x: 79 }] }, 884)
+    assert.equal(stackWideDefinitions({ ...graph, children: [{ ...row, x: 79 }, anchor] }, 884)
         .children[0].lhat.stackedDefinition, true, 'one pixel of clipping enables scrolling');
 });
 

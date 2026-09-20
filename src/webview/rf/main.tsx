@@ -1197,10 +1197,10 @@ function App() {
     // position either. The view's x always holds the document's axis -- the
     // vertical centre line the execution line runs down -- at the middle of
     // the screen, re-derived from every layout, so a re-layout at another
-    // type size cannot drift the picture sideways. Unclamped: with a
-    // definition wider than the view the x goes negative, and that is right
-    // -- the wide box hangs from the base left edge (toFlow) while
-    // everything narrow stays centred.
+    // type size cannot drift the picture sideways. Split declarations limit
+    // this centring only if their actual left edge would leave the view.
+    // Negative x is valid: a wide box hangs from the base left edge (toFlow)
+    // while narrow statements retain their central position.
     //
     // y is the one axis the reader owns. It resets to the top only when the
     // view is a different thing to look at (another definition, Fold/Unfold
