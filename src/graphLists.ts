@@ -2,6 +2,7 @@ import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import type { StatementInsertion, StatementTemplate } from "./graphStatements";
 import { resultTypes, syntaxTokens } from "./graphSyntax";
+import { callInfo, canInsertBinding } from "./graphCalls";
 
 export interface ListInsertion extends StatementInsertion { category: "list" }
 export type InsertionSite = StatementInsertion | ListInsertion;
@@ -76,23 +77,41 @@ export function commaLists(tree: AstReply): CommaList[] {
 }
 
 export function listInsertions(tree: AstReply): ListInsertion[] {
-    return commaLists(tree).flatMap(({ node, field, items, implicit }) => {
+    const lists = commaLists(tree);
+    return lists.flatMap((list) => {
+        const { node, field, items, implicit } = list;
         const base: ListInsertion = { category: "list", kind: node.kind, start: node.start, end: node.end, field };
         return [...(implicit ? implicit.slice(1).map((_, i) => ({ ...base, before: -(i + 2) }))
-            : items.slice(1).map(item => ({ ...base, before: item.start }))), base];
+            : items.slice(1).map(item => ({ ...base, before: item.start }))), base].filter(site => editableList(list, site, lists));
     });
 }
 
+function editableList(list: CommaList, site: ListInsertion, lists: CommaList[]): boolean {
+    if (list.node.kind === "define") return list.field === "targets" && canInsertBinding(list.node);
+    if (list.node.kind === "tuple" && lists.some(parent => parent.node.kind === "define" && parent.field === "values" &&
+        parent.items.length === 1 && parent.items[0] === list.node && array(parent.node.fields?.targets).length > 1)) return false;
+    if (list.node.kind === "call" && list.field === "argument") {
+        const info = callInfo(list.node);
+        if (!info) return false;
+        const index = site.before === undefined ? list.items.length : list.items.findIndex(item => item.start === site.before);
+        return index >= info.inputs.length ? info.variadic !== undefined
+            : index === list.items.length && list.items.length < info.inputs.length;
+    }
+    return true;
+}
+
 function findList(tree: AstReply, site: ListInsertion): CommaList | undefined {
-    return commaLists(tree).find(list => listIdentity(list.node, list.field) === listIdentity(site, site.field) &&
+    const lists = commaLists(tree);
+    return lists.find(list => listIdentity(list.node, list.field) === listIdentity(site, site.field) &&
         (site.before === undefined || list.items.slice(1).some(item => item.start === site.before) ||
-            (list.implicit && site.before <= -2 && -site.before <= list.implicit.length)));
+            (list.implicit && site.before <= -2 && -site.before <= list.implicit.length)) && editableList(list, site, lists));
 }
 
 export const LIST_TEMPLATE_LABELS = {
     number: "Number", string: "Text", boolean: "Boolean", nil: "Nil", table: "Table literal",
     function: "Function", procedure: "Procedure", member: "Named member", parameter: "Parameter",
     typeMember: "Typed member", name: "Variable", enum: "Enumeration member", error: "Error kind", any: "Any type",
+    binding: "Variable binding", default: "Default argument",
 } as const;
 
 export function listTemplates(tree: AstReply, site: ListInsertion): StatementTemplate[] {
@@ -101,6 +120,16 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
     const used = new Set(syntaxTokens(tree.source).map(t => t.text));
     const name = (base: string) => { let next = base, i = 2; while (used.has(next)) next = `${base}${i++}`; return next; };
     const choice = (id: keyof typeof LIST_TEMPLATE_LABELS, text: string): StatementTemplate => ({ id, label: LIST_TEMPLATE_LABELS[id], text });
+    if (list.node.kind === "define") return [choice("binding", "_^ = nil^")];
+    if (list.node.kind === "call") {
+        const info = callInfo(list.node);
+        const index = site.before === undefined ? list.items.length : list.items.findIndex(item => item.start === site.before);
+        const input = info?.inputs[index] ?? info?.variadic;
+        if (input?.default !== undefined) return [choice("default", input.default)];
+        const initial = input?.type === "number^" ? "0" : input?.type === "string^" ? '""'
+            : input?.type === "bool^" ? "false^" : "nil^";
+        return [choice("default", initial)];
+    }
     if (list.mode === "parameter") return [choice("parameter", `${name("value")}: any^`)];
     if (list.mode === "name") return [choice("name", name("value"))];
     if (list.mode === "enum") return [choice("enum", name("Item"))];
@@ -124,6 +153,21 @@ export function insertListEdit(tree: AstReply, site: ListInsertion, template: st
     const choice = listTemplates(tree, site).find(t => t.id === template);
     if (!choice) return undefined;
     const list = findList(tree, site)!;
+    if (list.node.kind === "define") {
+        const lists = commaLists(tree);
+        let values = lists.find(other => other.node === list.node && other.field === "values");
+        if (list.items.length > 1 && values?.items.length === 1 && values.items[0].kind === "tuple") {
+            values = lists.find(other => other.node === values!.items[0] && other.field === "items");
+        }
+        if (!values) return undefined;
+        const index = site.before === undefined ? list.items.length : list.items.findIndex(item => item.start === site.before);
+        const edits = [insertAt(tree.source, list, index, "_^"), insertAt(tree.source, values, index, "nil^")];
+        let text = tree.source.slice(list.node.start, list.node.end);
+        for (const edit of edits.sort((a, b) => b.start - a.start)) {
+            text = text.slice(0, edit.start - list.node.start) + edit.text + text.slice(edit.end - list.node.start);
+        }
+        return { start: list.node.start, end: list.node.end, text };
+    }
     if (list.implicit) {
         const types = list.implicit.map(t => t === "?" ? "any^" : t);
         types.splice(site.before === undefined ? types.length : -site.before - 1, 0, choice.text);
@@ -144,7 +188,18 @@ export function insertListEdit(tree: AstReply, site: ListInsertion, template: st
     return { start: end, end, text: `, ${choice.text}` };
 }
 
-export interface OperatorSite extends SourceSpan { owner: SourceSpan; text: string; choices: string[] }
+function insertAt(source: string, list: CommaList, index: number, text: string): SourceEdit {
+    const tokens = syntaxTokens(source, list.start, list.end);
+    const next = list.items[index];
+    if (next) {
+        const comma = tokens.find(token => token.text === "," && token.start >= list.items[index - 1].end && token.end <= next.start)!;
+        return { start: comma.end, end: comma.end, text: ` ${text},` };
+    }
+    const last = tokens[tokens.length - 1], at = last?.text === "," ? last.start : last?.end ?? list.end;
+    return { start: at, end: at, text: `, ${text}` };
+}
+
+export interface OperatorSite extends SourceSpan { owner: SourceSpan; text: string; choices: string[]; members?: SourceSpan[] }
 const numeric = ["+", "-", "*", "/", "//", "%", "**"];
 const comparison = ["==", "!=", "<", "<=", ">", ">="];
 export function operatorSites(tree: AstReply): OperatorSite[] {
@@ -168,7 +223,49 @@ export function operatorSites(tree: AstReply): OperatorSite[] {
 }
 
 export function replaceOperatorEdit(tree: AstReply, span: SourceSpan, operator: string): SourceEdit | undefined {
-    const site = operatorSites(tree).find(s => s.start === span.start && s.end === span.end);
+    const site = groupedOperatorSites(tree).find(s => s.start === span.start && s.end === span.end);
     if (!site || !site.choices.includes(operator)) return undefined;
-    return { start: site.start, end: site.end, text: operator };
+    const members = site.members ?? [site], start = Math.min(...members.map(s => s.start)), end = Math.max(...members.map(s => s.end));
+    let text = tree.source.slice(start, end);
+    for (const member of [...members].sort((a, b) => b.start - a.start)) {
+        text = text.slice(0, member.start - start) + operator + text.slice(member.end - start);
+    }
+    return { start, end, text };
+}
+
+/** Fold only the existing association spine, and never cross written parentheses. */
+export function operatorGroup(node: AstNode, source: string, sites: OperatorSite[]): { operands: AstNode[]; site?: OperatorSite } {
+    const own = sites.find(site => site.owner.start === node.start && site.owner.end === node.end);
+    const left = one(node, "left"), right = one(node, "right");
+    if (!own || !left || !right) return { operands: [left, right].filter((n): n is AstNode => !!n), site: own };
+    const primitive = (n: AstNode) => ["number^", "string^", "bool^"].includes(n.inferredType ?? "");
+    const rightAssociative = ["**", ".."].includes(own.text);
+    const nested = rightAssociative ? right : left;
+    const nestedOp = sites.find(site => site.owner.start === nested.start && site.owner.end === nested.end);
+    const outside = rightAssociative ? source.slice(own.end, nested.start) + source.slice(nested.end, node.end)
+        : source.slice(node.start, nested.start) + source.slice(nested.end, own.start);
+    const parentheses = syntaxTokens(source, nested.start, nested.end)[0]?.text === "(" || /[()]/.test(syntaxTokens(outside).map(t => t.text).join(""));
+    if (nested.kind !== "binary" || nestedOp?.text !== own.text || parentheses ||
+        !primitive(node) || !primitive(left) || !primitive(right) || ![...numeric, ".."].includes(own.text)) return { operands: [left, right], site: own };
+    const group = operatorGroup(nested, source, sites);
+    if (!group.operands.every(primitive)) return { operands: [left, right], site: own };
+    const members = [...group.site?.members ?? [nestedOp], own];
+    return { operands: rightAssociative ? [left, ...group.operands] : [...group.operands, right], site: { ...own, members } };
+}
+
+export function groupedOperatorSites(tree: AstReply): OperatorSite[] {
+    const all = operatorSites(tree), result: OperatorSite[] = [];
+    const visit = (node: AstNode) => {
+        if (node.kind === "disabled") return;
+        if (node.kind === "binary") {
+            const group = operatorGroup(node, tree.source, all);
+            if (group.site) result.push(group.site);
+            group.operands.forEach(visit);
+        } else {
+            result.push(...all.filter(site => site.owner.start === node.start && site.owner.end === node.end));
+            Object.values(node.fields ?? {}).flat().forEach(visit);
+        }
+    };
+    visit(tree.root);
+    return result;
 }

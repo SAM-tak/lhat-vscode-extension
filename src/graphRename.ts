@@ -1,9 +1,10 @@
 import * as vscode from "vscode";
-import type { FromWebview } from "./protocol";
+import type { AstReply, FromWebview } from "./protocol";
+import { typeSites } from "./graphTypes";
 
 /** Use the registered LSP provider, never textual search/replace or serialization. */
 export async function renameFromGraph(document: vscode.TextDocument,
-    message: Extract<FromWebview, { type: "rename" }>, active: () => boolean): Promise<void> {
+    message: Extract<FromWebview, { type: "rename" }>, active: () => boolean, tree?: AstReply): Promise<void> {
     const unchanged = () => active() && document.version === message.version &&
         Number.isInteger(message.start) && Number.isInteger(message.end) &&
         message.start >= 0 && message.end > message.start &&
@@ -14,6 +15,18 @@ export async function renameFromGraph(document: vscode.TextDocument,
         throw new Error(vscode.l10n.t("Enter a name."));
     }
     if (message.newName === message.oldName) return;
+    // Discards have no symbol or references to rename. Materialize just this
+    // declaration, using the same version/span checks as every graph edit.
+    if (message.oldName === "_^" && tree?.source === document.getText() &&
+        typeSites(tree).some(site => site.start === message.start && site.end === message.end)) {
+        if (!/^[\p{L}_][\p{L}\p{N}_]*$/u.test(message.newName)) {
+            throw new Error(vscode.l10n.t("The language server did not accept this name."));
+        }
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(document.uri, new vscode.Range(document.positionAt(message.start), document.positionAt(message.end)), message.newName);
+        if (!await vscode.workspace.applyEdit(edit)) throw new Error(vscode.l10n.t("Could not apply the rename."));
+        return;
+    }
     const versions = new Map(vscode.workspace.textDocuments.map(doc => [doc, doc.version]));
     const position = document.positionAt(message.start);
     const prepared = await vscode.commands.executeCommand<vscode.Range | { range: vscode.Range }>(

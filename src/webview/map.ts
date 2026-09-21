@@ -13,7 +13,8 @@
 
 import type { AstNode, AstReply } from "../protocol.js";
 import { declaredEntry, typeSites } from "../graphTypes";
-import { commaLists, listIdentity, operatorSites, type CommaList, type InsertionSite, type ListInsertion, type OperatorSite } from "../graphLists";
+import { commaLists, listIdentity, listInsertions, operatorGroup, operatorSites, type CommaList, type InsertionSite, type ListInsertion, type OperatorSite } from "../graphLists";
+import { callInfo, canInsertBinding, outputTypes } from "../graphCalls";
 import { reorderSites, type ReorderSite } from "../graphReorder";
 import { statementSites, statementInsertions, type StatementSite, type StatementInsertion } from "../graphStatements";
 import { literalOf, type LiteralValue } from "./literals";
@@ -141,6 +142,11 @@ export interface ElkNode {
         /** Source selection for the declaration excludes '=' and the value. */
         revealEnd?: number;
         definitionHandleY?: number;
+        /** Callable result slots, used by displayed definition edges. */
+        definitionOutputs?: string[];
+        definitionLinks?: { source: string; target: string }[];
+        ioGroup?: "input" | "output";
+        bindingGroup?: boolean;
         /** Wide outermost pair: its value is lowered and scrolls on its own. */
         stackedDefinition?: boolean;
         /** A direct member of a source list whose order the graph can edit. */
@@ -150,6 +156,7 @@ export interface ElkNode {
         /** End-of-list '+' carried by the last real element. */
         appendInsertion?: ListInsertion;
         insertionAxis?: "horizontal" | "vertical";
+        appendInsertionAxis?: "horizontal" | "vertical";
         operator?: OperatorSite;
         /** Children form the header/expression itself, without a duplicate label strip. */
         inline?: boolean;
@@ -331,21 +338,34 @@ export interface MapOptions {
     width?: number;
 }
 
-/** Centre the view, keeping the actual declaration column inside its left margin. */
+/** Centre the view within the bounds of boxes that cannot scroll independently. */
 export function graphViewportX(laid: ElkNode, width: number): number {
     const centered = (width - (laid.width ?? 0)) / 2;
-    const rootRow = laid.lhat?.definitionRole === "row";
-    let declarationLeft = Number.POSITIVE_INFINITY;
-    for (const row of rootRow ? [laid] : laid.children ?? []) {
-        if (row.lhat?.definitionRole !== "row") continue;
-        const declaration = row.children?.find((n) => n.lhat?.definitionRole === "declaration");
-        declarationLeft = Math.min(declarationLeft,
-            (rootRow ? 0 : row.x ?? 0) + (declaration?.x ?? 0));
-    }
-    // A wide sibling can leave hundreds of pixels before the declarations.
-    // Protect their left edge, not ELK's origin, or that empty space pushes
-    // otherwise visible statements and values off the right of the screen.
-    return Math.max(8 - declarationLeft, centered);
+    const usable = width - 16;
+    let left = Number.POSITIVE_INFINITY, right = Number.NEGATIVE_INFINITY;
+    const include = (node: ElkNode, x: number): void => {
+        if (node.lhat?.definitionRole === "row") {
+            // Overflowing values get their own scroller. The binding stays
+            // fixed, including unboxed columns of multiple output bindings.
+            for (const child of node.children ?? []) {
+                if (child.lhat?.definitionRole === "declaration") include(child, x + (child.x ?? 0));
+            }
+        } else if (node.lhat === undefined || node.lhat.layoutOnly) {
+            for (const child of node.children ?? []) include(child, x + (child.x ?? 0));
+        } else if ((node.width ?? 0) <= usable) {
+            left = Math.min(left, x);
+            right = Math.max(right, x + (node.width ?? 0));
+        }
+        // Oversized visible boxes land at the margin and scroll separately.
+        // Their original ELK bounds must not push the fixed column right.
+    };
+    if (laid.lhat?.definitionRole === "row") include(laid, 0);
+    else for (const child of laid.children ?? []) include(child, child.x ?? 0);
+    if (!Number.isFinite(left)) return centered;
+    const min = 8 - left, max = width - 8 - right;
+    // Preserve centring whenever every fixed box fits. If their combined
+    // span exceeds the view, retain the reading edge rather than empty space.
+    return Math.max(min, Math.min(centered, max));
 }
 
 /**
@@ -356,6 +376,32 @@ export function graphViewportX(laid: ElkNode, width: number): number {
  * Renderers use node/handle positions, not the original ELK edge sections.
  */
 export function stackWideDefinitions(laid: ElkNode, usableWidth: number): ElkNode {
+    // ELK routes against the containing value box. The visible definition
+    // starts at its first Output slot, so align the binding card to that slot.
+    const alignSlots = (node: ElkNode): void => {
+        node.children?.forEach(alignSlots);
+        if (node.lhat?.definitionRole !== "row") return;
+        const declaration = node.children?.find(child => child.lhat?.definitionRole === "declaration");
+        const value = node.children?.find(child => child.lhat?.definitionRole === "value");
+        if (!declaration || !value?.lhat?.definitionOutputs?.length) return;
+        const positions = new Map<string, number>();
+        const index = (child: ElkNode, y: number): void => {
+            const top = y + (child.y ?? 0);
+            positions.set(child.id, top + (child.lhat?.definitionHandleY ?? (child.height ?? 0) / 2));
+            child.children?.forEach(item => index(item, top));
+        };
+        index(value, 0);
+        if (node.lhat.definitionLinks) {
+            for (const link of node.lhat.definitionLinks) {
+                const target = declaration.children?.find(child => child.id === link.target), y = positions.get(link.source);
+                if (target && y !== undefined) target.y = y - (declaration.y ?? 0) - (target.lhat?.definitionHandleY ?? 0);
+            }
+        } else {
+            const y = positions.get(value.lhat.definitionOutputs[0]);
+            if (y !== undefined) declaration.y = y - (declaration.lhat?.definitionHandleY ?? 0);
+        }
+    };
+    alignSlots(laid);
     // Width alone misses rows displaced by the shared declaration column.
     // Compare the value's actual right edge with the viewport's right margin,
     // in graph coordinates, just as the scroll bounds in toFlow do.
@@ -398,6 +444,7 @@ export function stackWideDefinitions(laid: ElkNode, usableWidth: number): ElkNod
 export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     const source = reply.source;
     const lists = commaLists(reply);
+    const editableLists = listInsertions(reply);
     const commaList = (node: AstNode, field: string) => lists.find(list => listIdentity(list.node, list.field) === listIdentity(node, field))
         ?? commaLists({ source, root: node }).find(list => list.node === node && list.field === field);
     const listSite = (list: CommaList, before?: number): ListInsertion => ({ category: "list", kind: list.node.kind,
@@ -418,6 +465,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     // Only executable scopes get an entry point. A function's body starts a
     // new chain; its declaration is never connected to the code inside it.
     const entryScopes = new Set<AstNode>();
+    const callableNames = new Map<AstNode, AstNode>();
     const statementClauses = new Set<AstNode>();
     const expressionClauses = new Set<AstNode>();
     const matchStatements = new Set<AstNode>();
@@ -425,6 +473,21 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     const matchBodies = new Set<AstNode>();
     const viewRoot = options.root ?? reply.root;
     if (viewRoot.kind === "block") entryScopes.add(viewRoot);
+    const findCallableNames = (node: AstNode): void => {
+        if (node.kind === "define") {
+            const targets = allChildren(node).filter(child => child.field === "targets").map(child => child.node);
+            allChildren(node).filter(child => child.field === "values").forEach(({ node: value }, i) => {
+                const target = targets[i]?.fields?.name ?? targets[i];
+                if (value.kind === "func" && target && !Array.isArray(target)) callableNames.set(value, target);
+            });
+        } else if (node.kind === "table-entry") {
+            const value = node.fields?.value, key = node.fields?.key;
+            if (value && !Array.isArray(value) && value.kind === "func" && key && !Array.isArray(key)) callableNames.set(value, key);
+        }
+        for (const { node: child } of allChildren(node)) findCallableNames(child);
+    };
+    // A drilled callable's binding belongs to its parent, outside the view.
+    if (viewRoot.kind === "func") findCallableNames(reply.root);
     const findEntries = (node: AstNode): void => {
         const body = node.fields?.body;
         if (node.kind === "func" && body !== undefined && !Array.isArray(body)) {
@@ -547,7 +610,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     });
 
     const executionPort = (node: ElkNode, end: "in" | "out") =>
-        node.lhat?.kind === "define-row" || node.lhat?.kind === "return-row"
+        node.ports?.some(port => port.id === `${node.id}__flow-${end}`)
             ? `${node.id}__flow-${end}` : node.id;
 
     // A branch enters a statement, not an intervening block/with box or
@@ -682,12 +745,15 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     /** A real list owns its cells, the spaces between them and its trailing '+'. */
     function listGroup(list: CommaList, unfold: boolean, avail: number, cells?: ElkNode[]): ElkNode {
         const items = cells ?? list.items.map(item => build(item, "expr", unfold, avail));
+        const editable = (before?: number) => editableLists.some(site => site.start === list.node.start && site.end === list.node.end &&
+            site.kind === list.node.kind && site.field === list.field && site.before === before);
         items.forEach((item, i) => {
             memberHandles(item);
-            if (i > 0) beforeElement(item, listSite(list, list.implicit ? -(i + 1) : list.items[i].start), "horizontal");
+            const before = list.implicit ? -(i + 1) : list.items[i]?.start;
+            if (i > 0 && editable(before)) beforeElement(item, listSite(list, before), "horizontal");
         });
-        if (items.length && items[items.length - 1].lhat) items[items.length - 1].lhat!.appendInsertion = listSite(list);
-        const children = items.length ? items : [listAdd(list)], id = nextId("comma-list");
+        if (items.length && editable() && items[items.length - 1].lhat) items[items.length - 1].lhat!.appendInsertion = listSite(list);
+        const children = items.length ? items : editable() ? [listAdd(list)] : [], id = nextId("comma-list");
         const built = container(id, "", "RIGHT", children, chain(id, children), list.node, false);
         built.lhat = { kind: "comma-list", start: list.start, end: list.end, layoutOnly: true, noExecutionHandles: true };
         if (children.every(child => child.width !== undefined)) built.width = children.reduce((n, child) => n + child.width!, 0) + px(LAYER_GAP) * (children.length - 1);
@@ -697,7 +763,8 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     function listContent(list: CommaList, unfold: boolean, avail: number, cells?: ElkNode[]): ElkNode {
         const items = cells ?? list.items.map(item => build(item, "expr", unfold, avail));
         if (items.length !== 1) return listGroup(list, unfold, avail, items);
-        items[0].lhat = { ...items[0].lhat!, appendInsertion: listSite(list) };
+        if (editableLists.some(site => site.start === list.node.start && site.end === list.node.end &&
+            site.field === list.field && site.before === undefined)) items[0].lhat = { ...items[0].lhat!, appendInsertion: listSite(list) };
         return items[0];
     }
 
@@ -714,6 +781,8 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     function signature(node: AstNode, unfold: boolean, avail: number): ElkNode {
         const params = commaList(node, "params")!, returns = commaList(node, "return_type")!;
         const keyword = makeLabel({ ...node, end: node.start + 2 }, [], MAX_LABEL);
+        const name = node === viewRoot ? callableNames.get(node) : undefined;
+        if (name) keyword.parts.push({ text: ` ${source.slice(name.start, name.end)}`, symbol: { start: name.start, end: name.end } });
         const title = leaf({ ...node, kind: "signature-title", end: node.start + 2 }, keyword);
         const parameters = listContent(params, unfold, avail, params.items.map(param => leaf(param, labelFor(param, []))));
         const resultSites = sites.filter(site => site.name.startsWith("return value") &&
@@ -721,12 +790,184 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         const cells = resultSites.map(site => leaf({ ...node, kind: "result-type", start: site.start, end: site.end },
             { text: "", parts: [{ text: "", typeSite: site, typeLabel: displayType(site.typeText, vocabulary, true) }] }));
         const results = listContent(returns, unfold, avail, cells);
-        const arrow = leaf({ ...node, kind: "signature-arrow", end: node.start }, "→"); arrow.width = px(18);
-        const id = nextId("signature"), children = [title, parameters, arrow, results];
-        const built = container(id, "", "RIGHT", children, chain(id, children), node, false);
+        const inputs = ioGroup(node, "input", [parameters], "RIGHT");
+        const outputs = ioGroup(node, "output", [results], "RIGHT");
+        const columns = container(nextId("signature-groups"), "", "RIGHT", [inputs, outputs], chain(nextId("signature-order"), [inputs, outputs]), node, false);
+        alignGroupTops([inputs, outputs], columns);
+        columns.lhat = { ...from(node), kind: "signature-groups", layoutOnly: true, noExecutionHandles: true };
+        const id = nextId("signature"), children = [title, columns];
+        const built = container(id, "", "DOWN", children, chain(id, children), node, false);
         built.lhat = { kind: "signature", start: node.start, end: node.start, layoutOnly: true, noExecutionHandles: true };
         children.forEach(memberHandles);
-        if (children.every(child => child.width !== undefined)) built.width = children.reduce((n, child) => n + child.width!, 0) + px(LAYER_GAP) * (children.length - 1);
+        return built;
+    }
+
+    function ioGroup(node: AstNode, role: "input" | "output", children: ElkNode[], direction = "DOWN"): ElkNode {
+        const id = nextId(`io-${role}`), label = role === "input" ? vocabulary.input ?? "Input" : vocabulary.output ?? "Output";
+        const group = container(id, label, direction, children, chain(id, children), node);
+        group.lhat = { kind: `io-${role}`, start: node.start, end: node.end, ioGroup: role, noExecutionHandles: true };
+        if (direction === "RIGHT") group.layoutOptions!["elk.padding"] =
+            `[top=${px(HEAD_H + PAD)},left=${px(PAD)},bottom=${px(PAD)},right=${px(PAD + LAYER_GAP)}]`;
+        if (!children.length) { group.width = widthFor(label); group.height = px(HEAD_H + PAD * 2); }
+        return group;
+    }
+
+    function alignGroupTops(groups: ElkNode[], owner: ElkNode): void {
+        for (const group of groups) {
+            group.layoutOptions = { ...group.layoutOptions, "elk.portConstraints": "FIXED_POS" };
+            group.ports = ["WEST", "EAST"].map(side => ({ id: `${group.id}__${side}`, x: 0, y: 0,
+                layoutOptions: { "elk.port.side": side } }));
+        }
+        owner.edges = groups.slice(1).map((group, index) => ({ id: `${owner.id}__top${index}`,
+            sources: [`${groups[index].id}__EAST`], targets: [`${group.id}__WEST`], pinned: true }));
+    }
+
+    function typeSlot(node: AstNode, kind: string, type: string, name = ""): ElkNode {
+        const slot = leaf({ ...node, kind }, { text: name, parts: [{ text: name, typeLabel: displayType(type, vocabulary, true), source: type }] });
+        slot.lhat = { ...slot.lhat!, noExecutionHandles: true, statement: undefined, insertion: undefined, reorder: undefined };
+        return slot;
+    }
+
+    function connectDefinition(declaration: ElkNode, value: ElkNode, node: AstNode, kind = "argument-row"): ElkNode {
+        const handleY = Math.min(declaration.height ?? px(LEAF_H + 14), px(LEAF_H + 14)) / 2;
+        declaration.lhat = { ...declaration.lhat!, definitionRole: "declaration", definitionHandleY: handleY };
+        value.lhat = { ...value.lhat!, definitionRole: "value", definitionHandleY: handleY };
+        for (const [box, side, suffix] of [[declaration, "EAST", "definition-in"], [value, "WEST", "definition-out"]] as const) {
+            box.layoutOptions = { ...box.layoutOptions, "elk.portConstraints": "FIXED_POS" };
+            box.ports = [...box.ports ?? [], { id: `${box.id}__${suffix}`, x: side === "EAST" ? box.width ?? 0 : 0,
+                y: handleY, layoutOptions: { "elk.port.side": side } }];
+        }
+        const id = nextId(kind);
+        const row = container(id, "", "LEFT", [declaration, value], [{ id: `${id}__definition`,
+            sources: [`${value.id}__definition-out`], targets: [`${declaration.id}__definition-in`], drawn: true, definition: true }], node, false);
+        row.lhat = { kind, start: node.start, end: node.end, definitionRole: "row", noExecutionHandles: true };
+        row.layoutOptions!["elk.layered.spacing.nodeNodeBetweenLayers"] = `${px(28)}`;
+        return row;
+    }
+
+    function invocation(node: AstNode, unfold: boolean, avail: number, operation?: { operands: AstNode[]; site?: OperatorSite }): ElkNode {
+        const info = operation ? undefined : callInfo(node);
+        const target = node.fields?.target;
+        const args = operation?.operands ?? (Array.isArray(node.fields?.argument) ? node.fields.argument
+            : node.fields?.argument ? [node.fields.argument] : []);
+        const title = operation ? leaf({ ...node, kind: "operator-title" }, operation.site?.text ?? source.slice(node.start, args[0]?.start).trim())
+            : target && !Array.isArray(target) ? build(target, "expr", unfold, avail) : leaf({ ...node, kind: "call-title" }, "?");
+        if (operation?.site) title.lhat!.operator = operation.site;
+        memberHandles(title);
+        const types = info?.outputs ?? outputTypes(node.inferredType);
+        const outputs = types.map(type => {
+            const slot = typeSlot(node, "output-slot", type);
+            slot.lhat!.definitionRole = "value"; slot.lhat!.definitionHandleY = px((LEAF_H + 14) / 2);
+            return slot;
+        });
+        const outputWidth = Math.max(0, ...outputs.map(output => output.width ?? 0));
+        outputs.forEach(output => { output.width = outputWidth; });
+        const inputRows: ElkNode[] = [];
+        const argumentList = operation ? undefined : commaList(node, "argument");
+        const argumentSites = editableLists.filter(site => site.kind === "call" && site.start === node.start && site.field === "argument");
+        const count = Math.max(args.length, info?.inputs.length ?? 0);
+        for (let i = 0; i < count; i++) {
+            const arg = args[i], param = info?.inputs[i] ?? info?.variadic;
+            const input = typeSlot(arg ?? node, "input-slot", param?.type ?? arg?.inferredType ?? "?",
+                operation ? "" : param?.name ?? `${vocabulary.input ?? "Input"} ${i + 1}`);
+            if (arg) {
+                const value = build(arg, "expr", unfold, avail); memberHandles(value);
+                const row = connectDefinition(input, value, arg);
+                const site = argumentSites.find(site => site.before === arg.start);
+                if (site) { row.lhat!.insertion = site; row.lhat!.insertionAxis = "vertical"; }
+                inputRows.push(row);
+            } else {
+                const missing = leaf({ ...node, kind: "missing-input" }, vocabulary.missingInput ?? "Missing input");
+                memberHandles(missing);
+                const row = connectDefinition(input, missing, node);
+                const site = argumentSites.find(site => site.before === undefined);
+                if (i === args.length && site) { missing.lhat!.appendInsertion = site; missing.lhat!.insertionAxis = "horizontal"; }
+                inputRows.push(row);
+            }
+        }
+        if (argumentList && args.length >= (info?.inputs.length ?? 0)) {
+            const site = argumentSites.find(site => site.before === undefined);
+            if (site) {
+                const add = listAdd(argumentList); add.lhat!.noExecutionHandles = true;
+                inputRows.push(add);
+            }
+        }
+        const inputGroup = ioGroup(node, "input", inputRows);
+        const outputGroup = ioGroup(node, "output", outputs);
+        const width = Math.max(0, ...inputRows.map(row => row.children?.[0]?.width ?? 0));
+        for (const row of inputRows) {
+            const input = row.children?.[0];
+            if (!input) continue;
+            input.width = width;
+            input.ports?.forEach(port => { if (port.layoutOptions["elk.port.side"] === "EAST") port.x = width; });
+            row.layoutOptions!["elk.portConstraints"] = "FIXED_POS";
+            row.ports = ["in", "out"].map(end => ({ id: `${row.id}__flow-${end}`, x: width / 2, y: 0,
+                layoutOptions: { "elk.port.side": end === "in" ? "NORTH" : "SOUTH" } }));
+        }
+        inputGroup.edges = chain(inputGroup.id, inputRows);
+        const columnId = nextId("call-groups"), columns = container(columnId, "", "RIGHT", [outputGroup, inputGroup], chain(columnId, [outputGroup, inputGroup]), node, false);
+        alignGroupTops([outputGroup, inputGroup], columns);
+        columns.lhat = { kind: "call-groups", start: node.start, end: node.end, layoutOnly: true, noExecutionHandles: true };
+        const id = nextId(node.kind), children = [title, columns];
+        const built = container(id, "", "DOWN", children, chain(id, children), node);
+        built.labels = [{ text: labelFor(node, []).text }];
+        built.lhat = { ...built.lhat!, inline: true, definitionOutputs: outputs.map(output => output.id) };
+        built.layoutOptions!["elk.padding"] = `[top=${px(PAD)},left=${px(PAD)},bottom=${px(PAD)},right=${px(PAD)}]`;
+        return built;
+    }
+
+    function binding(node: AstNode, unfold: boolean, avail: number): ElkNode | undefined {
+        const targets = commaList(node, "targets");
+        let values = commaList(node, "values");
+        if (!targets?.items.length || !values?.items.length) return undefined;
+        if (targets.items.length > 1 && values.items.length === 1 && values.items[0].kind === "tuple") values = commaList(values.items[0], "items") ?? values;
+        const declarations = targets.items.map(target => leaf(target, makeLabel(target, [], MAX_LABEL, true)));
+        const heading = makeLabel({ ...node, end: targets.items[0].start }, [], MAX_LABEL);
+        const declarationWidth = Math.max(...declarations.map(declaration => declaration.width ?? 0));
+        declarations.forEach(declaration => { declaration.width = declarationWidth; });
+        declarations.forEach(memberHandles);
+        const id = nextId("define-row");
+        const canAdd = canInsertBinding(node), pairs: ElkNode[] = [];
+        if (values.items.length === 1 && declarations.length > 1) {
+            // One expression supplying several bindings is evaluated once.
+            // It still lives inside the same statement frame as ordinary pairs.
+            const value = build(values.items[0], "expr", unfold, avail);
+            memberHandles(value);
+            const columnId = nextId("binding-targets");
+            const declaration = container(columnId, "", "DOWN", declarations, chain(columnId, declarations), node, false);
+            declaration.lhat = { kind: "binding-targets", start: node.start, end: node.end,
+                layoutOnly: true, noExecutionHandles: true, definitionRole: "declaration" };
+            // Call outputs start below the callable header and Output caption.
+            if (value.lhat?.definitionOutputs) declaration.layoutOptions!["elk.padding"] =
+                `[top=${px(PAD + LEAF_H + 14 + LAYER_GAP + HEAD_H + PAD)},left=0,bottom=0,right=0]`;
+            const row = connectDefinition(declaration, value, node, "binding-outputs");
+            row.edges!.forEach(edge => { edge.drawn = false; });
+            row.lhat = { ...row.lhat!,
+                definitionLinks: declarations.flatMap((target, index) => {
+                    const output = value.lhat?.definitionOutputs;
+                    return output && !output[index] ? [] : [{ source: output?.[index] ?? value.id, target: target.id }];
+                }) };
+            declarations.forEach(target => { target.lhat!.definitionRole = "declaration"; target.lhat!.definitionHandleY = (target.height ?? 0) / 2; });
+            pairs.push(row);
+        } else for (let i = 0; i < Math.max(declarations.length, values.items.length); i++) {
+            const declaration = declarations[i] ?? typeSlot(node, "unbound-output", "?", "_^ ?");
+            const value = values.items[i] ? build(values.items[i], "expr", unfold, avail)
+                : leaf({ ...node, kind: "missing-input" }, vocabulary.missingInput ?? "Missing input");
+            memberHandles(value);
+            if (canAdd) {
+                declaration.lhat!.appendInsertion = listSite(targets, targets.items[i + 1]?.start);
+                declaration.lhat!.appendInsertionAxis = "vertical";
+            }
+            const pair = connectDefinition(declaration, value, node, "binding-pair");
+            pair.layoutOptions!["elk.portConstraints"] = "FIXED_POS";
+            pair.ports = ["in", "out"].map(end => ({ id: `${pair.id}__flow-${end}`, x: (declaration.width ?? 0) / 2, y: 0,
+                layoutOptions: { "elk.port.side": end === "in" ? "NORTH" : "SOUTH" } }));
+            pairs.push(pair);
+        }
+        const built = container(id, heading, "DOWN", pairs, chain(id, pairs), node);
+        built.lhat = { ...built.lhat!, kind: "define-row", bindingGroup: true };
+        built.labels = [{ text: labelFor({ ...node, end: targets.items[targets.items.length - 1].end }, []).text }];
+        built.layoutOptions!["elk.padding"] = `[top=${px(HEAD_H + PAD)},left=${px(PAD)},bottom=${px(PAD + (canAdd ? LAYER_GAP : 0))},right=${px(PAD)}]`;
         return built;
     }
 
@@ -747,6 +988,10 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             markDisabled(built, statementsBySpan.get(`${node.start}:${node.end}`));
             built.lhat!.insertion = beforeStatement.get(node.start);
             return built;
+        }
+        if (node.kind === "define") {
+            const built = binding(node, unfold, avail);
+            if (built) return built;
         }
         // A keyless entry is just its value, not another visible wrapper.
         // In particular, a def^ field template must expose its own members.
@@ -786,11 +1031,18 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 return built;
             }
         }
-        if (["binary", "compare-chain"].includes(node.kind)) {
-            const operands = node.kind === "binary" ? [field("left"), field("right")].filter((n): n is AstNode => !!n)
-                : allChildren(node).filter(c => c.field === "operands").map(c => c.node);
+        if (node.kind === "binary") return invocation(node, unfold, avail, operatorGroup(node, source, operators));
+        if (node.kind === "unary" && literalOf(node, source) === undefined) {
+            const value = field("value") ?? field("operand");
+            if (value) return invocation(node, unfold, avail, { operands: [value] });
+        }
+        if (node.kind === "call") return invocation(node, unfold, avail);
+        if (node.kind === "compare-chain") {
+            const operands = allChildren(node).filter(c => c.field === "operands").map(c => c.node);
             if (!operands.length) return leaf(node, labelFor(node, []));
             const ownOperators = operators.filter(op => op.owner.start === node.start && op.owner.end === node.end);
+            if (operands.length === 2 && ownOperators.length === 1) return invocation(node, unfold, avail,
+                { operands, site: ownOperators[0] });
             const children: ElkNode[] = [];
             operands.forEach((operand, i) => {
                 if (i > 0 && ownOperators[i - 1]) {
@@ -883,16 +1135,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             }
             const label = labelFor({ ...node, end: declarationEnd }, []);
             declarationLabelEnd.set(node, declarationEnd);
-            const targetList = node.kind === "define" ? commaList(node, "targets") : undefined;
-            const declaration = isReturn ? returnNode(node) : targetList && targetList.items.length > 1 ? inlineBox(node, [
-                leaf({ ...node, kind: "binding-keyword", end: targetList.items[0].start },
-                    makeLabel({ ...node, end: targetList.items[0].start }, [], MAX_LABEL)),
-                listGroup(targetList, unfold, avail, targetList.items.map(target => leaf(target, makeLabel(target, [], MAX_LABEL, true)))),
-            ]) : leaf(node, label);
-            if (targetList) {
-                declaration.labels = [{ text: label.text }];
-                if (targetList.items.length === 1) declaration.lhat!.appendInsertion = listSite(targetList);
-            }
+            const declaration = isReturn ? returnNode(node) : leaf(node, label);
             const handleY = (declaration.height ?? px(LEAF_H)) / 2;
             declaration.lhat = {
                 ...declaration.lhat!, definitionRole: "declaration", revealEnd: declarationEnd,
@@ -904,7 +1147,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             let value: ElkNode;
             if (valueList && values.length === 1) {
                 value = build(values[0].node, "expr", unfold, valueAvail);
-                value.lhat!.appendInsertion = listSite(valueList);
+                if (node.kind !== "define") value.lhat!.appendInsertion = listSite(valueList);
             } else if (valueList) {
                 value = listGroup(valueList, unfold, valueAvail);
             } else value = values.length === 1
@@ -1217,7 +1460,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                        options.root !== undefined, width - 2 * px(PAD));
     // A leaf needs a wrapper. A branch view retains its outer box: its top
     // handle is the branch origin and must not disappear with the view root.
-    if (!root.children?.length || ["func", "type-func"].includes(viewRoot.kind) || root.lhat?.executionBranches !== undefined ||
+    if (!root.children?.length || root.lhat?.bindingGroup || ["func", "type-func"].includes(viewRoot.kind) || root.lhat?.executionBranches !== undefined ||
         root.lhat?.definitionBranches !== undefined) {
         return {
             id: "view",

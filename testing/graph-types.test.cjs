@@ -52,12 +52,12 @@ test('multiple variables have distinct explicit/inferred type captions and reser
         n('ident', '長い名前', undefined, 0, { inferredType: 'godot.AnimatedSprite2D' }),
     ], values: [n('int', '1'), n('call', 'factory()')] });
     for (const scale of [1, 2]) {
-        const node = flatten(toElk({ source, root }, { scale })).find(node => node.lhat?.definitionRole === 'declaration');
+        const node = toElk({ source, root }, { scale });
         const parts = flatten(node).flatMap(node => node.lhat?.labelParts ?? []).filter(part => part.typeSite);
         assert.deepEqual(parts.map(part => part.typeSite.explicit), [true, false]);
         assert.deepEqual(parts.map(part => part.typeLabel), ['Number', 'godot.AnimatedSprite2D']);
-        assert(flatten(node).some(child => child.lhat?.appendInsertion), 'the target list ends in an add control');
-        assert(node.width > 21 * 6 * scale, 'type names and their insertion gaps need room even when names are short');
+        assert(!flatten(node).some(child => child.lhat?.appendInsertion), 'a call initializer has no binding add control');
+        assert(flatten(node).filter(child => child.lhat?.definitionRole === 'declaration').some(child => child.width > 21 * 6 * scale), 'long type captions reserve enough width');
     }
 });
 
@@ -224,10 +224,13 @@ async function editorHost(options = {}) {
     let source = options.source ?? 'let^value = 42', checked, receive, changed, closed;
     const messages = [], requests = [];
     const tree = () => {
-        const n = fixture(source), annotation = /:\s*([^=]+?)\s*=/.exec(source)?.[1];
+        const checkedSource = options.normalized ? source.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n') : source;
+        const n = fixture(checkedSource), annotation = /:\s*([^=]+?)\s*=/.exec(checkedSource)?.[1];
         const target = annotation ? n('param', `value: ${annotation}`, { name: n('ident', 'value'),
-            type: n('type-name', annotation, undefined, source.indexOf(':')) }) : n('ident', 'value');
-        return { source, root: n('define', source, { targets: [target], values: [n('int', '42')] }) };
+            type: n('type-name', annotation, undefined, checkedSource.indexOf(':')) }) : n('ident', 'value');
+        const definition = n('define', options.normalized ? checkedSource.slice(checkedSource.indexOf('let^')).trimEnd() : checkedSource,
+            { targets: [target], values: [n('int', '42')] });
+        return { source: checkedSource, root: options.normalized ? n('block', checkedSource, { items: [definition] }) : definition };
     };
     checked = tree();
     const uri = { toString: () => 'file:graph-types' };
@@ -272,6 +275,24 @@ const waitFor = async condition => {
     for (let i = 0; i < 100 && !condition(); i++) await new Promise(resolve => setTimeout(resolve, 15));
     assert(condition(), 'the graph did not catch up after checking finished');
 };
+
+test('CRLF graph snapshots enable insertion buttons and type choices, then apply the selected statement', async () => {
+    const source = '# 日本語😀\r\nlet^value = 42\r\n', h = await editorHost({ source, normalized: true });
+    try {
+        const ready = h.messages.find(message => message.type === 'tree');
+        assert.equal(ready.version, 1, 'LF normalization must not leave every edit button disabled');
+        assert.equal(ready.reply.source, source);
+        assert.equal(ready.reply.root.fields.items[0].start, source.indexOf('let^'));
+        const start = source.indexOf('value');
+        h.receive({ type: 'chooseType', id: 'crlf-type', version: 1, start, end: start + 5 });
+        await waitFor(() => h.messages.some(message => message.type === 'typeOptions' && message.id === 'crlf-type' && message.candidates));
+        const statements = load('graphStatements.ts'), site = statements.statementInsertions(ready.reply).find(site => site.before !== undefined);
+        h.receive({ type: 'insertStatement', id: 'crlf-insert', version: 1, site, template: 'var' });
+        await waitFor(() => h.messages.some(message => message.type === 'statementResult' && message.id === 'crlf-insert'));
+        assert.equal(h.messages.find(message => message.type === 'statementResult').error, undefined);
+        assert.equal(h.document.getText(), source.replace('let^value', 'var^ value2 = 0\r\nlet^value'));
+    } finally { h.close(); }
+});
 
 test('type edits catch up with the checked source and re-enable further selections without another edit', async () => {
     const h = await editorHost();

@@ -15,7 +15,7 @@ mapping._compile(buildSync({
 }).outputFiles[0].text, mapping.id);
 const { toElk, graphViewportX, stackWideDefinitions, titleOf } = mapping.exports;
 const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
-const rows = graph => flatten(graph).filter(n => n.lhat?.definitionRole === 'row');
+const rows = graph => flatten(graph).filter(n => n.lhat?.definitionRole === 'row' && n.lhat.kind !== 'argument-row');
 const statements = graph => graph.children.filter(n => n.lhat?.synthetic !== 'start');
 const elements = graph => graph.children.filter(n => n.lhat?.synthetic !== 'add');
 const pairLabels = row => row.children.map(n => n.labels[0].text);
@@ -26,7 +26,7 @@ function assertDefinition(row, source, expected) {
     const [declaration, value] = row.children;
     assert.equal(declaration.lhat.definitionRole, 'declaration');
     assert.equal(value.lhat.definitionRole, 'value');
-    assert.equal(source.slice(declaration.lhat.start, declaration.lhat.revealEnd), expected[0]);
+    assert.equal(source.slice(declaration.lhat.start, declaration.lhat.revealEnd ?? declaration.lhat.end), expected[0]);
     assert.equal(row.edges.length, 1);
     assert.equal(row.edges[0].definition, true);
     assert.equal(row.edges[0].sources[0], `${value.id}__definition-out`);
@@ -65,11 +65,11 @@ test('declaration/value ports point left, while expression branches transpose do
     ] });
     const graph = toElk({ source, root });
     const [first, second] = rows(graph);
-    assert.equal(first.children[0].labels[0].text, 'let^ y');
-    assert.equal(second.children[0].labels[0].text, 'let^ z:number^');
-    assert.equal(first.children[1].layoutOptions['elk.direction'], 'RIGHT');
-    assert.equal(first.children[1].children[0].layoutOptions['elk.direction'], 'DOWN');
-    assert.equal(first.children[1].children[1].children, undefined);
+    assert.equal(first.children[0].labels[0].text, 'y');
+    assert.equal(second.children[0].labels[0].text, 'z:number^');
+    assert.equal(first.children[1].layoutOptions['elk.direction'], 'DOWN');
+    assert(flatten(first.children[1]).some(node => node.lhat?.ioGroup === 'input'));
+    assert.equal(flatten(first.children[1]).find(node => node.lhat?.kind === 'if-expr').layoutOptions['elk.direction'], 'DOWN');
     const laid = await new ELK().layout(graph);
     for (const row of rows(laid)) {
         const [declaration, definition] = row.children;
@@ -78,10 +78,11 @@ test('declaration/value ports point left, while expression branches transpose do
         assert.equal(row.edges[0].definition, true);
         assert.equal(row.edges[0].sources[0], `${definition.id}__definition-out`);
         assert.equal(row.edges[0].targets[0], `${declaration.id}__definition-in`);
-        assert.equal(row.lhat.executionNode, declaration.id);
+        assert(row.lhat.noExecutionHandles, 'binding pairs carry data, while the statement frame carries execution');
+        assert(declaration.lhat.noExecutionHandles);
     }
-    const [a, b] = rows(laid);
-    assert.equal(a.x + a.children[0].width / 2, b.x + b.children[0].width / 2);
+    const [a, b] = statements(laid);
+    assert.equal(a.x + a.width / 2, b.x + b.width / 2);
     assert(b.y >= a.y + a.height, 'next statement clears the entire definition');
 });
 
@@ -103,7 +104,7 @@ test('folds affect only the value and cannot hide the body when entering it', ()
     assert(flatten(entered).some(n => n.lhat?.kind === 'call-stmt'));
 });
 
-test('multiple initializers stay together; uninitialized declarations stay single', () => {
+test('multiple initializers form vertical pairs in one statement; uninitialized declarations stay single', () => {
     const source = 'let^ a, b = 1, 2\nlet^ c:number^';
     const n = nodesFor(source);
     const root = n('block', source, { items: [
@@ -113,11 +114,46 @@ test('multiple initializers stay together; uninitialized declarations stay singl
         n('define', source.split('\n')[1], { targets: [n('param', 'c:number^')] }),
     ] });
     const graph = toElk({ source, root });
-    assert.equal(rows(graph).length, 1);
-    const row = rows(graph)[0];
-    assert.equal(row.children[0].labels[0].text, 'let^ a, b');
-    assert.deepEqual(row.children[1].children.map(n => n.labels[0].text), ['1', '2']);
+    assert.equal(rows(graph).length, 2);
+    const group = statements(graph)[0];
+    assert.equal(group.layoutOptions['elk.direction'], 'DOWN');
+    assert.deepEqual(group.children.map(row => row.children.map(n => n.labels[0].text)), [['a', '1'], ['b', '2']]);
+    assert(group.lhat.labelParts.some(part => part.role === 'variableDefinition'));
+    assert.equal(group.lhat.executionEntry, undefined, 'execution enters the labelled statement box');
+    assert.equal(group.lhat.executionExit, undefined, 'execution leaves the statement, below its element buttons');
+    assert(group.children.every(row => row.children[0].lhat.noExecutionHandles));
     assert.equal(statements(graph)[1].labels[0].text, 'let^ c:number^');
+});
+
+test('one or many variables share the same labelled frame, vertical rows and interior centred additions', async () => {
+    for (const keyword of ['let', 'var']) for (const count of [1, 2, 3]) for (const scale of [0.7, 1, 2]) {
+        const names = ['first', 'second', 'third'].slice(0, count), values = ['10', '20', '30'].slice(0, count);
+        const source = `${keyword}^ ${names.join(', ')} = ${values.join(', ')}`, n = nodesFor(source);
+        const definition = n('define', source, { targets: names.map(name => n('ident', name)), values: values.map(value => n('int', value)) });
+        const root = n('block', source, { items: [definition] });
+        const graph = await new ELK().layout(toElk({ source, root }, { scale })), group = statements(graph)[0];
+        assert(group.lhat.bindingGroup);
+        assert(group.lhat.labelParts.some(part => part.role === (keyword === 'let' ? 'variableDefinition' : 'mutableVariableDefinition')));
+        assert.equal(group.layoutOptions['elk.direction'], 'DOWN');
+        assert.equal(group.children.length, count);
+        assert(group.lhat.insertion && group.lhat.insertion.category !== 'list');
+        assert.equal(group.lhat.insertionAxis, undefined);
+        assert(!group.lhat.executionNode && !group.lhat.executionEntry && !group.lhat.executionExit, 'execution uses the statement frame');
+        for (const [index, row] of group.children.entries()) {
+            const [declaration, value] = row.children, meta = declaration.lhat;
+            assert.equal(row.lhat.kind, 'binding-pair');
+            assert.deepEqual(pairLabels(row), [names[index], values[index]]);
+            assert(meta.noExecutionHandles && value.lhat.noExecutionHandles);
+            assert.equal(meta.appendInsertion.category, 'list'); assert.equal(meta.appendInsertion.field, 'targets');
+            assert.equal(meta.appendInsertionAxis, 'vertical');
+            assert(!value.lhat.appendInsertion);
+            const buttonBottom = row.y + declaration.y + declaration.height + 19.4 * scale;
+            assert(buttonBottom < group.height, 'centred add button stays within the statement frame');
+            if (index + 1 < count) assert(buttonBottom < group.children[index + 1].y, 'the next binding clears the button');
+        }
+        const drilled = toElk({ source, root }, { root: definition, scale });
+        assert.equal(drilled.children[0].lhat.bindingGroup, true, 'drilling into a definition retains the same frame');
+    }
 });
 
 test('var declarations use the same definition lines, types and execution endpoints as let', async () => {
@@ -134,10 +170,10 @@ test('var declarations use the same definition lines, types and execution endpoi
     ] });
     const graph = await new ELK().layout(toElk({ source, root }));
     assert.equal(rows(graph).length, 1, 'no definition line for an uninitialized variable or reassignment');
-    assertDefinition(statements(graph)[0], source, ['var^ count:number^', '0']);
+    assertDefinition(rows(graph)[0], source, ['count:number^', '0']);
     assert.equal(statements(graph)[1].labels[0].text, 'var^ pending:number^');
     assert.equal(statements(graph)[2].labels[0].text, 'count := 1');
-    assert.equal(graph.edges[1].sources[0], `${statements(graph)[0].id}__flow-out`);
+    assert.equal(graph.edges[1].sources[0], statements(graph)[0].id);
     assert(graph.edges.filter(e => !e.targets.includes(graph.children.at(-1).id)).every(e => e.drawn && !e.definition));
     assert.equal(graph.children.at(-1).lhat.synthetic, 'add');
 });
@@ -267,6 +303,43 @@ test('viewport centring protects declaration positions without preserving empty 
         'only actual declaration clipping limits centring, including the child offset');
     assert.equal(graphViewportX({ ...nearLeft, width: 1200 }, 450), 8 - 20,
         'a drilled-in row ignores its former parent-relative position');
+});
+
+test('module and import boxes bound the viewport even when narrower declarations already fit', () => {
+    // thread/main.lh with load unfolded: the old declaration-only clamp put
+    // imports at x=-49 although the narrowest binding started at x=8.
+    const module = { id: 'module', x: 21, width: 200, lhat: { kind: 'module' } };
+    const imported = { id: 'import', x: 10, width: 222, lhat: { kind: 'import-stmt' } };
+    const declaration = { id: 'name', x: 0, width: 108, lhat: { definitionRole: 'declaration' } };
+    const row = { id: 'row', x: 67, width: 1032.5, lhat: { definitionRole: 'row' }, children: [declaration] };
+    for (const scale of [1, 1.5, 2]) {
+        const scaled = node => ({ ...node, x: node.x * scale, width: node.width * scale,
+            ...(node.children ? { children: node.children.map(scaled) } : {}) });
+        const graph = { id: 'root', width: 1109.5 * scale, children: [module, imported, row].map(scaled) };
+        for (const width of [450, 950, 2000]) {
+            const x = graphViewportX(graph, width);
+            for (const node of graph.children.slice(0, 2)) {
+                if (node.width > width - 16) continue;
+                assert(node.x + x >= 8, `${width}px / ${scale}: ${node.id} is readable at the left edge`);
+                assert(node.x + node.width + x <= width - 8, `${width}px / ${scale}: ${node.id} is readable at the right edge`);
+            }
+        }
+    }
+});
+
+test('viewport ignores independently scrolling boxes but includes fixed boxes inside invisible wrappers', () => {
+    const leaf = { id: 'import', x: 0, width: 240, lhat: { kind: 'import-stmt' } };
+    const wrapped = { id: 'wrapper', x: 110, lhat: { layoutOnly: true }, children: [{ ...leaf, x: 10 }] };
+    const wide = { id: 'wide', x: 0, width: 1900, lhat: { kind: 'if-stmt' }, children: [leaf] };
+    const graph = { id: 'root', width: 2000, children: [wrapped, wide] };
+    assert.equal(graphViewportX(graph, 950), 8 - 120, 'wide sibling and its descendants do not anchor the viewport');
+    assert.equal(graphViewportX({ ...graph, children: [wrapped] }, 950), graphViewportX(graph, 950));
+    const right = { ...leaf, x: 900 };
+    assert.equal(graphViewportX({ id: 'root', width: 1200, children: [right] }, 950), 950 - 8 - 1140,
+        'a fixed box near the right edge also limits the viewport');
+    const column = { id: 'column', x: 20, lhat: { layoutOnly: true, definitionRole: 'declaration' }, children: [{ ...leaf, x: 5 }] };
+    assert.equal(graphViewportX({ id: 'row', x: 800, width: 1200, lhat: { definitionRole: 'row' }, children: [column] }, 450), 8 - 25,
+        'drilled multi-output bindings use the visible card rather than the former parent position');
 });
 
 test('only wide outermost values drop; later statements gain clearance without moving the declaration', () => {

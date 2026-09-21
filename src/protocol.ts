@@ -21,6 +21,8 @@ export interface AstNode {
     inferredType?: string;
     /** The settled answer type of a function literal. */
     inferredReturnType?: string;
+    /** Resolved call signature; names/defaults come from its declaration, not the type. */
+    callable?: CallableInfo;
     declared?: boolean;
     computed?: boolean;
     /**
@@ -28,6 +30,14 @@ export interface AstNode {
      * holding a list is an array even when it holds one.
      */
     fields?: Record<string, AstNode | AstNode[]>;
+}
+
+export interface CallableInput { type: string; name?: string; default?: string }
+export interface CallableInfo {
+    inputs: CallableInput[];
+    outputs: string[];
+    variadic?: CallableInput;
+    signature?: string;
 }
 
 export interface AstComment {

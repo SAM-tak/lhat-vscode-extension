@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import * as l10n from "@vscode/l10n";
 import type { AstReply, FromWebview, ToWebview } from "../../protocol";
 import { statementTemplates, type StatementInsertion, type StatementSite, type StatementTemplate } from "../../graphStatements";
-import { isListInsertion, listTemplates, operatorSites, type InsertionSite, type OperatorSite } from "../../graphLists";
+import { isListInsertion, listTemplates, groupedOperatorSites, type InsertionSite, type OperatorSite } from "../../graphLists";
 
 type Host = { tree?: AstReply; uri: string; version?: number; post: (message: FromWebview) => void };
 type Picker = { id: string; site?: InsertionSite; operator?: OperatorSite; anchor: HTMLElement; version: number;
@@ -38,13 +38,13 @@ export function StatementProvider({ value, children }: { value: Host; children: 
     const open = (site: InsertionSite, anchor: HTMLElement) => {
         const { tree, version } = host.current;
         if (!tree || version === undefined) return;
-        setPicker({ id: `statement-${++sequence}`, site, anchor, version,
-            choices: isListInsertion(site) ? listTemplates(tree, site) : statementTemplates(tree, site) });
+        const choices = isListInsertion(site) ? listTemplates(tree, site) : statementTemplates(tree, site);
+        setPicker({ id: `statement-${++sequence}`, site, anchor, version, choices });
     };
     const operator = (site: OperatorSite, anchor: HTMLElement) => {
         const { tree, version } = host.current;
         if (!tree || version === undefined) return;
-        const current = operatorSites(tree).find(s => s.start === site.start && s.end === site.end);
+        const current = groupedOperatorSites(tree).find(s => s.start === site.start && s.end === site.end);
         if (current) setPicker({ id: `operator-${++sequence}`, operator: current, anchor, version,
             choices: current.choices.map(text => ({ id: text, text, label: text })) });
     };
@@ -79,7 +79,7 @@ export function StatementButton({ site, append = false, floating = false, axis =
         onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
         onDoubleClick={event => event.stopPropagation()}
         onClick={event => { event.stopPropagation(); actions.open(site, event.currentTarget); }}>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d={append ? "M 12 6 V 18 M 6 12 H 18"
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d={append || isListInsertion(site) ? "M 12 6 V 18 M 6 12 H 18"
             : axis === "horizontal" ? "M 6 9 L 12 15 L 18 9" : "M 9 6 L 15 12 L 9 18"} /></svg>
     </button>;
 }

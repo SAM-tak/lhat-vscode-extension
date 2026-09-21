@@ -16,9 +16,9 @@
     "Could not apply the reorder.": "Could not apply the reorder.",
     "The source changed. Try renaming again in the updated graph.": "The source changed. Try renaming again in the updated graph.",
     "Enter a name.": "Enter a name.",
-    "This name cannot be renamed by the language server.": "This name cannot be renamed by the language server.",
     "The language server did not accept this name.": "The language server did not accept this name.",
     "Could not apply the rename.": "Could not apply the rename.",
+    "This name cannot be renamed by the language server.": "This name cannot be renamed by the language server.",
     "lhat/ast failed: {0}": "lhat/ast failed: {0}",
     "Another rename is in progress.": "Another rename is in progress.",
     "Type editing is not available yet.": "Type editing is not available yet.",
@@ -32,6 +32,10 @@
     "Text": "Text",
     "Number": "Number",
     "Table type definition": "Table type definition",
+    "Input": "Input",
+    "Output": "Output",
+    "No output": "No output",
+    "Missing input": "Missing input",
     "Outer {0}: {1}": "Outer {0}: {1}",
     "{0} ({1} levels)": "{0} ({1} levels)",
     "Current annotation": "Current annotation",
@@ -211,5 +215,7 @@
     "Typed member": "Typed member",
     "Variable": "Variable",
     "Enumeration member": "Enumeration member",
-    "Error kind": "Error kind"
+    "Error kind": "Error kind",
+    "Variable binding": "Variable binding",
+    "Default argument": "Default argument"
 }

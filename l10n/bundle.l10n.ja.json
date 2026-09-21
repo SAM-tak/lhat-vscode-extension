@@ -1,4 +1,10 @@
 {
+    "Input": "入力",
+    "Output": "出力",
+    "No output": "出力なし",
+    "Missing input": "入力が未指定",
+    "Variable binding": "変数の束縛",
+    "Default argument": "引数の既定値",
     "Outer {0}: {1}": "外側{0}段: {1}",
     "{0} ({1} levels)": "{0}（{1}段）",
     "The source changed. Try renaming again in the updated graph.": "ソースが変更されました。更新されたグラフでもう一度名前を変更してください。",

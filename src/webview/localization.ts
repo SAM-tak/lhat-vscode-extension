@@ -22,6 +22,8 @@ export function graphVocabulary(): Vocabulary {
         string: l10n.t("Text"),
         number: l10n.t("Number"),
         tableDefinition: l10n.t("Table type definition"),
+        input: l10n.t("Input"), output: l10n.t("Output"),
+        noOutput: l10n.t("No output"), missingInput: l10n.t("Missing input"),
         hats: Object.fromEntries(Object.entries(HATS).map(([word, entry]) => [word, translate(entry.text)])),
         outer: l10n.t("Outer {0}: {1}"),
         levels: l10n.t("{0} ({1} levels)"),

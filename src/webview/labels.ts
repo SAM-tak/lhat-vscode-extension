@@ -6,6 +6,7 @@ export type LabelRole = "variableDefinition" | "mutableVariableDefinition" |
     "variableDeclaration" | "mutableVariableDeclaration" | "string" | "number";
 export type Vocabulary = Record<LabelRole, string> & {
     hats?: Record<string, string>; outer?: string; levels?: string; tableDefinition?: string;
+    input?: string; output?: string; noOutput?: string; missingInput?: string;
 };
 export const ENGLISH_VOCABULARY: Vocabulary = {
     variableDefinition: "Variable Definition", mutableVariableDefinition: "Mutable Variable Definition",
@@ -14,6 +15,7 @@ export const ENGLISH_VOCABULARY: Vocabulary = {
     hats: Object.fromEntries(Object.entries(HATS).map(([word, entry]) => [word, entry.text])),
     outer: "Outer {0}: {1}", levels: "{0} ({1} levels)",
     tableDefinition: "Table type definition",
+    input: "Input", output: "Output", noOutput: "No output", missingInput: "Missing input",
 };
 export interface RenameTarget { start: number; end: number; value: string }
 export const renameTargetKey = (name: RenameTarget): string => `${name.start}:${name.end}`;

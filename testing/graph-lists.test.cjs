@@ -38,7 +38,8 @@ function richFixture() {
     }, fAt, { inferredReturnType: '(number^, string^)' });
     const callAt = source.indexOf('f(1');
     const call = n('call', 'f(1, "s")', { target: n('ident', 'f', undefined, callAt),
-        argument: [n('int', '1', undefined, callAt), n('string', '"s"', undefined, callAt)] }, callAt);
+        argument: [n('int', '1', undefined, callAt), n('string', '"s"', undefined, callAt)] }, callAt,
+        { callable: { inputs: [], outputs: ['number^', 'string^'], variadic: { type: 'number^' } } });
     const tableAt = source.indexOf('{10');
     const table = n('table', '{10, 20}', { items: [
         n('table-entry', '10', { value: n('int', '10', undefined, tableAt) }, tableAt),
@@ -69,14 +70,15 @@ test('parameters, results, returns, calls and table items share comma-list inser
 test('list edits preserve delimiters and can materialize optional or inferred lists', () => {
     const tree = richFixture(), sites = listInsertions(tree);
     const beforeSecond = sites.find(site => site.start === tree.call.start && site.field === 'argument' && site.before !== undefined);
-    assert.equal(apply(tree.source, insertListEdit(tree, beforeSecond, 'number')).slice(tree.call.start, tree.call.end + 3), 'f(1, 0, "s")');
+    assert.equal(apply(tree.source, insertListEdit(tree, beforeSecond, 'default')).slice(tree.call.start, tree.call.end + 3), 'f(1, 0, "s")');
     const tableAppend = sites.find(site => site.start === tree.table.start && site.field === 'items' && site.before === undefined);
     assert(apply(tree.source, insertListEdit(tree, tableAppend, 'number')).includes('{10, 20, 0}'));
 
     const emptySource = 'let^ x = f()', n = fixture(emptySource), call = n('call', 'f()', { target: n('ident', 'f') });
+    call.callable = { inputs: [{ type: 'string^' }], outputs: ['number^'] };
     const empty = { source: emptySource, root: n('define', emptySource, { targets: [n('ident', 'x')], values: [call] }) };
     const emptySite = listInsertions(empty).find(site => site.start === call.start && site.field === 'argument');
-    assert.equal(apply(emptySource, insertListEdit(empty, emptySite, 'string')), 'let^ x = f("")');
+    assert.equal(apply(emptySource, insertListEdit(empty, emptySite, 'default')), 'let^ x = f("")');
 
     const errorSource = 'errordef^ E { Bad }', e = fixture(errorSource), kind = e('error-kind', 'Bad', { name: e('ident', 'Bad') });
     const errorTree = { source: errorSource, root: e('errordef', errorSource, { name: e('ident', 'E'), members: [kind] }) };

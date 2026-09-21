@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { LanguageClient } from "vscode-languageclient/node";
 import type { AstReply, FromWebview, TypeSite } from "./protocol";
 import { typeEdits, typeSites } from "./graphTypes";
+import { normalizedGraphSource } from "./graphSource";
 
 export interface TypeSelection {
     id: string;
@@ -44,7 +45,7 @@ export async function typeOptionsFromGraph(document: vscode.TextDocument, tree: 
             textDocument: { uri: document.uri.toString() }, position: { line: position.line, character: position.character },
             ...(site.result ? { resultIndex: site.result.index } : {}),
         }, token);
-        if (!unchanged() || (reply && reply.source !== tree.source)) throw stale();
+        if (!unchanged() || (reply && normalizedGraphSource(reply.source) !== normalizedGraphSource(tree.source))) throw stale();
         if (reply) return { ...selection,
             candidates: [...new Set(reply.candidates)].filter(text => typeof text === "string" && text.length > 0) };
         if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 150 * (attempt + 1)));

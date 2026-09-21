@@ -17,6 +17,7 @@ import { referenceFromGraph } from "./graphReference";
 import { applyTypeFromGraph, removeTypeFromGraph, typeOptionsFromGraph, type TypeSelection } from "./graphTypeEditor";
 import { reorderFromGraph } from "./graphReorderEditor";
 import { editStatementFromGraph } from "./graphStatementEditor";
+import { graphTreeForDocument } from "./graphSource";
 
 type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" }>;
 
@@ -138,11 +139,12 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
                     textDocument: { uri: document.uri.toString() },
                 });
                 if (disposed || revision !== treeRevision || document.version !== version) return;
-                currentTree = reply ?? undefined;
-                const fresh = reply !== null && reply.source === document.getText();
+                const matched = reply === null ? undefined : graphTreeForDocument(reply, document.getText());
+                currentTree = matched ?? reply ?? undefined;
+                const fresh = matched !== undefined;
                 post(reply === null
                     ? { type: "pending" }
-                    : { type: "tree", reply, uri: document.uri.toString(),
+                    : { type: "tree", reply: matched ?? reply, uri: document.uri.toString(),
                         version: fresh ? version : undefined });
                 if (fresh) treeRetryDelay = 100;
                 else {
@@ -239,7 +241,7 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
                         break;
                     }
                     renaming = true;
-                    void renameFromGraph(document, message, () => !disposed).then(() => {
+                    void renameFromGraph(document, message, () => !disposed, currentTree).then(() => {
                         post({ type: "renameResult", id: message.id });
                         void send();
                     }, (error: unknown) => {

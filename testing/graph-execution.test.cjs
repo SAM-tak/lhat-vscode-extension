@@ -534,7 +534,7 @@ test('return pictograms survive simple branch clauses, disabled code and implici
     assert.equal(marker.data.foldable, false);
     assert.equal(implicitSource.slice(marker.data.start, marker.data.end), 'computeResult()', 'implicit return reveals the whole expression, not a fabricated keyword');
     assert.equal(tail.flow.definitions.length, 1);
-    assert.equal(tail.flow.definitions[0].source, value.id);
+    assert.equal(tail.flow.definitions[0].source, flatten(tail.graph).find(n => n.id === value.id).lhat.definitionOutputs[0]);
     assert.equal(tail.flow.definitions[0].target, marker.id);
     assert.equal(tail.flow.exec.length, 1);
     assert.equal(tail.flow.exec[0].source, start.id);
@@ -618,7 +618,7 @@ test('wide return values reuse the marker-height offset and outermost-only parti
     const nested = stackWideDefinitions(await new ELK().layout(toElk(reply, { width: 450 })), 434);
     const nestedFlow = toFlow(nested, {}, 450, undefined, noop, noop, noop, noop, { current: null }, noop);
     assert.equal(nestedFlow.nodes.filter(n => n.data.slideOwner).length, 1);
-    assert.equal(nestedFlow.nodes.find(n => n.data.slideOwner).data.start, fn.start, 'whole callable owns nested scrolling');
+    assert.equal(nestedFlow.nodes.find(n => n.data.slideOwner).data.start, root.start, 'the enclosing binding frame owns nested scrolling');
     assert(!flatten(nested).find(n => n.lhat?.kind === 'return-row').lhat.stackedDefinition);
     const folded = await draw(reply, { collapse: true });
     assert(!folded.flow.nodes.some(n => n.data.isReturn), 'return hides together with its folded callable');
@@ -766,7 +766,8 @@ test('pattern-match statements enter through their focus and an unboxed shared b
         assert.equal(starts(graph).length, 1, 'a match does not create a new execution scope');
         const declaration = flow.nodes.find(n => n.data.label === 'let^ subject');
         const byId = new Map(flow.nodes.map(n => [n.id, n]));
-        assert(flow.definitions.some(e => e.target === declaration.id && byId.get(e.source).data.label === 'input'));
+        const target = flow.nodes.find(n => n.data.definitionRole === 'declaration' && n.data.label === 'subject');
+        assert(flow.definitions.some(e => e.target === target.id && byId.get(e.source).data.label === 'input'));
         assert(flow.exec.some(e => e.source === outer.id && e.target === declaration.id && e.sourceHandle === 'flow-branch'));
         assert(flow.exec.some(e => e.source === declaration.id && e.target === junction.id));
         const branches = flow.exec.filter(e => e.source === junction.id);
@@ -907,10 +908,11 @@ test('nested expression alternatives merge locally and do not bypass enclosing c
     const branches = flatten(graph).filter(n => n.lhat?.kind === 'if-expr');
     assert.equal(flow.definitions.filter(e => e.targetHandle === 'definition-branch').length, 4);
     assert(flow.definitions.some(e => e.source === branches[1].id && e.target === branches[0].id));
-    const declaration = flow.nodes.find(n => n.data.label === 'let^ y');
+    const declaration = flow.nodes.find(n => n.data.definitionRole === 'declaration' && n.data.label === 'y');
     const outward = flow.definitions.filter(e => e.target === declaration.id);
     assert.equal(outward.length, 1);
-    assert.equal(flatten(graph).find(n => n.id === outward[0].source).lhat.kind, 'binary');
+    assert.equal(flatten(graph).find(n => n.id === outward[0].source).lhat.kind, 'output-slot');
+    assert.equal(outward[0].source, flatten(graph).find(n => n.lhat?.kind === 'binary').lhat.definitionOutputs[0]);
     const returnedTable = flatten(graph).find(n => n.lhat?.kind === 'table');
     assert(flow.definitions.some(e => e.source === returnedTable.id && e.target === branches[0].id));
     assert(returnedTable.children.some(n => n.lhat?.synthetic === 'add'), 'value internals survive the split');

@@ -22,6 +22,7 @@ const japanese = {
     variableDeclaration: ja['Variable Declaration'], mutableVariableDeclaration: ja['Mutable Variable Declaration'],
     string: ja.Text, number: ja.Number,
     tableDefinition: ja['Table type definition'],
+    input: ja.Input, output: ja.Output, noOutput: ja['No output'], missingInput: ja['Missing input'],
     hats: Object.fromEntries(Object.entries(HATS).map(([word, entry]) => [word, ja[entry.text]])),
     outer: ja['Outer {0}: {1}'], levels: ja['{0} ({1} levels)'] };
 const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
@@ -113,13 +114,15 @@ test('declaration roles, names and built-in types have separate source-safe disp
     for (const vocabulary of [ENGLISH_VOCABULARY, japanese]) {
         const graph = toElk({ source, root }, { vocabulary });
         const left = flatten(graph).filter(n => n.lhat?.definitionRole === 'declaration');
-        assert(display(left[0]).includes(`${vocabulary.variableDefinition} 名前`));
+        const groups = flatten(graph).filter(n => n.lhat?.bindingGroup);
+        assert(groups[0].lhat.labelParts.some(p => p.role === 'variableDefinition' && p.text === vocabulary.variableDefinition));
         assert.equal(left[0].lhat.labelParts.find(p => p.typeSite).typeLabel, vocabulary.string);
-        assert(display(left[0]).includes('#[ var^ number^ ]#'), 'comments are not keyword replacements');
-        assert.equal(display(left[1]), `${vocabulary.mutableVariableDefinition} number`);
+        assert(createLabeler(source, root, vocabulary)(declarations[0], [], 200).parts.map(part => part.text).join('').includes('#[ var^ number^ ]#'), 'comments are not keyword replacements');
+        assert.equal(display(groups[1]), vocabulary.mutableVariableDefinition);
+        assert.equal(display(left[1]), 'number');
         assert.equal(left[1].lhat.labelParts.find(p => p.typeSite).typeLabel, vocabulary.number);
-        assert.deepEqual(left[1].lhat.labelParts.filter(p => p.role).map(p => p.role), ['mutableVariableDefinition']);
-        assert.equal(left[1].labels[0].text, 'var^number:number^', 'raw labels remain available for source inspection');
+        assert.deepEqual(groups[1].lhat.labelParts.filter(p => p.role).map(p => p.role), ['mutableVariableDefinition']);
+        assert.equal(groups[1].labels[0].text, 'var^number:number^', 'raw labels remain available for source inspection');
         const string = flatten(graph).find(n => n.lhat?.literal?.kind === 'string');
         assert.equal(string.lhat.literal.value, 'let^ number^');
         assert.equal(string.lhat.literalTypeLabel, vocabulary.string);
@@ -337,7 +340,9 @@ test('function signatures, folds, breadcrumbs and drilled views share the locali
     assert.equal(titleOf(fn, source, japanese), '関数 x:文字列-> 数値');
     assert.equal(titleOf(fn, source), 'f^x:string^-> number^', 'source-oriented callers can retain the source title');
     const drilled = toElk({ source, root: fn }, { vocabulary: japanese, root: fn, collapse: true });
-    assert(flatten(drilled).some(n => display(n) === '可変変数定義 result' && n.lhat.labelParts.some(p => p.typeLabel === '数値')));
+    const binding = flatten(drilled).find(n => n.lhat?.bindingGroup);
+    assert.equal(display(binding), '可変変数定義');
+    assert(flatten(binding).some(n => display(n) === 'result' && n.lhat.labelParts.some(p => p.typeLabel === '数値')));
     assert(flatten(drilled).some(n => n.lhat?.literalTypeLabel === '数値'));
 });
 

@@ -128,6 +128,7 @@ interface BoxData extends Record<string, unknown>, SlideData {
     branchOffset?: number;
     definitionBranchOffset?: number;
     definitionRole?: "declaration" | "value";
+    ioGroup?: "input" | "output";
     definitionHandleY?: number;
     collapsed: boolean;
     /** 01 の 6.5: written, but switched off. */
@@ -151,6 +152,7 @@ interface BoxData extends Record<string, unknown>, SlideData {
     insertion?: InsertionSite;
     appendInsertion?: InsertionSite;
     insertionAxis?: "horizontal" | "vertical";
+    appendInsertionAxis?: "horizontal" | "vertical";
     operator?: OperatorSite;
     inline?: boolean;
     decoration?: boolean;
@@ -414,6 +416,7 @@ function toFlow(
                     definitionRole: c.lhat?.definitionRole === "row"
                         ? undefined : c.lhat?.definitionRole,
                     definitionHandleY: c.lhat?.definitionHandleY,
+                    ioGroup: c.lhat?.ioGroup,
                     collapsed: c.lhat?.collapsed === true,
                     disabled,
                     start: synthetic ? undefined : c.lhat?.start,
@@ -438,6 +441,7 @@ function toFlow(
                     insertion: c.lhat?.definitionRole === "row" && !c.lhat?.insertionAxis ? undefined : c.lhat?.insertion,
                     appendInsertion: c.lhat?.appendInsertion,
                     insertionAxis: c.lhat?.insertionAxis,
+                    appendInsertionAxis: c.lhat?.appendInsertionAxis,
                     onReorder,
                     onEnter,
                     onReveal,
@@ -456,9 +460,10 @@ function toFlow(
             const target = endpoints.get(e.targets[0]);
             if (source === undefined || target === undefined) continue;
             const definition = e.definition === true;
+            if (definition && source.lhat?.definitionOutputs?.length === 0) continue;
             (definition ? definitions : exec).push({
                 id: `${definition ? "d" : "x"}__${e.id}`,
-                source: definition ? source.id : executionEnd(source, "Exit").id,
+                source: definition ? source.lhat?.definitionOutputs?.[0] ?? source.id : executionEnd(source, "Exit").id,
                 target: definition ? target.id : executionEnd(target, "Entry").id,
                 sourceHandle: definition ? "definition-out" : "flow-out",
                 targetHandle: definition ? "definition-in" : "flow-in",
@@ -466,6 +471,13 @@ function toFlow(
                 selectable: false,
                 focusable: false,
             });
+        }
+        for (const link of parent.lhat?.definitionLinks ?? []) {
+            if (!endpoints.has(link.source) || !endpoints.has(link.target)) continue;
+            definitions.push({ ...definitionEdge, id: `d__${parent.id}__${link.target}`,
+                source: link.source, target: link.target,
+                sourceHandle: "definition-out", targetHandle: "definition-in",
+                selectable: false, focusable: false });
         }
         if (parentId !== undefined && !parent.lhat?.disabled) {
             for (const entry of parent.lhat?.executionBranches ?? []) {
@@ -827,6 +839,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         data.branchOffset === undefined && data.definitionBranchOffset === undefined) return null;
 
     const classes = ["box"];
+    if (data.ioGroup) classes.push("io-group", `io-${data.ioGroup}`);
     if (data.isStart) classes.push("start-node");
     if (data.isReturn) classes.push("return-node");
     if (data.isCondition) classes.push("condition-node");
@@ -853,7 +866,11 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                     : { left: data.insertionAxis ? "calc(50% - 7.7px * var(--lhat-scale))"
                         : data.flowHandleX === undefined ? "calc(50% - 24px * var(--lhat-scale))"
                         : `calc(${data.flowHandleX}px - 24px * var(--lhat-scale))` }} />}
-            {data.appendInsertion && <StatementButton site={data.appendInsertion} append floating />}
+            {data.appendInsertion && <StatementButton site={data.appendInsertion} append floating
+                axis={data.appendInsertionAxis ?? data.insertionAxis ?? "horizontal"}
+                style={(data.appendInsertionAxis ?? data.insertionAxis) === "vertical"
+                    ? { right: "auto", left: "calc(50% - 7.7px * var(--lhat-scale))",
+                        top: "calc(100% + 4px * var(--lhat-scale))" } : undefined} />}
             {!data.layoutOnly && <div
                 className={[...classes, data.inline ? "inline-box" : "", data.operator ? "operator-box" : "", data.decoration ? "decoration" : ""].join(" ")}
                 data-source-start={data.start} data-source-end={data.sourceEnd}
@@ -917,6 +934,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                         <path d="M 12 6 V 18 M 6 12 H 18" />
                     </svg>
                 ) : data.operator ? <div className="operator-cell"><span>{l10n.t("Operator")}</span><span>{data.operator.text}</span></div>
+                : data.ioGroup ? <fieldset className="io-frame"><legend>{data.label}</legend></fieldset>
                 : data.inline && data.isContainer ? null : data.literal !== undefined ? <>
                     <div className="literal-type-label"><TypeLabel label={data.literalTypeLabel ?? "?"} /></div>
                     <LiteralInput key={data.literal.key} literal={data.literal} />
