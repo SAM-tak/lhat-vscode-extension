@@ -129,6 +129,19 @@ the [L^ repository](https://github.com/SAM-tak/lhat) and set
 set `lhat.serverAutoRestart` to `false` to keep the extension from restarting
 the old process before the linker can replace it.
 
+The L^ samples target zero-based indices (lhat commit `5529b14` or later).
+After rebuilding the runtime, check every repository `.lh` file and run the
+indexing regression sample with:
+
+```sh
+npm run test:lhat -- /path/to/rebuilt/lhat
+```
+
+`LHAT_RUNTIME` can also select the executable; otherwise it uses `lhat` from
+`PATH`. This includes local, untracked samples and excludes ignored build
+products. The runtime checks cover dense sequences, inclusive ranges, string
+positions, variadic arguments, enum numbers and regex capture groups.
+
 To create a local generic VSIX:
 
 ```sh

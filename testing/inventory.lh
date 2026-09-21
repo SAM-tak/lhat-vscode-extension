@@ -87,7 +87,7 @@ let^total = f^items:t^{Item[]} {
 }
 
 let^priceOf = f^sku:string^{
-    for^i from^0 to^15 {
+    for^i from^0 to^prices.length^ - 1 {
         let^price = prices[i]
         if^price? and^price > 0 and^sku.tonumber() = i {
             return^price

@@ -115,6 +115,21 @@
 
     "numbers": {
       "patterns": [
+        {
+          "comment": "After an accessor, decimal digits are integer keys; a.0.0 is two members, not a float. Match the accessor before the ordinary number rules, including optional access and whitespace.",
+          "match": "(\\?\\.)([ \\t]*)([0-9][0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.operator.nil-propagation.lhat" },
+            "3": { "name": "constant.numeric.integer.lhat" }
+          }
+        },
+        {
+          "match": "(\\.)([ \\t]*)([0-9][0-9_]*)",
+          "captures": {
+            "1": { "name": "punctuation.accessor.lhat" },
+            "3": { "name": "constant.numeric.integer.lhat" }
+          }
+        },
         { "match": "\\b0[xX][0-9A-Fa-f_]+\\b", "name": "constant.numeric.hex.lhat" },
         { "match": "\\b0[bB][01_]+\\b", "name": "constant.numeric.binary.lhat" },
         { "match": "\\b0[oO][0-7_]+\\b", "name": "constant.numeric.octal.lhat" },
