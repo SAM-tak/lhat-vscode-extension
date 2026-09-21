@@ -220,9 +220,10 @@ test('table member pairs wrap using both boxes; positional comparisons stay leav
 });
 
 test('def and self-table members split while abstract fields and function parameters do not', async () => {
-    const source = 'def^{ self^{ count:number^ = 0 }, abstract^limit:number^, override^new = f^n = 1 { n }, op^= = f^a, b { a = b } }';
+    const selfText = 'self^{ count:number^ = 0, # The multiset of digits used.\n }';
+    const source = `def^{ ${selfText}, abstract^limit:number^, override^new = f^n = 1 { n }, op^= = f^a, b { a = b } }`;
     const n = nodesFor(source);
-    const template = n('self-table', 'self^{ count:number^ = 0 }', { items: [
+    const template = n('self-table', selfText, { items: [
         n('table-entry', 'count:number^ = 0', {
             key: n('ident', 'count'), type: n('type-name', 'number^'), value: n('int', '0'),
         }),
@@ -237,7 +238,7 @@ test('def and self-table members split while abstract fields and function parame
         items: [n('return', 'a = b', { value: [n('binary', 'a = b')] })],
     }) });
     const definition = n('def', source, { items: [
-        n('table-entry', 'self^{ count:number^ = 0 }', { value: template }),
+        n('table-entry', selfText, { value: template }),
         n('table-entry', 'abstract^limit:number^', {
             key: n('ident', 'limit'), value: n('type-name', 'number^', undefined, source.indexOf('abstract^')),
         }),
@@ -253,9 +254,12 @@ test('def and self-table members split while abstract fields and function parame
     assert.equal(pairs[1].children[1].labels[0].text, 'f^n = 1 …');
     assert.equal(pairs[2].children[0].labels[0].text, 'op^=');
     assert.equal(graph.children[0].lhat.kind, 'self-table', 'no anonymous wrapper around the template');
+    assert.equal(graph.children[0].lhat.labelParts.map(part => part.text).join(''), 'Self');
     assert(flatten(graph).some(n => n.labels?.[0]?.text === 'abstract^limit:number^' && !n.children));
     for (const pair of pairs) assert.equal(pair.children[0].y, pair.children[1].y);
     const entered = toElk(reply, { root: definition, collapse: true });
+    assert(entered.children[0].lhat.collapsed);
+    assert.equal(entered.children[0].lhat.labelParts.map(part => part.text).join(''), 'Self');
     const foldedMethod = rows(entered).find(n => n.children[0].labels[0].text === 'override^new');
     assert(foldedMethod.children[1].lhat.collapsed, 'only the method value folds');
     assert.equal(foldedMethod.children[0].lhat.collapsed, undefined);

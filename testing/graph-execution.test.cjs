@@ -226,11 +226,9 @@ test('nonempty list footers follow all members and wrapping rows, and hide with 
             assert(!flow.exec.some(e => e.source === add.id || e.target === add.id));
             assert(!flow.definitions.some(e => e.source === add.id || e.target === add.id));
         }
-        if (kind !== 'table') {
-            const { flow } = await draw(reply, { collapse: true });
-            assert(flow.nodes.some(n => n.data.collapsed));
-            assert(!flow.nodes.some(n => n.data.isAdd && !n.data.insertion), 'folded member list hides its own insertion control');
-        }
+        const { flow } = await draw(reply, { collapse: true });
+        assert(flow.nodes.some(n => n.data.collapsed));
+        assert(!flow.nodes.some(n => n.data.isAdd && !n.data.insertion), 'folded member list hides its own insertion control');
     }
 });
 

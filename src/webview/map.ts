@@ -76,7 +76,7 @@ const ALWAYS_LEAF = new Set(["module", "import-stmt", "require-stmt"]);
 // V15: collapsed when a view is first opened. A collapsed container is a
 // fixed-size leaf, so neither its size nor the layout's cost depends on what
 // is inside it.
-const COLLAPSIBLE = new Set(["func", "def", "self-table", "errordef", "enumdef"]);
+const COLLAPSIBLE = new Set(["func", "table", "def", "self-table", "errordef", "enumdef"]);
 // Reassignments still fold whole; declarations split off their values below.
 const FOLDS_WITH_VALUE = new Set(["reassign"]);
 
@@ -146,6 +146,10 @@ export interface ElkNode {
         definitionOutputs?: string[];
         definitionLinks?: { source: string; target: string }[];
         ioGroup?: "input" | "output";
+        /** Calls and operators share a caption and compact result header. */
+        invocation?: boolean;
+        /** Width of the input-only frame after the argument pairs are laid out. */
+        callInputWidth?: number;
         bindingGroup?: boolean;
         /** Wide outermost pair: its value is lowered and scrolls on its own. */
         stackedDefinition?: boolean;
@@ -239,12 +243,12 @@ function definitionParts(node: AstNode, source = ""): { targets: Child[]; values
         ? { targets, values } : undefined;
 }
 
-// 5.2: preserve the path to a branch, body, or member definition. Otherwise
+// 5.2: preserve the path to a branch, body, propagation, or member definition. Otherwise
 // a branch-free enclosing expression would swallow its members' '=' lines.
 function holdsExpandedChild(node: AstNode): boolean {
     for (const { node: c } of drawnChildren(node)) {
         if (BRANCH.has(c.kind) || VOICE_TURN.has(c.kind) || ADDABLE.has(c.kind) ||
-            c.kind === "return" ||
+            c.kind === "return" || c.kind === "try" ||
             definitionParts(c) !== undefined || holdsExpandedChild(c)) {
             return true;
         }
@@ -402,6 +406,33 @@ export function stackWideDefinitions(laid: ElkNode, usableWidth: number): ElkNod
         }
     };
     alignSlots(laid);
+    // Lay out each input/value pair together so tall, nested arguments reserve
+    // the right row height. Then put only the input cells inside the visible
+    // frame; values and their definition lines stay beside it in the same rows.
+    const separateCallInputs = (node: ElkNode): void => {
+        node.children?.forEach(separateCallInputs);
+        const width = node.lhat?.callInputWidth;
+        if (width === undefined) return;
+        const rows = node.children ?? [], inputs: ElkNode[] = [];
+        for (const row of rows) {
+            if (row.lhat?.synthetic === "add") {
+                inputs.push({ ...row, x: (width - (row.width ?? 0)) / 2 });
+                continue;
+            }
+            const input = row.children?.find(child => child.lhat?.kind === "input-slot");
+            if (!input) continue;
+            inputs.push({ ...input, x: (row.x ?? 0) + (input.x ?? 0), y: (row.y ?? 0) + (input.y ?? 0) });
+            row.children = row.children!.filter(child => child !== input);
+        }
+        const frame: ElkNode = {
+            ...node, id: `${node.id}__frame`, x: 0, y: 0, width,
+            children: inputs, edges: [], ports: undefined,
+            lhat: { ...node.lhat!, callInputWidth: undefined },
+        };
+        node.children = [frame, ...rows.filter(row => row.lhat?.synthetic !== "add")];
+        node.lhat = { ...node.lhat!, kind: "call-inputs", layoutOnly: true, ioGroup: undefined, callInputWidth: undefined };
+    };
+    separateCallInputs(laid);
     // Width alone misses rows displaced by the shared declaration column.
     // Compare the value's actual right edge with the viewport's right margin,
     // in graph coordinates, just as the scroll bounds in toFlow do.
@@ -792,8 +823,9 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         const results = listContent(returns, unfold, avail, cells);
         const inputs = ioGroup(node, "input", [parameters], "RIGHT");
         const outputs = ioGroup(node, "output", [results], "RIGHT");
-        const columns = container(nextId("signature-groups"), "", "RIGHT", [inputs, outputs], chain(nextId("signature-order"), [inputs, outputs]), node, false);
-        alignGroupTops([inputs, outputs], columns);
+        const groups = [outputs, inputs];
+        const columns = container(nextId("signature-groups"), "", "RIGHT", groups, chain(nextId("signature-order"), groups), node, false);
+        alignGroupTops(groups, columns);
         columns.lhat = { ...from(node), kind: "signature-groups", layoutOnly: true, noExecutionHandles: true };
         const id = nextId("signature"), children = [title, columns];
         const built = container(id, "", "DOWN", children, chain(id, children), node, false);
@@ -874,7 +906,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 const value = build(arg, "expr", unfold, avail); memberHandles(value);
                 const row = connectDefinition(input, value, arg);
                 const site = argumentSites.find(site => site.before === arg.start);
-                if (site) { row.lhat!.insertion = site; row.lhat!.insertionAxis = "vertical"; }
+                if (site) beforeElement(input, site, "vertical");
                 inputRows.push(row);
             } else {
                 const missing = leaf({ ...node, kind: "missing-input" }, vocabulary.missingInput ?? "Missing input");
@@ -892,8 +924,6 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 inputRows.push(add);
             }
         }
-        const inputGroup = ioGroup(node, "input", inputRows);
-        const outputGroup = ioGroup(node, "output", outputs);
         const width = Math.max(0, ...inputRows.map(row => row.children?.[0]?.width ?? 0));
         for (const row of inputRows) {
             const input = row.children?.[0];
@@ -904,15 +934,37 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             row.ports = ["in", "out"].map(end => ({ id: `${row.id}__flow-${end}`, x: width / 2, y: 0,
                 layoutOptions: { "elk.port.side": end === "in" ? "NORTH" : "SOUTH" } }));
         }
-        inputGroup.edges = chain(inputGroup.id, inputRows);
-        const columnId = nextId("call-groups"), columns = container(columnId, "", "RIGHT", [outputGroup, inputGroup], chain(columnId, [outputGroup, inputGroup]), node, false);
-        alignGroupTops([outputGroup, inputGroup], columns);
-        columns.lhat = { kind: "call-groups", start: node.start, end: node.end, layoutOnly: true, noExecutionHandles: true };
-        const id = nextId(node.kind), children = [title, columns];
-        const built = container(id, "", "DOWN", children, chain(id, children), node);
+        const groups: ElkNode[] = [];
+        if (outputs.length > 1) groups.push(ioGroup(node, "output", outputs));
+        if (inputRows.length) {
+            // With no arguments, retain the variadic insertion control without
+            // an empty Input frame. Missing fixed inputs still have real slots.
+            const inputGroup = count > 0 ? ioGroup(node, "input", inputRows)
+                : container(nextId("call-inputs"), "", "DOWN", inputRows, [], node, false);
+            if (count > 0) inputGroup.lhat!.callInputWidth =
+                Math.max(width + px(2 * PAD), widthFor(vocabulary.input ?? "Input"));
+            else inputGroup.lhat = { kind: "call-inputs", start: node.start, end: node.end,
+                layoutOnly: true, noExecutionHandles: true };
+            inputGroup.edges = chain(inputGroup.id, inputRows);
+            groups.push(inputGroup);
+        }
+        let header = title;
+        if (outputs.length === 1) {
+            const headerId = nextId("call-header"), cells = [outputs[0], title];
+            header = container(headerId, "", "RIGHT", cells, chain(headerId, cells), node, false);
+            header.lhat = { kind: "call-header", start: node.start, end: node.end, layoutOnly: true, noExecutionHandles: true };
+        }
+        const children = [header];
+        if (groups.length) {
+            const columnId = nextId("call-groups"), columns = container(columnId, "", "RIGHT", groups, [], node, false);
+            alignGroupTops(groups, columns);
+            columns.lhat = { kind: "call-groups", start: node.start, end: node.end, layoutOnly: true, noExecutionHandles: true };
+            children.push(columns);
+        }
+        const id = nextId(node.kind), caption = vocabulary.call ?? "Call";
+        const built = container(id, { text: caption, parts: [{ text: caption }] }, "DOWN", children, chain(id, children), node);
         built.labels = [{ text: labelFor(node, []).text }];
-        built.lhat = { ...built.lhat!, inline: true, definitionOutputs: outputs.map(output => output.id) };
-        built.layoutOptions!["elk.padding"] = `[top=${px(PAD)},left=${px(PAD)},bottom=${px(PAD)},right=${px(PAD)}]`;
+        built.lhat = { ...built.lhat!, invocation: true, definitionOutputs: outputs.map(output => output.id) };
         return built;
     }
 
@@ -1204,13 +1256,12 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             }
             return row;
         }
-        // Nothing with an empty body is worth a fold, so the emptiness is
-        // asked about before anything else -- an f^() {} folded shut would
-        // read '… …'.
+        // Even an empty table has an expanded insertion control to fold away.
+        // Other generic containers need source children to expose a fold.
         const foldable =
             (COLLAPSIBLE.has(node.kind) ||
                 (FOLDS_WITH_VALUE.has(node.kind) && holdsCollapsible(node))) &&
-            drawnChildren(node).length > 0;
+            (node.kind === "table" || drawnChildren(node).length > 0);
 
         // A manual fold outweighs the default, but never folds the root we
         // just entered: that view must show its body even if it was entered
@@ -1218,8 +1269,9 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         if (foldable && !unfold &&
             (options.folds?.[node.start] ?? options.collapse === true)) {
             const label = labelFor(node, drawnChildren(node));
-            const text = label.text + " …";
-            const parts = [...label.parts, { text: " …" }];
+            const concise = node.kind === "table" || node.kind === "def" || node.kind === "self-table";
+            const text = label.text + (concise ? "" : " …");
+            const parts = concise ? label.parts : [...label.parts, { text: " …" }];
             return {
                 id: nextId(node.kind),
                 labels: [{ text }],
@@ -1265,7 +1317,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         // child covers the whole of it -- 'print(x)' read as "call-stmt".
         if (!clause && !STATEMENT_LIST.has(kind) && !BRANCH.has(kind) &&
             !ELEMENT_LIST.has(kind) && !VOICE_TURN.has(kind) &&
-            !BODY_STATEMENT.has(kind) && !holdsExpandedChild(node)) {
+            !BODY_STATEMENT.has(kind) && kind !== "try" && !holdsExpandedChild(node)) {
             return leaf(node, labelFor(node, []));
         }
 
@@ -1460,7 +1512,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                        options.root !== undefined, width - 2 * px(PAD));
     // A leaf needs a wrapper. A branch view retains its outer box: its top
     // handle is the branch origin and must not disappear with the view root.
-    if (!root.children?.length || root.lhat?.bindingGroup || ["func", "type-func"].includes(viewRoot.kind) || root.lhat?.executionBranches !== undefined ||
+    if (!root.children?.length || root.lhat?.bindingGroup || root.lhat?.invocation || ["func", "type-func"].includes(viewRoot.kind) || root.lhat?.executionBranches !== undefined ||
         root.lhat?.definitionBranches !== undefined) {
         return {
             id: "view",

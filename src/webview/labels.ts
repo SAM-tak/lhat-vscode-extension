@@ -5,8 +5,8 @@ import { HATS, type LabelCategory } from "./vocabulary";
 export type LabelRole = "variableDefinition" | "mutableVariableDefinition" |
     "variableDeclaration" | "mutableVariableDeclaration" | "string" | "number";
 export type Vocabulary = Record<LabelRole, string> & {
-    hats?: Record<string, string>; outer?: string; levels?: string; tableDefinition?: string;
-    input?: string; output?: string; noOutput?: string; missingInput?: string;
+    hats?: Record<string, string>; outer?: string; levels?: string; tableDefinition?: string; table?: string;
+    input?: string; output?: string; noOutput?: string; missingInput?: string; call?: string;
 };
 export const ENGLISH_VOCABULARY: Vocabulary = {
     variableDefinition: "Variable Definition", mutableVariableDefinition: "Mutable Variable Definition",
@@ -15,7 +15,8 @@ export const ENGLISH_VOCABULARY: Vocabulary = {
     hats: Object.fromEntries(Object.entries(HATS).map(([word, entry]) => [word, entry.text])),
     outer: "Outer {0}: {1}", levels: "{0} ({1} levels)",
     tableDefinition: "Table type definition",
-    input: "Input", output: "Output", noOutput: "No output", missingInput: "Missing input",
+    table: "Table",
+    input: "Input", output: "Output", noOutput: "No output", missingInput: "Missing input", call: "Call",
 };
 export interface RenameTarget { start: number; end: number; value: string }
 export const renameTargetKey = (name: RenameTarget): string => `${name.start}:${name.end}`;
@@ -40,10 +41,12 @@ function children(node: AstNode): AstNode[] {
 }
 
 /** Lexical boundaries plus AST spans protect comments, literals and user names. */
-function semanticTokens(source: string, root: AstNode): Token[] {
+function semanticTokens(source: string, root: AstNode,
+                        range: SourceSpan = { start: 0, end: source.length }, inheritedHats: ReadonlySet<string> = new Set()): Token[] {
     const tokens: Token[] = [];
     const protectedSpans: { start: number; end: number }[] = [];
-    const declaredHats = new Set<string>();
+    const declaredHats = new Set(inheritedHats);
+    const disabled: AstNode[] = [];
     const tableDefinitions = new Set<number>();
     const bindings = new Map<number, boolean>();
     const symbols = new Map<number, SourceSpan>();
@@ -53,8 +56,8 @@ function semanticTokens(source: string, root: AstNode): Token[] {
         if (source.slice(node.start, node.end).endsWith("^")) declaredHats.add(source.slice(node.start, node.end));
     };
     const visit = (node: AstNode) => {
-        // Literal contents are not name uses. Disabled code has no live bindings.
-        if (node.kind === "disabled") return;
+        // Disabled statements have their own parsed display context, not live bindings.
+        if (node.kind === "disabled") { disabled.push(node); return; }
         if (node.kind === "ident" || node.kind === "hat-ident") {
             const text = source.slice(node.start, node.end);
             if (/^[\p{L}_][\p{L}\p{N}_]*\^*$/u.test(text) || /^`(?:[^`]|``)+`$/u.test(text)) {
@@ -96,27 +99,27 @@ function semanticTokens(source: string, root: AstNode): Token[] {
     visit(root);
     protectedSpans.sort((a, b) => a.start - b.start);
     let protectedIndex = 0;
-    for (let i = 0; i < source.length;) {
+    for (let i = range.start; i < range.end;) {
         while (protectedIndex < protectedSpans.length && protectedSpans[protectedIndex].end <= i) protectedIndex++;
         const span = protectedSpans[protectedIndex];
         if (span !== undefined && span.start <= i) { i = span.end; continue; }
         if (source.startsWith("#[", i)) {
             let depth = 1;
             i += 2;
-            while (i < source.length && depth > 0) {
+            while (i < range.end && depth > 0) {
                 if (source.startsWith("#[", i)) { depth++; i += 2; }
                 else if (source.startsWith("]#", i)) { depth--; i += 2; }
                 else i++;
             }
         } else if (source[i] === "#") {
-            while (i < source.length && source[i] !== "\n") i++;
+            while (i < range.end && source[i] !== "\n") i++;
         } else if (source.startsWith('"""', i)) {
             // Raw rest-of-line literal (including its opening delimiter).
             const end = source.indexOf("\n", i);
-            i = end < 0 ? source.length : end;
+            i = end < 0 ? range.end : Math.min(end, range.end);
         } else if (['"', "'", "`"].includes(source[i])) {
             const quote = source[i++];
-            while (i < source.length) {
+            while (i < range.end) {
                 if (quote === '"' && source[i] === "\\") { i += 2; continue; }
                 if (source[i++] === quote) {
                     if (quote !== '"' && source[i] === quote) { i++; continue; }
@@ -124,7 +127,7 @@ function semanticTokens(source: string, root: AstNode): Token[] {
                 }
             }
         } else {
-            const word = /^[\p{L}\p{N}_]+\^*/u.exec(source.slice(i))?.[0];
+            const word = /^[\p{L}\p{N}_]+\^*/u.exec(source.slice(i, range.end))?.[0];
             const hat = word && /^(.+?)(\^+)$/.exec(word);
             if (hat && Object.prototype.hasOwnProperty.call(HATS, hat[1]) && !declaredHats.has(word!) &&
                 (hat[2].length === 1 || ["break", "next", "skip", "continue", "it", "self", "def", "Self", "this"].includes(hat[1]))) {
@@ -140,6 +143,13 @@ function semanticTokens(source: string, root: AstNode): Token[] {
         const token = byStart.get(symbol.start);
         if (token !== undefined && token.end === symbol.end) token.symbol = symbol;
         else if (token === undefined) tokens.push({ ...symbol, symbol });
+    }
+    for (const region of disabled) {
+        // The server parses only valid statement bodies inside #[~ ... ]#.
+        // Keep original offsets, ordinary comments and literal/name protection.
+        if (!children(region).length) continue;
+        const body = { ...region, kind: "block", start: region.start + 3, end: region.end - 2 };
+        tokens.push(...semanticTokens(source, body, body, declaredHats).map(({ name, symbol, ...token }) => token));
     }
     return tokens.sort((a, b) => a.start - b.start);
 }
@@ -187,10 +197,18 @@ export function createLabeler(source: string, root: AstNode, vocabulary: Vocabul
     const tokens = semanticTokens(source, root);
     const sites = typeSites({ source, root });
     return (node: AstNode, drawn: AstNode[], max = 48, typed = false): DisplayLabel => {
+        if (node.kind === "table") return { text: "Table", parts: [
+            { text: vocabulary.table ?? ENGLISH_VOCABULARY.table!, role: "table", category: "value" },
+        ] };
         let pieces: (string | { start: number; end: number })[] = [];
         const shownSites = typed ? sites.filter(site => site.start >= node.start && site.end <= node.end) : [];
         const name = node.fields?.name;
-        if (["errordef", "error-kind", "enumdef"].includes(node.kind) && name !== undefined && !Array.isArray(name)) {
+        if (node.kind === "def" || node.kind === "self-table") {
+            // The keyword identifies the container; braces and member holes
+            // add no information in open, folded, or breadcrumb captions.
+            const keywordLength = node.kind === "def" ? 4 : 5;
+            pieces.push({ start: node.start, end: Math.min(node.start + keywordLength, node.end) });
+        } else if (["errordef", "error-kind", "enumdef"].includes(node.kind) && name !== undefined && !Array.isArray(name)) {
             pieces.push({ start: node.start, end: name.end });
         } else {
             let cursor = node.start;

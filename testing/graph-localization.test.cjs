@@ -13,7 +13,7 @@ function load(file) {
     return mod.exports;
 }
 const { createLabeler, displayType, labelText, labelColumns, nameColumns, renameTargetKey, ENGLISH_VOCABULARY } = load('labels.ts');
-const { toElk, titleOf } = load('map.ts');
+const { toElk, titleOf, stackWideDefinitions } = load('map.ts');
 const { configureLocalization, graphVocabulary } = load('localization.ts');
 const ja = require('../l10n/bundle.l10n.ja.json');
 const { HATS, HAT_GROUPS } = load('vocabulary.ts');
@@ -22,7 +22,9 @@ const japanese = {
     variableDeclaration: ja['Variable Declaration'], mutableVariableDeclaration: ja['Mutable Variable Declaration'],
     string: ja.Text, number: ja.Number,
     tableDefinition: ja['Table type definition'],
+    table: ja.Table,
     input: ja.Input, output: ja.Output, noOutput: ja['No output'], missingInput: ja['Missing input'],
+    call: ja.Call,
     hats: Object.fromEntries(Object.entries(HATS).map(([word, entry]) => [word, ja[entry.text]])),
     outer: ja['Outer {0}: {1}'], levels: ja['{0} ({1} levels)'] };
 const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
@@ -202,7 +204,7 @@ test('module declarations and table definitions have distinct labels from def re
             const definitions = nodes.filter(node => node.lhat?.kind === 'def');
             assert(definitions.length >= 1);
             for (const node of definitions) {
-                assert(display(node).startsWith(def));
+                assert.equal(display(node), def);
                 assert(node.width >= labelColumns(def) * 7.2, 'longer caption fits the box');
                 assert.equal(node.lhat.labelParts.find(p => p.role === 'def').source, 'def^');
             }
@@ -215,6 +217,48 @@ test('module declarations and table definitions have distinct labels from def re
         const drilled = flatten(toElk(reply, { root: definition, vocabulary, collapse: false }));
         assert(drilled.some(node => display(node) === `${ref}.foo`));
         assert(drilled.some(node => node.lhat?.kind === 'def' && display(node).startsWith(def)));
+    }
+    assert.equal(JSON.stringify(reply), before);
+});
+
+test('tables have concise bilingual captions and independent folds, including empty and nested tables', () => {
+    const source = 'let^ value = { {}, { 1, 2 } }', n = fixture(source);
+    const empty = n('table', '{}');
+    const inner = n('table', '{ 1, 2 }', { items: ['1', '2'].map(text => n('table-entry', text, { value: n('int', text) })) });
+    const outer = n('table', '{ {}, { 1, 2 } }', { items: [
+        n('table-entry', '{}', { value: empty }), n('table-entry', '{ 1, 2 }', { value: inner }),
+    ] });
+    const reply = { source, root: n('define', source, { targets: [n('ident', 'value')], values: [outer] }) };
+    const before = JSON.stringify(reply);
+    for (const vocabulary of [ENGLISH_VOCABULARY, japanese]) {
+        const draw = options => flatten(toElk(reply, { vocabulary, ...options }));
+        const tables = nodes => nodes.filter(node => node.lhat?.kind === 'table');
+        let nodes = draw({ collapse: true }), visible = tables(nodes);
+        assert.equal(visible.length, 1);
+        assert(visible[0].lhat.foldable && visible[0].lhat.collapsed);
+        assert(!visible[0].children?.length, 'folded descendants are omitted from the ELK graph');
+        assert.equal(display(visible[0]), vocabulary.table);
+        nodes = draw({ collapse: true, folds: { [outer.start]: false } });
+        visible = tables(nodes);
+        assert.equal(visible.length, 3);
+        assert(!visible[0].lhat.collapsed);
+        assert(visible.slice(1).every(node => node.lhat.collapsed && node.lhat.foldable));
+        assert(!nodes.some(node => node.lhat?.literal), 'opening the parent does not force its nested tables open');
+        nodes = draw({ collapse: false });
+        visible = tables(nodes);
+        assert.equal(visible.length, 3);
+        assert(visible.every(node => node.lhat.foldable && !node.lhat.collapsed && display(node) === vocabulary.table));
+        const emptyBox = visible.find(node => node.lhat.start === empty.start);
+        assert.equal(emptyBox.children.length, 1);
+        assert.equal(emptyBox.children[0].lhat.synthetic, 'add');
+        assert.equal(emptyBox.children[0].lhat.insertion.start, empty.start);
+        assert.equal(nodes.filter(node => node.lhat?.literal).length, 2);
+        assert(tables(draw({ collapse: false, folds: { [outer.start]: true } }))[0].lhat.collapsed);
+        nodes = draw({ collapse: true, root: outer, folds: { [outer.start]: true } });
+        assert(!nodes[0].lhat.collapsed, 'drilling shows the selected table despite its saved fold');
+        assert.equal(tables(nodes).length, 3);
+        assert.equal(titleOf(outer, source, vocabulary), vocabulary.table);
+        assert.equal(titleOf(empty, source, vocabulary), vocabulary.table);
     }
     assert.equal(JSON.stringify(reply), before);
 });
@@ -240,6 +284,95 @@ test('functions and procedures use independent cool/warm theme colors in every d
             }
         }
     }
+});
+
+test('try recursively renders its calls and operators, including through an enclosing expression', async () => {
+    const source = 'var^ a2 = try^ f4(g(10) + 1)\nlet^ results = pack^ try^ pair()';
+    const n = fixture(source);
+    const integer = text => ({ ...n('int', text), inferredType: 'number^' });
+    const call = (name, text, args, outputs) => ({ ...n('call', text, {
+        target: n('ident', name, undefined, source.indexOf(text)), argument: args,
+    }), callable: { inputs: args.map(() => ({ type: 'number^', name: 'x' })), outputs } });
+    const inner = call('g', 'g(10)', [integer('10')], ['number^']);
+    const addition = { ...n('binary', 'g(10) + 1', { left: inner,
+        right: { ...n('int', '1', undefined, source.indexOf('+')), inferredType: 'number^' } }), inferredType: 'number^' };
+    const outer = call('f4', 'f4(g(10) + 1)', [addition], ['number^|Failure']);
+    const propagation = n('try', 'try^ f4(g(10) + 1)', { value: outer });
+    const pair = call('pair', 'pair()', [], ['number^', 'number^']);
+    const packed = n('pack', 'pack^ try^ pair()', { value: n('try', 'try^ pair()', { value: pair }) });
+    const reply = { source, root: n('block', source, { items: [
+        n('define', source.split('\n')[0], { targets: [n('ident', 'a2')], values: [propagation] }),
+        n('define', source.split('\n')[1], { targets: [n('ident', 'results')], values: [packed] }),
+    ] }) };
+    const before = JSON.stringify(reply);
+    for (const [vocabulary, caption, catchCaption] of [
+        [ENGLISH_VOCABULARY, 'Propagate error', 'Catch'], [japanese, 'エラー伝播', 'エラー捕捉'],
+    ]) {
+        assert.equal(vocabulary.hats.try, caption);
+        assert.equal(vocabulary.hats.catch, catchCaption);
+        for (const collapse of [true, false]) {
+            const graph = stackWideDefinitions(await new ELK().layout(toElk(reply, { vocabulary, collapse, width: 1000 })), 1000);
+            const nodes = flatten(graph);
+            const wrappers = nodes.filter(node => node.lhat?.kind === 'try');
+            assert.equal(wrappers.length, 2);
+            assert(wrappers.every(node => display(node) === `${caption} …`));
+            const body = flatten(wrappers[0]);
+            assert.equal(body.filter(node => node.lhat?.kind === 'call').length, 2);
+            assert.equal(body.filter(node => node.lhat?.kind === 'binary').length, 1);
+            assert.equal(body.filter(node => node.lhat?.kind === 'input-slot').length, 4);
+            assert.equal(body.filter(node => node.lhat?.kind === 'output-slot').length, 3);
+            assert.equal(body.find(node => node.lhat?.literal?.value === '10')?.lhat.start, source.indexOf('10'));
+            assert.equal(nodes.find(node => node.lhat?.kind === 'pack').children[0].id, wrappers[1].id);
+            const binding = nodes.find(node => node.lhat?.kind === 'binding-pair');
+            assert.equal(binding.children.find(node => node.lhat?.definitionRole === 'value').id, wrappers[0].id);
+            assert(binding.edges.some(edge => edge.definition));
+            for (const wrapper of wrappers) {
+                const child = wrapper.children[0];
+                assert(child.x >= 0 && child.y > 0);
+                assert(child.x + child.width <= wrapper.width && child.y + child.height <= wrapper.height);
+            }
+        }
+    }
+    assert.equal(JSON.stringify(reply), before);
+});
+
+test('disabled statements keep localized labels without exposing edits or changing live names', () => {
+    const source = '#[~ enum^Method { GET, POST }\nlet^ text = "enum^ let^"\nlet^ number^ = 1\nnumber^\n#[~ let^ table = def^{} ]#\n]#\nnumber^\n#[ enum^Ignored { GET } ]#';
+    const n = fixture(source);
+    const enumeration = n('enumdef', 'enum^Method { GET, POST }', {
+        name: n('ident', 'Method'), members: [n('enum-member', 'GET'), n('enum-member', 'POST')],
+    });
+    const literal = n('string', '"enum^ let^"');
+    const table = n('def', 'def^{}');
+    const nested = n('disabled', '#[~ let^ table = def^{} ]#', { items: [n('define', 'let^ table = def^{}', {
+        targets: [n('ident', 'table')], values: [table],
+    })] });
+    const localUse = n('hat-ident', 'number^', undefined, source.indexOf('\nnumber^'));
+    const disabled = n('disabled', source.slice(0, source.indexOf('\n]#') + 3), { items: [enumeration,
+        n('define', 'let^ text = "enum^ let^"', { targets: [n('ident', 'text')], values: [literal] }),
+        n('define', 'let^ number^ = 1', { targets: [n('hat-ident', 'number^')], values: [n('int', '1')] }), localUse, nested,
+    ] });
+    const liveUse = n('hat-ident', 'number^', undefined, disabled.end);
+    const comment = n('comment', '#[ enum^Ignored { GET } ]#');
+    const root = n('block', source, { items: [disabled, liveUse] }), reply = { source, root }, before = JSON.stringify(reply);
+    for (const vocabulary of [ENGLISH_VOCABULARY, japanese]) {
+        const label = createLabeler(source, root, vocabulary);
+        assert.equal(labelText(label(enumeration, [])), `${vocabulary.hats.enum} Method`);
+        assert.equal(labelText(label(table, [])), vocabulary.tableDefinition);
+        assert.equal(labelText(label(localUse, [])), 'number^', 'disabled user-defined hats stay verbatim locally');
+        assert.equal(labelText(label(liveUse, [])), vocabulary.hats.number, 'disabled bindings cannot shadow live built-ins');
+        assert.equal(labelText(label(literal, [])), '"enum^ let^"');
+        assert.equal(labelText(label(comment, [])), '#[ enum^Ignored { GET } ]#');
+        for (const collapse of [true, false]) {
+            const graph = flatten(toElk(reply, { vocabulary, collapse }));
+            const box = graph.find(node => node.lhat?.kind === 'enumdef');
+            assert(box.lhat.disabled);
+            assert(display(box).startsWith(`${vocabulary.hats.enum} Method`));
+            assert(graph.filter(node => node.lhat?.disabled).flatMap(node => node.lhat.labelParts ?? []).every(part => !part.name && !part.symbol && !part.typeSite),
+                'disabled translations do not introduce live name or type controls');
+        }
+    }
+    assert.equal(JSON.stringify(reply), before);
 });
 
 test('hat depth remains visible, while quoted text and user-defined hats remain unchanged', () => {
@@ -335,7 +468,7 @@ test('function signatures, folds, breadcrumbs and drilled views share the locali
         const parts = flatten(signature).flatMap(n => n.lhat?.labelParts ?? []);
         const title = parts.map(p => p.text).join('');
         assert(title.includes('x'));
-        assert.deepEqual(parts.filter(p => p.typeSite).map(p => p.typeLabel), ['文字列', '数値']);
+        assert.deepEqual(parts.filter(p => p.typeSite).map(p => p.typeLabel), ['数値', '文字列']);
     }
     assert.equal(titleOf(fn, source, japanese), '関数 x:文字列-> 数値');
     assert.equal(titleOf(fn, source), 'f^x:string^-> number^', 'source-oriented callers can retain the source title');

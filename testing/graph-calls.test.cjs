@@ -149,12 +149,15 @@ test('layout aligns vertical binding pairs and callable groups without duplicati
         const laid = stackWideDefinitions(await new ELK().layout(toElk(tree, { scale })), 5000), all = flatten(laid);
         assert.equal(all.filter(node => node.lhat?.kind === 'call').length, 1);
         const columns = all.find(node => node.lhat?.kind === 'call-groups');
-        const [output, input] = columns.children;
+        const [output, argumentsColumn] = columns.children;
+        const [input, ...argumentRows] = argumentsColumn.children;
         assert.equal(output.lhat.ioGroup, 'output'); assert.equal(input.lhat.ioGroup, 'input');
-        assert(output.x + output.width < input.x); assert.equal(output.y, input.y);
+        assert(output.x + output.width < argumentsColumn.x + input.x); assert.equal(output.y, argumentsColumn.y + input.y);
         assert.equal(input.children[0].x, input.children[1].x);
-        assert.equal(input.children[0].children[0].lhat.labelParts[0].typeLabel, 'Text');
-        assert.equal(input.children[0].children[1].lhat.literalTypeLabel, 'Number');
+        assert.equal(input.children[0].lhat.labelParts[0].typeLabel, 'Text');
+        assert(input.children.every(node => node.lhat.kind === 'input-slot'));
+        assert.equal(argumentRows[0].children[0].lhat.literalTypeLabel, 'Number');
+        for (const row of argumentRows) assert(row.x + row.children[0].x > input.x + input.width, 'argument value is outside the input frame');
         const row = all.find(node => node.lhat?.definitionLinks);
         assert.equal(row.lhat.definitionLinks.length, 2);
         assert.deepEqual(row.lhat.definitionLinks.map(link => link.source), output.children.map(node => node.id));
@@ -167,4 +170,101 @@ test('layout aligns vertical binding pairs and callable groups without duplicati
     const laid = await new ELK().layout(toElk(binding())), pairs = flatten(laid).filter(node => node.lhat?.kind === 'binding-pair');
     assert(pairs[0].y + pairs[0].height < pairs[1].y);
     assert.equal(pairs[0].x, pairs[1].x);
+});
+
+test('calls omit empty groups and put a sole result beside the callable without losing definition endpoints', async () => {
+    for (const outputs of [[], ['nil^'], ['number^', 'string^']]) for (const hasInput of [false, true]) {
+        const expression = hasInput ? 'f(1)' : 'f()';
+        const source = outputs.length === 1 ? `let^ result = ${expression}` : expression, n = fixture(source);
+        const call = n('call', expression, { target: n('ident', 'f', undefined, source.indexOf(expression)),
+            argument: hasInput ? [n('int', '1')] : [] }, 0,
+            { callable: { inputs: hasInput ? [{ type: 'number^', name: 'x' }] : [], outputs } });
+        const root = outputs.length === 1 ? n('define', source, { targets: [n('ident', 'result')], values: [call] }) : call;
+        const reply = { source, root }, before = JSON.stringify(reply);
+        for (const scale of [0.7, 2]) {
+            const graph = stackWideDefinitions(await new ELK().layout(toElk(reply, { scale })), 5000);
+            const all = flatten(graph), invocation = all.find(node => node.lhat?.invocation);
+            assert.equal(invocation.lhat.labelParts[0].text, 'Call');
+            assert.notEqual(graph.id, invocation.id, 'a root call retains its visible box and caption');
+            assert.equal(all.filter(node => node.lhat?.ioGroup === 'input').length, Number(hasInput));
+            assert.equal(all.filter(node => node.lhat?.ioGroup === 'output').length, Number(outputs.length > 1));
+            const slots = all.filter(node => node.lhat?.kind === 'output-slot');
+            assert.deepEqual(invocation.lhat.definitionOutputs, slots.map(node => node.id));
+            assert.equal(slots.length, outputs.length, 'nil is one result, not an empty result list');
+            if (outputs.length === 1) {
+                const header = invocation.children[0], [slot, title] = header.children;
+                assert.equal(slot.id, slots[0].id);
+                assert(slot.x + slot.width < title.x);
+                assert.equal(slot.y + slot.height / 2, title.y + title.height / 2);
+                const row = all.find(node => node.lhat?.kind === 'binding-pair');
+                const declaration = row.children.find(node => node.lhat?.definitionRole === 'declaration');
+                assert.equal(declaration.y + declaration.lhat.definitionHandleY,
+                    invocation.y + header.y + slot.y + slot.lhat.definitionHandleY);
+                assert(row.edges.some(edge => edge.definition));
+            }
+        }
+        assert.equal(JSON.stringify(reply), before);
+    }
+});
+
+test('empty variadic calls retain insertion, missing inputs retain slots, and definitions retain both groups', () => {
+    const source = 'f()', n = fixture(source);
+    const call = n('call', source, { target: n('ident', 'f'), argument: [] }, 0,
+        { callable: { inputs: [], outputs: [], variadic: { type: 'any^' } } });
+    let all = flatten(toElk({ source, root: call }));
+    assert(!all.some(node => node.lhat?.ioGroup));
+    const additions = all.filter(node => node.lhat?.synthetic === 'add');
+    assert.equal(additions.length, 1);
+    assert.equal(additions[0].lhat.insertion.field, 'argument');
+    assert(listTemplates({ source, root: call }, additions[0].lhat.insertion).length > 0);
+    call.callable.inputs.push({ type: 'number^', name: 'x', default: '1' });
+    all = flatten(toElk({ source, root: call }));
+    assert.equal(all.filter(node => node.lhat?.ioGroup === 'input').length, 1);
+    assert.equal(all.filter(node => node.lhat?.kind === 'missing-input').length, 1);
+    const definitionSource = 'p^{}', d = fixture(definitionSource);
+    const definition = d('func', definitionSource, { body: d('block', '{}') });
+    all = flatten(toElk({ source: definitionSource, root: definition }, { collapse: true }));
+    assert.deepEqual(all.filter(node => node.lhat?.ioGroup).map(node => node.lhat.ioGroup), ['output', 'input']);
+    assert(!all.some(node => node.lhat?.invocation));
+});
+
+test('nested call and operator values stay outside input frames, aligned to their own inputs', async () => {
+    const source = 'f(a + (b * c), 4)', n = fixture(source);
+    const number = (kind, text, fields) => ({ ...n(kind, text, fields), inferredType: 'number^' });
+    const product = number('binary', 'b * c', { left: number('ident', 'b'), right: number('ident', 'c') });
+    const sum = number('binary', 'a + (b * c)', { left: number('ident', 'a'), right: product });
+    const root = n('call', source, { target: n('ident', 'f'), argument: [sum, number('int', '4')] }, 0,
+        { callable: { inputs: [{ name: 'expression', type: 'number^' }, { name: 'other', type: 'number^' }], outputs: ['number^'] } });
+    const tree = { source, root }, before = JSON.stringify(tree);
+    for (const scale of [0.7, 1, 2]) for (const width of [450, 1200]) {
+        const graph = stackWideDefinitions(await new ELK().layout(toElk(tree, { scale, width })), width - 16);
+        const all = flatten(graph), points = new Map();
+        const index = (node, x = 0, y = 0) => {
+            x += node.x ?? 0; y += node.y ?? 0;
+            points.set(node.id, { x, y, handleY: y + (node.lhat?.definitionHandleY ?? 0) });
+            node.children?.forEach(child => index(child, x, y));
+        };
+        index(graph);
+        assert.equal(all.filter(node => node.lhat?.kind === 'call').length, 1);
+        assert.equal(all.filter(node => node.lhat?.kind === 'binary').length, 2);
+        assert.equal(all.filter(node => node.lhat?.invocation).length, 3);
+        assert(!all.some(node => node.lhat?.ioGroup === 'output'));
+        for (const column of all.filter(node => node.lhat?.kind === 'call-inputs')) {
+            const [frame, ...rows] = column.children, f = points.get(frame.id);
+            assert.equal(frame.lhat.ioGroup, 'input');
+            assert(frame.children.every(node => node.lhat.kind === 'input-slot'));
+            for (const [i, row] of rows.entries()) {
+                const input = frame.children[i], value = row.children[0];
+                const p = points.get(input.id), v = points.get(value.id);
+                assert(p.x >= f.x && p.x + input.width <= f.x + frame.width, 'input stays inside its frame');
+                assert(v.x > f.x + frame.width, 'the entire value stays outside the input frame');
+                const output = value.lhat.definitionOutputs?.[0] ?? value.id;
+                assert.equal(p.handleY, points.get(output).handleY, 'definition line joins matching slot heights');
+                assert(p.y >= f.y && p.y + input.height <= f.y + frame.height);
+                assert.equal(row.edges[0].targets[0], `${input.id}__definition-in`, 'reparenting retains the edge endpoint');
+                if (i + 1 < rows.length) assert(row.y + row.height < rows[i + 1].y, 'tall nested values clear the next row');
+            }
+        }
+    }
+    assert.equal(JSON.stringify(tree), before, 'layout never changes the source tree');
 });

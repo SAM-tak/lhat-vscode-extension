@@ -129,6 +129,7 @@ interface BoxData extends Record<string, unknown>, SlideData {
     definitionBranchOffset?: number;
     definitionRole?: "declaration" | "value";
     ioGroup?: "input" | "output";
+    isCall: boolean;
     definitionHandleY?: number;
     collapsed: boolean;
     /** 01 の 6.5: written, but switched off. */
@@ -417,6 +418,7 @@ function toFlow(
                         ? undefined : c.lhat?.definitionRole,
                     definitionHandleY: c.lhat?.definitionHandleY,
                     ioGroup: c.lhat?.ioGroup,
+                    isCall: c.lhat?.invocation === true,
                     collapsed: c.lhat?.collapsed === true,
                     disabled,
                     start: synthetic ? undefined : c.lhat?.start,
@@ -840,6 +842,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
 
     const classes = ["box"];
     if (data.ioGroup) classes.push("io-group", `io-${data.ioGroup}`);
+    if (data.isCall) classes.push("call-node");
     if (data.isStart) classes.push("start-node");
     if (data.isReturn) classes.push("return-node");
     if (data.isCondition) classes.push("condition-node");
