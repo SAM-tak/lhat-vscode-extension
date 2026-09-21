@@ -28,9 +28,8 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import "./rf.css";
-import ELK from "elkjs/lib/elk.bundled.js";
 import type { AstNode, AstReply, FromWebview, ToWebview } from "../../protocol";
-import { graphViewportX, nodeAt, stackWideDefinitions, titleOf, toElk, type ElkNode } from "../map";
+import { graphViewportX, nodeAt, titleOf, type ElkNode } from "../map";
 import type { LiteralValue } from "../literals";
 import { LiteralEditProvider, LiteralEditStatus, LiteralInput } from "./LiteralInput";
 import { NameInput, RenameProvider } from "./NameInput";
@@ -41,6 +40,10 @@ import type { StatementSite, StatementInsertion } from "../../graphStatements";
 import { ReferenceLine } from "./ReferenceLine";
 import { DEFAULT_MINIMAP_SIZE, fitMinimapSize } from "../minimap";
 import { MinimapResizeHandles } from "./MinimapResizeHandles";
+import { SvgExport } from "./SvgExport";
+import { changedHandles } from "./handleUpdates";
+import { LayoutClient } from "./layoutClient";
+import { createLayoutEngine } from "./layoutEngine";
 import { renameTargetKey, type LabelPart, type RenameTarget } from "../labels";
 import { configureLocalization, graphVocabulary } from "../localization";
 import { dragAxis, ownsHorizontalSlide, type DragAxis } from "./gesture";
@@ -54,7 +57,6 @@ declare function acquireVsCodeApi(): {
 
 const vscode = acquireVsCodeApi();
 const post = (message: FromWebview) => vscode.postMessage(message);
-const elk = new ELK();
 const DEFAULT_FONT_PX = 12;
 let reorderSequence = 0;
 
@@ -119,6 +121,7 @@ interface BoxData extends Record<string, unknown>, SlideData {
     depth: number;
     isContainer: boolean;
     layoutOnly: boolean;
+    scrollSurface: boolean;
     slideOwner: boolean;
     isStart: boolean;
     isAdd: boolean;
@@ -201,6 +204,7 @@ const executionEdge = {
 } satisfies Partial<BuiltInEdge>;
 
 const branchEdge = { ...executionEdge, type: "branch", className: "exec branch" };
+const routedExecutionEdge = { ...executionEdge, type: "execution" };
 
 const definitionEdge = {
     ...executionEdge,
@@ -326,19 +330,24 @@ function toFlow(
                 else x = aligned;
             }
             let baseShift = 0;
-            if (topLevel && !layoutOnly && !detachedValue && usable > 0 && w > usable) {
-                const shift = baseAbs - x;
-                if (shift > 0) {
-                    x += shift;
-                    baseShift = shift;
-                }
+            if (topLevel && c.lhat?.callTree && !detachedValue && usable > 0 && w <= usable) {
+                // Centre the complete statement, not only its execution card.
+                baseShift = baseAbs + (usable - w) / 2 - parentX - x;
+                x += baseShift;
+            } else if (topLevel && (!layoutOnly || c.lhat?.callTree) && !detachedValue && usable > 0 &&
+                (w > usable || parentX + x + w > baseAbs + usable)) {
+                // Use the placed right edge, not width alone: an expression
+                // can fit the viewport but overflow from the execution column.
+                baseShift = baseAbs - parentX - x;
+                x += baseShift;
             }
             // A wide definition's invisible row and declaration stay fixed;
             // only its lowered value owns the offset. Other wide top-level
             // containers still move as a whole. Deeper boxes never acquire
             // another offset; gestures there are routed to the same owner.
             const canSlide = ownsHorizontalSlide(
-                detachedValue, topLevel, layoutOnly, isContainer, usable, w);
+                detachedValue, topLevel, layoutOnly && !c.lhat?.callTree, isContainer, usable, w,
+                parentX + x - baseAbs);
             const key = canSlide && c.lhat !== undefined ? slideKeyOf(c.lhat) : undefined;
             // Normal boxes stop at the viewport's side margins; a lowered
             // value stops at its initial x or at the viewport's right margin.
@@ -413,6 +422,7 @@ function toFlow(
                     branchOffset: c.lhat?.branchOffset,
                     definitionBranchOffset: c.lhat?.definitionBranchOffset,
                     layoutOnly,
+                    scrollSurface: topLevel && c.lhat?.callTree === true,
                     slideOwner: key !== undefined,
                     definitionRole: c.lhat?.definitionRole === "row"
                         ? undefined : c.lhat?.definitionRole,
@@ -429,7 +439,7 @@ function toFlow(
                     foldable: c.lhat?.foldable === true,
                     // Counter the base-left landing and horizontal slide,
                     // clamping to the frame if it moves past the line's axis.
-                    flowHandleX: baseShift > 0 || ownDx !== 0
+                    flowHandleX: baseShift !== 0 || ownDx !== 0
                         ? Math.min(Math.max(w / 2 - baseShift - ownDx, 6), w - 6)
                         : undefined,
                     onSlide,
@@ -469,7 +479,7 @@ function toFlow(
                 target: definition ? target.id : executionEnd(target, "Entry").id,
                 sourceHandle: definition ? "definition-out" : "flow-out",
                 targetHandle: definition ? "definition-in" : "flow-in",
-                ...(definition ? definitionEdge : executionEdge),
+                ...(definition ? definitionEdge : routedExecutionEdge),
                 selectable: false,
                 focusable: false,
             });
@@ -477,6 +487,7 @@ function toFlow(
         for (const link of parent.lhat?.definitionLinks ?? []) {
             if (!endpoints.has(link.source) || !endpoints.has(link.target)) continue;
             definitions.push({ ...definitionEdge, id: `d__${parent.id}__${link.target}`,
+                ...(link.laneOffset === undefined ? {} : { type: "call-definition", data: { laneOffset: link.laneOffset } }),
                 source: link.source, target: link.target,
                 sourceHandle: "definition-out", targetHandle: "definition-in",
                 selectable: false, focusable: false });
@@ -700,13 +711,6 @@ function ReorderHandle({ site, label, onDrop }: {
 function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
     const statements = useStatementActions();
     const { getZoom } = useReactFlow();
-    const updateNodeInternals = useUpdateNodeInternals();
-    // Moving a handle inside an unchanged-size box does not trigger React
-    // Flow's ResizeObserver. Re-measure it so arrows follow the visible port.
-    useEffect(() => {
-        updateNodeInternals(id);
-    }, [id, data.flowHandleX,
-        data.definitionRole, data.definitionHandleY, data.noExecutionHandles, updateNodeInternals]);
     const drag = useRef<{
         x: number; y: number; moved: boolean; axis?: DragAxis; samples: Sample[];
     } | null>(null);
@@ -837,7 +841,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
 
     // Match arms share their FOR's box. The invisible grouping still owns
     // the branch junction, unlike a declaration row with no handles at all.
-    if (data.layoutOnly && !data.insertion && data.definitionRole === undefined &&
+    if (data.layoutOnly && !data.scrollSurface && !data.insertion && data.definitionRole === undefined &&
         data.branchOffset === undefined && data.definitionBranchOffset === undefined) return null;
 
     const classes = ["box"];
@@ -863,6 +867,12 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
 
     return (
         <>
+            {data.scrollSurface && <div className="call-tree-surface"
+                data-source-start={data.start} data-source-end={data.sourceEnd}
+                data-vscode-context={statements.context(data.statement)}
+                onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+                onPointerUp={onPointerUp} onPointerCancel={onPointerCancel}
+                onAuxClick={onAuxClick} />}
             {data.insertion && !data.isAdd && <StatementButton site={data.insertion}
                 axis={data.insertionAxis}
                 style={data.insertionAxis === "horizontal" ? { left: "calc(-18.7px * var(--lhat-scale))", top: "calc(50% - 7.7px * var(--lhat-scale))" }
@@ -995,6 +1005,20 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
 
 const nodeTypes: NodeTypes = { box: BoxNode };
 
+function ExecutionEdge({ id, sourceX, sourceY, targetX, targetY, style, markerEnd }: EdgeProps) {
+    // A statement's output can be on a short leading card while its argument
+    // tree extends far below it. Cross horizontally only near the next entry,
+    // in the inter-statement gap, rather than through that argument tree.
+    const clearance = Math.min(12, Math.max(0, (targetY - sourceY) / 2));
+    const [path] = getSmoothStepPath({
+        sourceX, sourceY, targetX, targetY,
+        sourcePosition: Position.Bottom, targetPosition: Position.Top,
+        ...executionEdge.pathOptions,
+        ...(targetY > sourceY ? { centerY: targetY - clearance } : {}),
+    });
+    return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
+}
+
 // The branch output shares its top input position, but heads down into
 // the box. Every arm uses one header lane, regardless of its target's depth.
 function BranchEdge({ id, sourceX, sourceY, targetX, targetY, style, markerEnd, data }: EdgeProps) {
@@ -1017,7 +1041,17 @@ function DefinitionBranchEdge({ id, sourceX, sourceY, targetX, targetY, style, d
     return <BaseEdge id={id} path={path} style={style} />;
 }
 
-const edgeTypes: EdgeTypes = { branch: BranchEdge, "definition-branch": DefinitionBranchEdge };
+function CallDefinitionEdge({ id, sourceX, sourceY, targetX, targetY, style, markerEnd, data }: EdgeProps) {
+    const offset = typeof data?.laneOffset === "number" ? data.laneOffset : (sourceX - targetX) / 2;
+    const [path] = getSmoothStepPath({
+        sourceX, sourceY, targetX, targetY,
+        sourcePosition: Position.Left, targetPosition: Position.Right,
+        ...definitionEdge.pathOptions, centerX: targetX + offset,
+    });
+    return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
+}
+
+const edgeTypes: EdgeTypes = { execution: ExecutionEdge, branch: BranchEdge, "definition-branch": DefinitionBranchEdge, "call-definition": CallDefinitionEdge };
 
 // ---------------------------------------------------------------------------
 // The app
@@ -1044,6 +1078,12 @@ function countFolded(n: ElkNode): number {
 
 function App() {
     const { setViewport, getViewport } = useReactFlow();
+    const layoutClient = useMemo(() => new LayoutClient(() => {
+        const url = document.getElementById("root")?.dataset.layoutWorker;
+        if (!url) return Promise.reject(new Error("Graph layout worker URL is missing."));
+        return createLayoutEngine(url);
+    }), []);
+    useEffect(() => () => layoutClient.dispose(), [layoutClient]);
     const [vocabulary, setVocabulary] = useState(graphVocabulary);
     const [reply, setReply] = useState<AstReply>();
     const [uri, setUri] = useState("");
@@ -1088,6 +1128,7 @@ function App() {
     slidesRef.current = slides;
     const [laid, setLaid] = useState<ElkNode>();
     const [laidSourceKey, setLaidSourceKey] = useState("");
+    const [layoutPending, setLayoutPending] = useState(true);
     const slideMotion = useRef<(() => void) | null>(null);
     const paneFling = useRef<(() => void) | null>(null);
     // The document's vertical rubber band is also used by node-body drags.
@@ -1184,7 +1225,8 @@ function App() {
         if (reply === undefined || view === undefined) return;
         if (viewWidth === 0) return;
         let stale = false;
-        const graph = toElk(reply, {
+        setLayoutPending(true);
+        const request = layoutClient.layout(reply, {
             vocabulary,
             literalValues: literalSizes.sourceKey === sourceKey ? literalSizes.values : undefined,
             nameValues: nameSizes.sourceKey === sourceKey ? nameSizes.values : undefined,
@@ -1194,19 +1236,21 @@ function App() {
             scale,
             width: viewWidth - 16,
         });
-        const started = performance.now();
-        void elk.layout(graph).then((result) => {
-            if (stale) return;
-            const done = stackWideDefinitions(result as ElkNode, viewWidth - 16);
+        void request.promise.then((result) => {
+            if (stale || !result) return;
+            const done = result.graph;
             setLaid(done);
             setLaidSourceKey(sourceKey);
+            setLayoutPending(false);
             const folded = countFolded(done);
             setNote(`${countNodes(done)} nodes, ` +
-                `${Math.round(performance.now() - started)}ms` +
+                `${Math.round(result.elapsed)}ms` +
                 (folded > 0 ? `, ${folded} folded` : ""));
+        }, (reason: unknown) => {
+            if (!stale) setNote(l10n.t("Graph layout failed: {0}", reason instanceof Error ? reason.message : String(reason)));
         });
-        return () => { stale = true; };
-    }, [reply, view, foldByDefault, folds, scale, viewWidth, vocabulary, literalSizes, nameSizes, sourceKey]);
+        return () => { stale = true; request.cancel(); };
+    }, [reply, view, foldByDefault, folds, scale, viewWidth, vocabulary, literalSizes, nameSizes, sourceKey, layoutClient]);
 
     // What the bar's button says and does, both from the picture itself. One
     // definition still folded is enough to make the press an unfold: the way
@@ -1445,6 +1489,15 @@ function App() {
             onSlide, onEnter, onReveal, onFold, onSpring,
             onDocumentStart, onDocumentSlide, onDocumentRelease, onDocumentSpring, onReorder]);
     const nodes = flow.nodes;
+    const updateNodeInternals = useUpdateNodeInternals();
+    const handleGeometry = useRef(new Map<string, string>());
+    useEffect(() => {
+        const { changed, geometry } = changedHandles(nodes, handleGeometry.current);
+        handleGeometry.current = geometry;
+        // Each call updates all absolute positions and notifies every store
+        // subscriber. A per-BoxNode call made graph initialization quadratic.
+        if (changed.length) updateNodeInternals(changed);
+    }, [nodes, updateNodeInternals]);
     slideBounds.current = new Map(nodes.flatMap(({ data }) =>
         data.slideOwner && data.slideKey !== undefined &&
             data.slideMin !== undefined && data.slideMax !== undefined
@@ -1703,6 +1756,9 @@ function App() {
                     onMouseDown={keepFocusOff}
                     onClick={() => setFontPx(DEFAULT_FONT_PX)}
                 >A↺</button>
+                <SvgExport flow={flowRef} disabled={!laid || layoutPending || laidSourceKey !== sourceKey}
+                    title={view?.path.map(step => titleOf(step, reply?.source ?? "", vocabulary)).join(" / ") || uri}
+                    post={post} />
                 <span id="status">{note}</span>
                 <LiteralEditStatus />
             </div>

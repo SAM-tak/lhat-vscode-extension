@@ -18,6 +18,26 @@ html, body, #root {
     font-family: var(--vscode-editor-font-family, monospace);
 }
 
+.svg-export { position: relative; }
+.svg-export-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    z-index: 10;
+    width: min(300px, calc(100vw - 30px));
+    box-sizing: border-box;
+    padding: 12px;
+    border: 1px solid var(--vscode-editorWidget-border, #8888);
+    border-radius: 4px;
+    background: var(--vscode-editorWidget-background);
+    color: var(--vscode-editor-foreground);
+    box-shadow: 0 4px 12px #0004;
+}
+.svg-export-menu p { margin: 0 0 10px; line-height: 1.5; }
+.svg-export-menu label { display: flex; align-items: center; gap: 6px; margin: 8px 0; }
+.svg-export-menu > button { margin-top: 8px; }
+.svg-export-menu .svg-export-error { margin-top: 10px; color: var(--vscode-errorForeground, #f48771); }
+
 #flow {
     position: relative;
     overflow: hidden;
@@ -28,6 +48,17 @@ html, body, #root {
     --lhat-scale: 1;
     /* The execution lines' colour, shared by strokes and arrowheads. */
     --lhat-exec: #fff;
+}
+
+/* Reading surface for a top-level expression, including gaps between cards. */
+.call-tree-surface {
+    position: absolute;
+    inset: 0;
+    box-sizing: border-box;
+    border: 1px solid var(--vscode-editorWidget-border, #8884);
+    border-radius: 4px;
+    background: transparent;
+    pointer-events: auto;
 }
 
 /* Hover-only references do not participate in layout or intercept editing. */

@@ -19,6 +19,7 @@ import { reorderSites, type ReorderSite } from "../graphReorder";
 import { statementSites, statementInsertions, type StatementSite, type StatementInsertion } from "../graphStatements";
 import { literalOf, type LiteralValue } from "./literals";
 import { createLabeler, displayType, ENGLISH_VOCABULARY, labelColumns, labelText, nameColumns, renameTargetKey, type DisplayLabel, type LabelPart, type Vocabulary } from "./labels";
+import { arrangeCallTrees, alignCallPorts } from "./callLayout";
 
 const CH = 7.2; // mono advance at 12px
 const LEAF_H = 30;
@@ -144,11 +145,15 @@ export interface ElkNode {
         definitionHandleY?: number;
         /** Callable result slots, used by displayed definition edges. */
         definitionOutputs?: string[];
-        definitionLinks?: { source: string; target: string }[];
+        definitionLinks?: { source: string; target: string; column?: number; laneOffset?: number }[];
         ioGroup?: "input" | "output";
         /** Calls and operators share a caption and compact result header. */
         invocation?: boolean;
-        /** Width of the input-only frame after the argument pairs are laid out. */
+        /** Invisible extent/scroll owner for calls arranged by argument depth. */
+        callTree?: boolean;
+        /** Ordered argument ownership, including expressions with no output. */
+        callArguments?: { owner: string; value: string; input: string }[];
+        /** Temporary input/value pairs, compacted into depth columns before ELK. */
         callInputWidth?: number;
         bindingGroup?: boolean;
         /** Wide outermost pair: its value is lowered and scrolls on its own. */
@@ -354,6 +359,11 @@ export function graphViewportX(laid: ElkNode, width: number): number {
             for (const child of node.children ?? []) {
                 if (child.lhat?.definitionRole === "declaration") include(child, x + (child.x ?? 0));
             }
+        } else if (node.lhat?.callTree) {
+            // Its leading card is the execution/binding anchor. Deeper
+            // argument columns may scroll offscreen without shifting it.
+            const column = node.children?.[0], card = column?.children?.[0];
+            if (column && card) include(card, x + (column.x ?? 0) + (card.x ?? 0));
         } else if (node.lhat === undefined || node.lhat.layoutOnly) {
             for (const child of node.children ?? []) include(child, x + (child.x ?? 0));
         } else if ((node.width ?? 0) <= usable) {
@@ -380,6 +390,7 @@ export function graphViewportX(laid: ElkNode, width: number): number {
  * Renderers use node/handle positions, not the original ELK edge sections.
  */
 export function stackWideDefinitions(laid: ElkNode, usableWidth: number): ElkNode {
+    alignCallPorts(laid);
     // ELK routes against the containing value box. The visible definition
     // starts at its first Output slot, so align the binding card to that slot.
     const alignSlots = (node: ElkNode): void => {
@@ -406,33 +417,6 @@ export function stackWideDefinitions(laid: ElkNode, usableWidth: number): ElkNod
         }
     };
     alignSlots(laid);
-    // Lay out each input/value pair together so tall, nested arguments reserve
-    // the right row height. Then put only the input cells inside the visible
-    // frame; values and their definition lines stay beside it in the same rows.
-    const separateCallInputs = (node: ElkNode): void => {
-        node.children?.forEach(separateCallInputs);
-        const width = node.lhat?.callInputWidth;
-        if (width === undefined) return;
-        const rows = node.children ?? [], inputs: ElkNode[] = [];
-        for (const row of rows) {
-            if (row.lhat?.synthetic === "add") {
-                inputs.push({ ...row, x: (width - (row.width ?? 0)) / 2 });
-                continue;
-            }
-            const input = row.children?.find(child => child.lhat?.kind === "input-slot");
-            if (!input) continue;
-            inputs.push({ ...input, x: (row.x ?? 0) + (input.x ?? 0), y: (row.y ?? 0) + (input.y ?? 0) });
-            row.children = row.children!.filter(child => child !== input);
-        }
-        const frame: ElkNode = {
-            ...node, id: `${node.id}__frame`, x: 0, y: 0, width,
-            children: inputs, edges: [], ports: undefined,
-            lhat: { ...node.lhat!, callInputWidth: undefined },
-        };
-        node.children = [frame, ...rows.filter(row => row.lhat?.synthetic !== "add")];
-        node.lhat = { ...node.lhat!, kind: "call-inputs", layoutOnly: true, ioGroup: undefined, callInputWidth: undefined };
-    };
-    separateCallInputs(laid);
     // Width alone misses rows displaced by the shared declaration column.
     // Compare the value's actual right edge with the viewport's right margin,
     // in graph coordinates, just as the scroll bounds in toFlow do.
@@ -1508,11 +1492,11 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     }
 
     const width = options.width ?? Number.POSITIVE_INFINITY;
-    const root = build(viewRoot, "stmt",
-                       options.root !== undefined, width - 2 * px(PAD));
+    const root = arrangeCallTrees(build(viewRoot, "stmt",
+                       options.root !== undefined, width - 2 * px(PAD)), S);
     // A leaf needs a wrapper. A branch view retains its outer box: its top
     // handle is the branch origin and must not disappear with the view root.
-    if (!root.children?.length || root.lhat?.bindingGroup || root.lhat?.invocation || ["func", "type-func"].includes(viewRoot.kind) || root.lhat?.executionBranches !== undefined ||
+    if (!root.children?.length || root.lhat?.bindingGroup || root.lhat?.callTree || ["func", "type-func"].includes(viewRoot.kind) || root.lhat?.executionBranches !== undefined ||
         root.lhat?.definitionBranches !== undefined) {
         return {
             id: "view",

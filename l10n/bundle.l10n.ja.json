@@ -219,5 +219,14 @@
     "Filter choices": "選択肢を絞り込み",
     "Applying edit…": "編集を適用中…",
     "No choices match this filter.": "一致する選択肢がありません。",
-    "Operator": "演算子"
+    "Operator": "演算子",
+    "Export graph as editable SVG": "編集用SVGを書き出す",
+    "Save SVG": "SVGを保存",
+    "Choose an .svg file for the exported graph.": "書き出し先には .svg ファイルを指定してください。",
+    "SVG export failed: {0}": "SVGの書き出しに失敗しました: {0}",
+    "Export the entire current graph, including nodes outside the viewport.": "画面外のノードも含めて、現在の階層全体を書き出します。",
+    "Include background": "背景を含める",
+    "Include editing controls": "操作ボタンを含める",
+    "Exporting…": "書き出し中…",
+    "Graph layout failed: {0}": "グラフのレイアウトに失敗しました: {0}"
 }

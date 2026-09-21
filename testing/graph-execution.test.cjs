@@ -6,6 +6,7 @@ const Module = require('node:module');
 const vm = require('node:vm');
 const { buildSync, transformSync } = require('esbuild');
 const ELK = require('elkjs/lib/elk.bundled.js');
+const { branchedCalls } = require('./call-tree-fixture.cjs');
 
 const mappingPath = path.resolve(__dirname, '../src/webview/map.ts');
 const mapping = new Module(mappingPath);
@@ -36,6 +37,68 @@ const draw = async (reply, options = {}) => {
     const graph = await new ELK().layout(toElk(reply, options));
     return { graph, flow: toFlow(graph, {}, 947, undefined, noop, noop, noop, noop, { current: null }, noop) };
 };
+
+test('wide call trees scroll as one group while execution and routed definitions retain their actual endpoints', async () => {
+    const graph = stackWideDefinitions(await new ELK().layout(toElk(branchedCalls(), { width: 320 })), 304);
+    const paint = slides => toFlow(graph, slides, 320, undefined, noop, noop, noop, noop, { current: null }, noop);
+    const flow = paint({}), owner = flow.nodes.find(n => n.data.slideOwner && n.data.layoutOnly);
+    assert(owner && owner.data.slideKey, 'the invisible call-tree extent owns horizontal movement');
+    const absolute = node => { let x = node.position.x; while (node.parentId) { node = flow.nodes.find(n => n.id === node.parentId); x += node.position.x; } return x; };
+    const executionCards = flow.nodes.filter(node => node.data.isCall && !node.data.noExecutionHandles);
+    assert.equal(absolute(executionCards[1]) + executionCards[1].width / 2 + graphViewportX(graph, 320), 160,
+        'the following fitting statement is independently centred');
+    assert.equal(flow.definitions.length, 5);
+    for (const edge of flow.definitions) {
+        assert.equal(edge.type, 'call-definition');
+        assert(edge.data.laneOffset > 0);
+        assert(flow.nodes.some(n => n.id === edge.source && n.data.definitionRole === 'value'));
+        assert(flow.nodes.some(n => n.id === edge.target && n.data.definitionRole === 'declaration'));
+    }
+    for (const edge of flow.exec) {
+        for (const endpoint of [edge.source, edge.target]) {
+            const node = flow.nodes.find(n => n.id === endpoint);
+            assert(!node.data.noExecutionHandles, 'execution ends at visible statement cards, not layout wrappers or arguments');
+        }
+    }
+    const shifted = paint({ [owner.data.slideKey]: { dx: -80, dy: 0 } });
+    assert(shifted.nodes.find(n => n.id === owner.id).position.x < owner.position.x);
+    assert.deepEqual(Array.from(shifted.definitions, e => [e.source, e.target, e.data.laneOffset]),
+        Array.from(flow.definitions, e => [e.source, e.target, e.data.laneOffset]));
+    for (const node of flow.nodes.filter(n => n.data.slideKey === owner.data.slideKey && n.id !== owner.id)) {
+        assert.deepEqual(shifted.nodes.find(n => n.id === node.id).position, node.position, 'children retain their positions relative to the scrolling owner');
+    }
+});
+test('fitting expressions are centred as a whole; oversized expressions start left and scroll', () => {
+    const card = { id: 'card', x: 0, y: 0, width: 120, height: 100,
+        lhat: { kind: 'call', start: 0, end: 10, invocation: true } };
+    const tree = { id: 'tree', x: 300, y: 0, width: 500, height: 100,
+        lhat: { kind: 'call-tree', start: 0, end: 10, callTree: true, layoutOnly: true },
+        children: [{ id: 'column', x: 0, y: 0, width: 120, height: 100, children: [card] }] };
+    const anchor = { id: 'anchor', x: 0, y: 150, width: 120, height: 40,
+        lhat: { kind: 'ident', start: 11, end: 12 } };
+    const graph = { id: 'view', width: 800, height: 200, children: [tree, anchor] };
+    const paint = (slides = {}, width = 600) => toFlow(graph, slides, width, undefined, noop, noop, noop, noop, { current: null }, noop);
+    const flow = paint(), owner = flow.nodes.find(n => n.id === 'tree');
+    assert(owner.width < 600 - 16);
+    assert.equal(owner.position.x + graphViewportX(graph, 600), 50);
+    assert(owner.position.x + owner.width + graphViewportX(graph, 600) <= 592);
+    assert(!owner.data.slideOwner, 'centring exposes the entire fitting-width expression');
+    assert(owner.data.scrollSurface, 'a call tree has a pointer surface in its empty spaces');
+    const narrow = paint({}, 400), narrowOwner = narrow.nodes.find(n => n.id === 'tree');
+    assert.equal(narrowOwner.position.x + graphViewportX(graph, 400), 8);
+    assert(narrowOwner.data.slideOwner && narrowOwner.data.slideKey);
+    assert.equal(narrowOwner.data.slideMax, 0);
+    assert(narrowOwner.data.slideMin < 0);
+    assert.equal(narrow.nodes.find(n => n.id === 'card').data.slideKey, narrowOwner.data.slideKey);
+    const moved = paint({ [narrowOwner.data.slideKey]: { dx: narrowOwner.data.slideMin, dy: 0 } }, 400);
+    const movedOwner = moved.nodes.find(n => n.id === 'tree');
+    assert.equal(movedOwner.position.x + movedOwner.width + graphViewportX(graph, 400), 392);
+    assert.deepEqual(moved.nodes.find(n => n.id === 'anchor').position, flow.nodes.find(n => n.id === 'anchor').position);
+    assert(!paint({}, 1600).nodes.find(n => n.id === 'tree').data.slideOwner, 'a wider viewport removes unnecessary sliding');
+    assert.equal(paint({}, 1600).nodes.find(n => n.id === 'tree').position.x + graphViewportX(graph, 1600), 550,
+        'non-overflowing expressions also centre their complete bounds');
+});
+
 const labelsOfEdges = flow => {
     const labels = new Map(flow.nodes.map(n => [n.id, n.data.isStart ? '<start>' : n.data.label]));
     return Array.from(flow.exec, e => `${labels.get(e.source)} -> ${labels.get(e.target)}`);
@@ -668,7 +731,7 @@ test('if statements fan out through condition-only boxes to real entries and hoi
         assert(flow.exec.some(e => byId.get(e.source).data.label === 'before()' && e.target === mapped.id));
         assert(flow.exec.some(e => e.source === mapped.id && byId.get(e.target).data.label === 'after()'));
         assert(flow.exec.some(e => byId.get(e.source).data.label === 'let^ x' && byId.get(e.target).data.label === 'second()'));
-        assert(flow.exec.filter(e => e.sourceHandle !== 'flow-branch').every(e => e.type === 'smoothstep'), 'all ordinary execution lines use rounded orthogonal paths');
+        assert(flow.exec.filter(e => e.sourceHandle !== 'flow-branch').every(e => e.type === 'execution'), 'ordinary execution lines use the target-near orthogonal router');
         assert(flow.exec.every(e => e.pathOptions.borderRadius === 6 && e.pathOptions.offset === 6));
     }
     const entered = await draw({ source, root }, { root: branch });

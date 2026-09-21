@@ -47,6 +47,16 @@ Open the Command Palette and run **L^: Show Graph View** to switch a `.lh`
 file to its graph view. Run **L^: Show Source** to switch back. Set
 `lhat.graph.openBeside` to `true` when the graph should open in a split editor.
 
+Calls and operators place argument expressions in columns by depth. Each column
+starts at the same top and retains source order. Input groups sit at the right
+of each call card, with bent definition lines connecting them to the values.
+
+For illustrations, use **SVG…** in the graph toolbar, choose whether to include
+the background and editing controls, and select **Save SVG**. The export covers
+the entire current level, including offscreen nodes, with the current folds,
+language, colors and graph-only literal edits. Text, node groups and connections
+remain editable in Inkscape. Editing the SVG does not change the L^ source.
+
 ## Debug L^ programs
 
 The language server is included with the extension; the runtime is deliberately
@@ -141,6 +151,11 @@ npm run test:lhat -- /path/to/rebuilt/lhat
 `PATH`. This includes local, untracked samples and excludes ignored build
 products. The runtime checks cover dense sequences, inclusive ranges, string
 positions, variadic arguments, enum numbers and regex capture groups.
+
+`npm test` includes SVG saving tests. `npm run test:svg` additionally checks the
+export in a real browser; set `LHAT_TEST_BROWSER` to a Chrome/Edge executable if
+it is not installed in a standard location. This checks offscreen content,
+editable text, arrows, transparency, folding, drill-down and graph-only edits.
 
 To create a local generic VSIX:
 

@@ -20,20 +20,146 @@
   "l10n": "./l10n",
   "contributes": {
     "colors": [
-      { "id": "lhat.graph.referenceLine", "description": "L^ graph: hover reference lines.", "defaults": { "dark": "#eaa04b", "light": "#aa5200", "highContrast": "#ffc266", "highContrastLight": "#8b4000" } },
-      { "id": "lhat.graph.declaration", "description": "L^ graph: declarations.", "defaults": { "dark": "#82b7ed", "light": "#145da0", "highContrast": "#9cdcfe", "highContrastLight": "#004080" } },
-      { "id": "lhat.graph.control", "description": "L^ graph: control flow.", "defaults": { "dark": "#dda1df", "light": "#87378b", "highContrast": "#efb5ff", "highContrastLight": "#630064" } },
-      { "id": "lhat.graph.callable", "description": "L^ graph: operator definitions.", "defaults": { "dark": "#e3d58c", "light": "#725500", "highContrast": "#fff09c", "highContrastLight": "#514000" } },
-      { "id": "lhat.graph.function", "description": "L^ graph: functions.", "defaults": { "dark": "#89cff0", "light": "#006080", "highContrast": "#99e5ff", "highContrastLight": "#00445c" } },
-      { "id": "lhat.graph.procedure", "description": "L^ graph: procedures.", "defaults": { "dark": "#e3d58c", "light": "#725500", "highContrast": "#fff09c", "highContrastLight": "#514000" } },
-      { "id": "lhat.graph.input", "description": "L^ graph: input group labels and borders.", "defaults": { "dark": "#e8a15b", "light": "#a65300", "highContrast": "#ffc080", "highContrastLight": "#873b00" } },
-      { "id": "lhat.graph.output", "description": "L^ graph: output group labels and borders.", "defaults": { "dark": "#df91b8", "light": "#a93973", "highContrast": "#ffb5da", "highContrastLight": "#8f1657" } },
-      { "id": "lhat.graph.type", "description": "L^ graph: types.", "defaults": { "dark": "#73cfb8", "light": "#006c59", "highContrast": "#80ffe0", "highContrastLight": "#004f3e" } },
-      { "id": "lhat.graph.value", "description": "L^ graph: predefined values.", "defaults": { "dark": "#b8d995", "light": "#3e660f", "highContrast": "#d0ff99", "highContrastLight": "#284700" } },
-      { "id": "lhat.graph.module", "description": "L^ graph: modules.", "defaults": { "dark": "#efb58a", "light": "#904709", "highContrast": "#ffc79f", "highContrastLight": "#753500" } },
-      { "id": "lhat.graph.modifier", "description": "L^ graph: modifiers.", "defaults": { "dark": "#b8b8d6", "light": "#585877", "highContrast": "#dedcff", "highContrastLight": "#363651" } },
-      { "id": "lhat.graph.operator", "description": "L^ graph: operators.", "defaults": { "dark": "#8dcae5", "light": "#096280", "highContrast": "#a0e6ff", "highContrastLight": "#00475f" } },
-      { "id": "lhat.graph.member", "description": "L^ graph: standard members.", "defaults": { "dark": "#d7c4a2", "light": "#73562b", "highContrast": "#ffe6b4", "highContrastLight": "#513500" } }
+      {
+        "id": "lhat.graph.referenceLine",
+        "description": "L^ graph: hover reference lines.",
+        "defaults": {
+          "dark": "#eaa04b",
+          "light": "#aa5200",
+          "highContrast": "#ffc266",
+          "highContrastLight": "#8b4000"
+        }
+      },
+      {
+        "id": "lhat.graph.declaration",
+        "description": "L^ graph: declarations.",
+        "defaults": {
+          "dark": "#82b7ed",
+          "light": "#145da0",
+          "highContrast": "#9cdcfe",
+          "highContrastLight": "#004080"
+        }
+      },
+      {
+        "id": "lhat.graph.control",
+        "description": "L^ graph: control flow.",
+        "defaults": {
+          "dark": "#dda1df",
+          "light": "#87378b",
+          "highContrast": "#efb5ff",
+          "highContrastLight": "#630064"
+        }
+      },
+      {
+        "id": "lhat.graph.callable",
+        "description": "L^ graph: operator definitions.",
+        "defaults": {
+          "dark": "#e3d58c",
+          "light": "#725500",
+          "highContrast": "#fff09c",
+          "highContrastLight": "#514000"
+        }
+      },
+      {
+        "id": "lhat.graph.function",
+        "description": "L^ graph: functions.",
+        "defaults": {
+          "dark": "#89cff0",
+          "light": "#006080",
+          "highContrast": "#99e5ff",
+          "highContrastLight": "#00445c"
+        }
+      },
+      {
+        "id": "lhat.graph.procedure",
+        "description": "L^ graph: procedures.",
+        "defaults": {
+          "dark": "#e3d58c",
+          "light": "#725500",
+          "highContrast": "#fff09c",
+          "highContrastLight": "#514000"
+        }
+      },
+      {
+        "id": "lhat.graph.input",
+        "description": "L^ graph: input group labels and borders.",
+        "defaults": {
+          "dark": "#e8a15b",
+          "light": "#a65300",
+          "highContrast": "#ffc080",
+          "highContrastLight": "#873b00"
+        }
+      },
+      {
+        "id": "lhat.graph.output",
+        "description": "L^ graph: output group labels and borders.",
+        "defaults": {
+          "dark": "#df91b8",
+          "light": "#a93973",
+          "highContrast": "#ffb5da",
+          "highContrastLight": "#8f1657"
+        }
+      },
+      {
+        "id": "lhat.graph.type",
+        "description": "L^ graph: types.",
+        "defaults": {
+          "dark": "#73cfb8",
+          "light": "#006c59",
+          "highContrast": "#80ffe0",
+          "highContrastLight": "#004f3e"
+        }
+      },
+      {
+        "id": "lhat.graph.value",
+        "description": "L^ graph: predefined values.",
+        "defaults": {
+          "dark": "#b8d995",
+          "light": "#3e660f",
+          "highContrast": "#d0ff99",
+          "highContrastLight": "#284700"
+        }
+      },
+      {
+        "id": "lhat.graph.module",
+        "description": "L^ graph: modules.",
+        "defaults": {
+          "dark": "#efb58a",
+          "light": "#904709",
+          "highContrast": "#ffc79f",
+          "highContrastLight": "#753500"
+        }
+      },
+      {
+        "id": "lhat.graph.modifier",
+        "description": "L^ graph: modifiers.",
+        "defaults": {
+          "dark": "#b8b8d6",
+          "light": "#585877",
+          "highContrast": "#dedcff",
+          "highContrastLight": "#363651"
+        }
+      },
+      {
+        "id": "lhat.graph.operator",
+        "description": "L^ graph: operators.",
+        "defaults": {
+          "dark": "#8dcae5",
+          "light": "#096280",
+          "highContrast": "#a0e6ff",
+          "highContrastLight": "#00475f"
+        }
+      },
+      {
+        "id": "lhat.graph.member",
+        "description": "L^ graph: standard members.",
+        "defaults": {
+          "dark": "#d7c4a2",
+          "light": "#73562b",
+          "highContrast": "#ffe6b4",
+          "highContrastLight": "#513500"
+        }
+      }
     ],
     "languages": [
       {
@@ -225,8 +351,16 @@
         },
         "lhat.graph.language": {
           "type": "string",
-          "enum": ["auto", "ja", "en"],
-          "enumItemLabels": ["%graph.language.auto%", "日本語", "English"],
+          "enum": [
+            "auto",
+            "ja",
+            "en"
+          ],
+          "enumItemLabels": [
+            "%graph.language.auto%",
+            "日本語",
+            "English"
+          ],
           "default": "auto",
           "scope": "window",
           "description": "%graph.language.description%"
@@ -363,10 +497,11 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./ && npm run bundle:extension && npm run bundle:rf",
     "bundle:extension": "esbuild src/extension.ts --bundle --minify --platform=node --format=cjs --external:vscode --outfile=out/extension.js --sourcemap --log-level=warning",
-    "bundle:rf": "esbuild src/webview/rf/main.tsx --bundle --minify --outdir=media/rf --entry-names=bundle --jsx=automatic --sourcemap --log-level=warning",
+    "bundle:rf": "esbuild bundle=src/webview/rf/main.tsx layout-worker=src/webview/rf/layout.worker.ts --bundle --minify --outdir=media/rf --jsx=automatic --sourcemap --log-level=warning",
     "check:rf": "tsc -p ./tsconfig.rf.json",
     "l10n:extract": "vscode-l10n-dev export --outDir ./l10n ./src && node scripts/extract-graph-vocabulary.cjs",
-    "test": "node --test testing/graph-definition.test.cjs testing/graph-execution.test.cjs testing/graph-gesture.test.cjs testing/graph-literal.test.cjs testing/graph-minimap.test.cjs testing/graph-localization.test.cjs testing/graph-rename.test.cjs testing/graph-reference.test.cjs testing/graph-reorder.test.cjs testing/graph-reorder-editor.test.cjs testing/graph-types.test.cjs testing/graph-statements.test.cjs testing/graph-lists.test.cjs testing/graph-calls.test.cjs testing/graph-source.test.cjs testing/enum-highlighting.test.cjs testing/numeric-highlighting.test.cjs",
+    "test": "node --test testing/graph-definition.test.cjs testing/graph-execution.test.cjs testing/graph-gesture.test.cjs testing/graph-layout.test.cjs testing/graph-literal.test.cjs testing/graph-minimap.test.cjs testing/graph-localization.test.cjs testing/graph-rename.test.cjs testing/graph-reference.test.cjs testing/graph-reorder.test.cjs testing/graph-reorder-editor.test.cjs testing/graph-types.test.cjs testing/graph-statements.test.cjs testing/graph-lists.test.cjs testing/graph-calls.test.cjs testing/graph-source.test.cjs testing/graph-svg.test.cjs testing/enum-highlighting.test.cjs testing/numeric-highlighting.test.cjs",
+    "test:svg": "npm run bundle:rf && node --test testing/graph-svg-browser.test.cjs",
     "test:lhat": "node scripts/check-lhat.cjs",
     "watch": "tsc -watch -p ./",
     "package": "vsce package --githubBranch main --no-dependencies -o lhat.vsix",
@@ -393,5 +528,8 @@
     "typescript": "^5.4.0",
     "vscode-oniguruma": "^1.7.0",
     "vscode-textmate": "^9.3.2"
+  },
+  "allowScripts": {
+    "@vscode/vsce-sign@2.0.9": true
   }
 }

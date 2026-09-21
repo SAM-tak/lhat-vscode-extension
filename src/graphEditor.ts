@@ -18,6 +18,7 @@ import { applyTypeFromGraph, removeTypeFromGraph, typeOptionsFromGraph, type Typ
 import { reorderFromGraph } from "./graphReorderEditor";
 import { editStatementFromGraph } from "./graphStatementEditor";
 import { graphTreeForDocument } from "./graphSource";
+import { saveGraphSvg } from "./graphSvg";
 
 type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" }>;
 
@@ -110,6 +111,7 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
         let applyingType = false;
         let reordering = false;
         let editingStatement = false;
+        let exportingSvg = false;
         let referenceRevision = 0;
         let currentTree: AstReply | undefined;
         const cancelTypeRequest = () => {
@@ -225,6 +227,15 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
                     break;
                 case "refresh":
                     if (initialTreeRequested) void send();
+                    break;
+                case "saveSvg":
+                    if (exportingSvg) break;
+                    exportingSvg = true;
+                    void saveGraphSvg(document.uri, message.svg, () => !disposed).then(() => {
+                        post({ type: "svgResult", id: message.id });
+                    }, (error: unknown) => {
+                        post({ type: "svgResult", id: message.id, error: error instanceof Error ? error.message : String(error) });
+                    }).finally(() => { exportingSvg = false; });
                     break;
                 case "insertStatement":
                 case "insertElement":
@@ -351,8 +362,8 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
         editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
     }
 
-    // 06 の 8.4: React Flow. One bundled script -- React, React Flow and
-    // elkjs together, built by esbuild -- and its stylesheet. Styles need
+    // 06 の 8.4: React Flow. esbuild bundles React and React Flow for the UI,
+    // with ELK in a separate worker. Styles need
     // 'unsafe-inline': React Flow positions its nodes by writing style
     // attributes, which is also how the layout's own sizes reach the boxes.
     private html(webview: vscode.Webview): string {
@@ -360,6 +371,7 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
             webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, ...parts));
 
         const script = asset("media", "rf", "bundle.js");
+        const layoutWorker = asset("media", "rf", "layout-worker.js");
         const bundleCss = asset("media", "rf", "bundle.css");
         const sharedCss = asset("media", "graph.css");
         const nonce = String(Math.random()).slice(2);
@@ -369,13 +381,14 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none';
-  style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';
+  connect-src ${webview.cspSource}; worker-src blob:;">
 <link href="${sharedCss}" rel="stylesheet">
 <link href="${bundleCss}" rel="stylesheet">
 <title>L^ graph</title>
 </head>
 <body>
-<div id="root"></div>
+<div id="root" data-layout-worker="${layoutWorker}"></div>
 <script nonce="${nonce}" src="${script}"></script>
 </body>
 </html>`;

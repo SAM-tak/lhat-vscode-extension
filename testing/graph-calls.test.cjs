@@ -4,6 +4,7 @@ const path = require('node:path');
 const Module = require('node:module');
 const { buildSync } = require('esbuild');
 const ELK = require('elkjs/lib/elk.bundled.js');
+const { branchedCalls } = require('./call-tree-fixture.cjs');
 function load(file) {
     const entry = path.resolve(__dirname, '../src', file), mod = new Module(entry);
     mod._compile(buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
@@ -149,16 +150,16 @@ test('layout aligns vertical binding pairs and callable groups without duplicati
         const laid = stackWideDefinitions(await new ELK().layout(toElk(tree, { scale })), 5000), all = flatten(laid);
         assert.equal(all.filter(node => node.lhat?.kind === 'call').length, 1);
         const columns = all.find(node => node.lhat?.kind === 'call-groups');
-        const [output, argumentsColumn] = columns.children;
-        const [input, ...argumentRows] = argumentsColumn.children;
+        const [output, input] = columns.children;
         assert.equal(output.lhat.ioGroup, 'output'); assert.equal(input.lhat.ioGroup, 'input');
-        assert(output.x + output.width < argumentsColumn.x + input.x); assert.equal(output.y, argumentsColumn.y + input.y);
+        assert(output.x + output.width < input.x); assert.equal(output.y, input.y);
         assert.equal(input.children[0].x, input.children[1].x);
         assert.equal(input.children[0].lhat.labelParts[0].typeLabel, 'Text');
         assert(input.children.every(node => node.lhat.kind === 'input-slot'));
-        assert.equal(argumentRows[0].children[0].lhat.literalTypeLabel, 'Number');
-        for (const row of argumentRows) assert(row.x + row.children[0].x > input.x + input.width, 'argument value is outside the input frame');
-        const row = all.find(node => node.lhat?.definitionLinks);
+        const callTree = all.find(node => node.lhat?.callTree), argumentsColumn = callTree.children[1];
+        assert.equal(argumentsColumn.children[0].lhat.literalTypeLabel, 'Number');
+        assert(argumentsColumn.x > callTree.children[0].x + callTree.children[0].width, 'values are outside the entire call card');
+        const row = all.find(node => node.lhat?.kind === 'binding-outputs');
         assert.equal(row.lhat.definitionLinks.length, 2);
         assert.deepEqual(row.lhat.definitionLinks.map(link => link.source), output.children.map(node => node.id));
         const ys = new Map();
@@ -228,7 +229,7 @@ test('empty variadic calls retain insertion, missing inputs retain slots, and de
     assert(!all.some(node => node.lhat?.invocation));
 });
 
-test('nested call and operator values stay outside input frames, aligned to their own inputs', async () => {
+test('nested calls and operators occupy shared depth columns with aligned tops and compact right-aligned inputs', async () => {
     const source = 'f(a + (b * c), 4)', n = fixture(source);
     const number = (kind, text, fields) => ({ ...n(kind, text, fields), inferredType: 'number^' });
     const product = number('binary', 'b * c', { left: number('ident', 'b'), right: number('ident', 'c') });
@@ -249,22 +250,150 @@ test('nested call and operator values stay outside input frames, aligned to thei
         assert.equal(all.filter(node => node.lhat?.kind === 'binary').length, 2);
         assert.equal(all.filter(node => node.lhat?.invocation).length, 3);
         assert(!all.some(node => node.lhat?.ioGroup === 'output'));
-        for (const column of all.filter(node => node.lhat?.kind === 'call-inputs')) {
-            const [frame, ...rows] = column.children, f = points.get(frame.id);
-            assert.equal(frame.lhat.ioGroup, 'input');
-            assert(frame.children.every(node => node.lhat.kind === 'input-slot'));
-            for (const [i, row] of rows.entries()) {
-                const input = frame.children[i], value = row.children[0];
-                const p = points.get(input.id), v = points.get(value.id);
-                assert(p.x >= f.x && p.x + input.width <= f.x + frame.width, 'input stays inside its frame');
-                assert(v.x > f.x + frame.width, 'the entire value stays outside the input frame');
-                const output = value.lhat.definitionOutputs?.[0] ?? value.id;
-                assert.equal(p.handleY, points.get(output).handleY, 'definition line joins matching slot heights');
-                assert(p.y >= f.y && p.y + input.height <= f.y + frame.height);
-                assert.equal(row.edges[0].targets[0], `${input.id}__definition-in`, 'reparenting retains the edge endpoint');
-                if (i + 1 < rows.length) assert(row.y + row.height < rows[i + 1].y, 'tall nested values clear the next row');
+        const calls = all.filter(node => node.lhat?.invocation);
+        const trees = all.filter(node => node.lhat?.callTree);
+        assert.equal(trees.length, 1, 'direct call arguments join one layout, without nested call trees');
+        const layout = trees[0];
+        assert.equal(layout.children.length, 4);
+        assert.deepEqual(layout.children.map(column => column.children.length), [1, 2, 2, 2]);
+        for (const column of layout.children) {
+            assert.equal(column.y, layout.children[0].y, 'depth columns start at the same top');
+            for (const [i, value] of column.children.entries()) {
+                assert.equal(value.x, column.children[0].x, 'same-depth values share a left edge');
+                if (i) assert(value.y > column.children[i - 1].y + column.children[i - 1].height);
             }
+        }
+        assert.equal(calls[0].height, calls[1].height, 'a deep operand cannot stretch its consuming call');
+        for (const call of calls) {
+            const frame = flatten(call).find(node => node.lhat?.ioGroup === 'input'), f = points.get(frame.id);
+            assert.equal(flatten(call).filter(node => node.lhat?.invocation).length, 1, 'no call card contains an argument call');
+            assert(frame.children.every(node => node.lhat.kind === 'input-slot'));
+            const card = points.get(call.id);
+            assert.equal(f.x + frame.width, card.x + call.width - Math.round(10 * scale), 'input frame hugs the right padding');
+            for (const input of frame.children) {
+                const p = points.get(input.id);
+                assert(p.x >= f.x && p.x + input.width <= f.x + frame.width, 'input stays inside its frame');
+                assert(p.y >= f.y && p.y + input.height <= f.y + frame.height);
+            }
+        }
+        assert.equal(layout.lhat.definitionLinks.length, 6);
+        for (const link of layout.lhat.definitionLinks) {
+            const left = layout.children[link.column], right = layout.children[link.column + 1];
+            const input = all.find(node => node.id === link.target), p = points.get(input.id);
+            const lane = p.x + input.width + link.laneOffset;
+            assert(lane > points.get(left.id).x + left.width && lane < points.get(right.id).x, 'bend lies in the column gap');
+            assert(points.has(link.source), 'every input retains its actual expression/output endpoint');
         }
     }
     assert.equal(JSON.stringify(tree), before, 'layout never changes the source tree');
+});
+
+test('sibling calls share a column in source order and the next statement clears the whole tree', async () => {
+    const reply = branchedCalls(), before = JSON.stringify(reply);
+    for (const scale of [0.7, 1, 2]) {
+        const graph = stackWideDefinitions(await new ELK().layout(toElk(reply, { scale })), 5000);
+        const trees = graph.children.filter(node => node.lhat?.callTree), [tree, next] = trees;
+        const [first, second, third] = tree.children;
+        assert.deepEqual(tree.children.map(column => column.children.length), [1, 3, 2]);
+        assert.equal(first.y, second.y); assert.equal(second.y, third.y);
+        const [left, right, label] = second.children;
+        assert.equal(left.x, right.x); assert.equal(left.x, label.x);
+        assert(left.lhat.invocation && right.lhat.invocation);
+        assert.equal(reply.source.slice(left.lhat.start, left.lhat.end), 'left(a)');
+        assert.equal(reply.source.slice(right.lhat.start, right.lhat.end), 'right(b)');
+        assert(right.y > left.y + left.height); assert(label.y > right.y + right.height);
+        assert(tree.height >= second.height && tree.height > first.height);
+        assert(next.y > tree.y + tree.height, 'execution does not run into a deeper column');
+        const firstCard = first.children[0], nextColumn = next.children[0], nextCard = nextColumn.children[0];
+        const axis = tree.x + first.x + firstCard.x + firstCard.width / 2;
+        assert.equal(axis, next.x + nextColumn.x + nextCard.x + nextCard.width / 2, 'execution stays on the first call cards');
+        const start = graph.children.find(node => node.lhat?.synthetic === 'start');
+        assert.equal(start.x + start.width / 2, axis);
+        assert.equal(tree.lhat.definitionLinks.length, 5);
+    }
+    assert.equal(JSON.stringify(reply), before);
+});
+
+test('index expressions retain their own internal call scope outside the consuming call', async () => {
+    const source = 'f(items[g(a)])', n = fixture(source);
+    const inner = n('call', 'g(a)', { target: n('ident', 'g'), argument: [n('ident', 'a', undefined, source.indexOf('g('))] }, 0,
+        { callable: { inputs: [{ name: 'index', type: 'number^' }], outputs: ['number^'] } });
+    const index = n('index', 'items[g(a)]', { target: n('ident', 'items'), argument: [inner] });
+    const outer = n('call', source, { target: n('ident', 'f'), argument: [index] }, 0,
+        { callable: { inputs: [{ name: 'value', type: 'number^' }], outputs: ['number^'] } });
+    const graph = stackWideDefinitions(await new ELK().layout(toElk({ source, root: outer })), 5000), all = flatten(graph);
+    const trees = all.filter(node => node.lhat?.callTree), value = all.find(node => node.lhat?.kind === 'index');
+    assert.equal(trees.length, 2);
+    assert(flatten(value).includes(trees[1]), 'index keeps its own expression boundary');
+    assert.equal(trees[0].children[1].children[0].id, value.id);
+    assert.equal(value.lhat.definitionHandleY, value.height / 2);
+    assert.equal(trees[0].lhat.definitionLinks[0].source, value.id);
+});
+
+test('port-aligned call subtrees reserve descendant space and keep literal wires horizontal', async () => {
+    let source = '';
+    const expression = spec => {
+        const start = source.length;
+        let kind, fields, callable;
+        if (Array.isArray(spec)) {
+            const [name, ...args] = spec;
+            source += name;
+            const target = { kind: 'ident', start, end: source.length, line: 1, column: start + 1 };
+            source += '(';
+            const argument = args.map((arg, i) => { if (i) source += ', '; return expression(arg); });
+            source += ')';
+            kind = 'call'; fields = { target, argument };
+            callable = { inputs: args.map(() => ({ type: 'number^', name: 'x' })), outputs: ['number^'] };
+        } else {
+            source += spec;
+            kind = /^\d/.test(spec) ? 'int' : spec.startsWith('"') ? 'string' : 'ident';
+        }
+        return { kind, start, end: source.length, line: 1, column: start + 1, fields, callable, inferredType: 'number^' };
+    };
+    const first = expression(['expect', ['both', ['both', ['eq', 'a', '3'], ['eq', 'b', '10']], ['eq', 'values', '30']], '"label"']);
+    source += '\n';
+    const next = expression(['done']);
+    const statement = value => ({ ...value, kind: 'call-stmt', fields: { value }, callable: undefined });
+    const root = { kind: 'block', start: 0, end: source.length, line: 1, column: 1,
+        fields: { items: [statement(first), statement(next)] } };
+    const reply = { source, root };
+    for (const scale of [0.7, 1, 2]) {
+        const graph = stackWideDefinitions(await new ELK().layout(toElk(reply, { scale })), 5000);
+        const tree = flatten(graph).find(node => node.lhat?.callTree), points = new Map();
+        const following = graph.children.find(node => node.lhat?.callTree && node !== tree);
+        assert(following.y > tree.y + tree.height, 'growing a subtree moves the following statement too');
+        assert(graph.height >= following.y + following.height, 'the enclosing frame contains the shifted statement');
+        const index = (node, x = 0, y = 0) => {
+            x += node.x ?? 0; y += node.y ?? 0;
+            points.set(node.id, { x, y, portY: y + (node.lhat?.definitionHandleY ?? (node.height ?? 0) / 2), node });
+            node.children?.forEach(child => index(child, x, y));
+        };
+        index(tree);
+        const call = text => [...points.values()].find(p => p.node.lhat?.invocation && source.slice(p.node.lhat.start, p.node.lhat.end) === text);
+        const deep = call('eq(b, 10)'), lower = call('eq(values, 30)');
+        assert(lower.y + lower.node.height > deep.y + deep.node.height);
+        const b = [...points.values()].find(p => p.node.lhat?.kind === 'ident' && source.slice(p.node.lhat.start, p.node.lhat.end) === 'b');
+        const values = [...points.values()].find(p => p.node.lhat?.kind === 'ident' && source.slice(p.node.lhat.start, p.node.lhat.end) === 'values');
+        assert(values.y > deep.y + deep.node.height, 'later branch values clear the preceding branch card');
+        assert(b.y > deep.y, 'a leaf follows its input, rather than the top of its depth column');
+        for (const link of tree.lhat.definitionLinks) {
+            const from = points.get(link.source), to = points.get(link.target);
+            if (['ident', 'int'].includes(from.node.lhat?.kind)) {
+                assert.equal(from.portY, to.portY, 'non-colliding literal/identifier links are horizontal');
+            }
+        }
+        const lanes = tree.lhat.definitionLinks.map(link => {
+            const from = points.get(link.source), to = points.get(link.target);
+            return { x: to.x + to.node.width + link.laneOffset, top: Math.min(from.portY, to.portY), bottom: Math.max(from.portY, to.portY) };
+        }).filter(line => line.bottom > line.top);
+        lanes.forEach((line, i) => lanes.slice(i + 1).forEach(other => {
+            assert(Math.abs(line.x - other.x) > 0.01 || line.bottom <= other.top || other.bottom <= line.top,
+                'unrelated vertical wires never share an overlapping segment');
+        }));
+        for (const column of tree.children) for (const item of column.children) {
+            assert(item.y >= 0 && item.y + item.height <= column.height);
+            assert(column.y + column.height <= tree.height);
+            assert(column.x + column.width <= tree.width);
+        }
+    }
 });

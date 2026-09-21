@@ -84,6 +84,7 @@ export type ToWebview =
     | { type: "typeResult"; id: string; error?: string }
     | { type: "reorderResult"; id: string; error?: string }
     | { type: "statementResult"; id: string; error?: string }
+    | { type: "svgResult"; id: string; error?: string }
     | { type: "referenceResult"; id: string; version: number; target?: ReferenceTarget }
     /** The unit is not part of any checked root yet (06 の 4.3). */
     | { type: "pending" }
@@ -96,6 +97,7 @@ export type FromWebview =
     | { type: "ready" }
     /** Ask for the tree again -- after an edit, or after "pending". */
     | { type: "refresh" }
+    | { type: "saveSvg"; id: string; svg: string }
     | { type: "rename"; id: string; start: number; end: number; oldName: string; newName: string; version: number }
     | { type: "chooseType"; id: string; start: number; end: number; resultIndex?: number; version: number }
     | { type: "applyType"; id: string; typeText?: string }

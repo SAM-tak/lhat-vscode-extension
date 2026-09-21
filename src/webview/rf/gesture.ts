@@ -31,7 +31,9 @@ export function ownsHorizontalSlide(
     isContainer: boolean,
     usableWidth: number,
     width: number,
+    left = 0,
 ): boolean {
     return detachedValue ||
-        (topLevel && !layoutOnly && isContainer && usableWidth > 0 && width > usableWidth);
+        (topLevel && !layoutOnly && isContainer && usableWidth > 0 &&
+            (width > usableWidth || left + width > usableWidth));
 }
