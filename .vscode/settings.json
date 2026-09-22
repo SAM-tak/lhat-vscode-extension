@@ -1,3 +1,4 @@
 {
-    "lhat.serverAutoRestart": false
+    "lhat.serverAutoRestart": false,
+    "lhat.graph.language": "en"
 }
