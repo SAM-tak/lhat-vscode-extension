@@ -5,6 +5,9 @@ const path = require('node:path');
 const Module = require('node:module');
 const { buildSync } = require('esbuild');
 const ELK = require('elkjs/lib/elk.bundled.js');
+const { conditionalExpressions } = require('./condition-fixture.cjs');
+const { patternMatching } = require('./pattern-fixture.cjs');
+const { assignment } = require('./assignment-fixture.cjs');
 
 function load(file) {
     const entry = path.resolve(__dirname, '../src/webview', file);
@@ -25,6 +28,10 @@ const japanese = {
     table: ja.Table,
     input: ja.Input, output: ja.Output, noOutput: ja['No output'], missingInput: ja['Missing input'],
     call: ja.Call,
+    condition: ja.Condition, conditionalBranch: ja['Conditional Branch'], conditionalSelection: ja['Conditional Selection'],
+    pattern: ja.Pattern, patternBranch: ja['Pattern Matching Branch'], patternSelection: ja['Pattern Matching Selection'],
+    assignments: Object.fromEntries(Object.entries(ENGLISH_VOCABULARY.assignments).map(([operator, label]) => [operator, ja[label]])),
+    nilCheckedAssignment: ja['{0} (nil-checked)'],
     hats: Object.fromEntries(Object.entries(HATS).map(([word, entry]) => [word, ja[entry.text]])),
     outer: ja['Outer {0}: {1}'], levels: ja['{0} ({1} levels)'] };
 const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
@@ -48,6 +55,112 @@ test('VS Code bundles select Japanese, default English and per-message English f
     assert.deepEqual(graphVocabulary(), ENGLISH_VOCABULARY);
 });
 
+test('reassignment and all compound operations have consistent translated titles, including nil-checked forms', () => {
+    for (const vocabulary of [ENGLISH_VOCABULARY, japanese]) for (const [operator, title] of Object.entries(vocabulary.assignments)) {
+        for (const guarded of [false, true]) {
+            const reply = assignment((guarded ? '?' : '') + operator, { lowered: true });
+            const all = flatten(toElk(reply, { vocabulary }));
+            const group = all.find(node => node.lhat?.kind === 'reassign-row');
+            const expected = guarded ? vocabulary.nilCheckedAssignment.replace('{0}', title) : title;
+            assert.equal(display(group), expected);
+            assert.equal(titleOf(reply.root, reply.source, vocabulary), expected);
+            const folded = flatten(toElk(reply, { vocabulary, folds: { [group.lhat.foldKey]: true } })).find(node => node.lhat?.collapsed);
+            assert.equal(display(folded), expected);
+            assert.equal(group.lhat.labelParts[0].source, (guarded ? '?' : '') + operator);
+        }
+    }
+});
+
+test('conditions and patterns initially fold, while explicit unfolds and Unfold All take precedence', () => {
+    for (const reply of [conditionalExpressions(), patternMatching(), patternMatching({ expression: true })]) {
+        const initial = flatten(toElk(reply, { collapse: true }));
+        const frames = initial.filter(node => ['condition', 'pattern'].includes(node.lhat?.kind));
+        assert.equal(frames.length, 2);
+        assert(frames.every(node => node.lhat.collapsed && node.lhat.foldedSummary && !node.children));
+        const key = frames[0].lhat.foldKey;
+        const individual = flatten(toElk(reply, { collapse: true, folds: { [key]: false } }));
+        assert(individual.find(node => node.lhat?.foldKey === key).children.length > 0);
+        assert(individual.find(node => node.lhat?.foldKey === frames[1].lhat.foldKey).lhat.collapsed);
+        const all = flatten(toElk(reply, { collapse: false, collapseAll: false, folds: {} }));
+        assert(all.filter(node => ['condition', 'pattern'].includes(node.lhat?.kind))
+            .every(node => !node.lhat.collapsed && node.children.length > 0));
+    }
+});
+
+test('if statements and expressions have distinct bilingual titles and structured, foldable conditions', async () => {
+    const reply = conditionalExpressions(), original = JSON.stringify(reply);
+    for (const vocabulary of [ENGLISH_VOCABULARY, japanese]) for (const scale of [0.7, 1, 2]) {
+        const options = { vocabulary, scale, collapse: false };
+        const graph = stackWideDefinitions(await new ELK().layout(toElk(reply, options)), 5000);
+        const all = flatten(graph), statement = all.find(n => n.lhat?.kind === 'if-stmt'), expression = all.find(n => n.lhat?.kind === 'if-expr');
+        assert.equal(display(statement), vocabulary.conditionalBranch);
+        assert.equal(display(expression), vocabulary.conditionalSelection);
+        for (const kind of ['if-stmt', 'if-expr']) {
+            const ast = kind === 'if-stmt' ? reply.root.fields.items[0] : reply.root.fields.items[1].fields.values[0];
+            const mapped = kind === 'if-stmt' ? statement : expression;
+            assert.equal(titleOf(ast, reply.source, vocabulary), display(mapped));
+            const folded = flatten(toElk(reply, { ...options, folds: { [mapped.lhat.foldKey]: true } })).find(n => n.lhat?.foldKey === mapped.lhat.foldKey);
+            assert(folded.lhat.collapsed);
+            assert.equal(display(folded), display(mapped));
+        }
+        const conditions = all.filter(n => n.lhat?.condition);
+        assert.equal(conditions.length, 2, 'an else arm needs no empty condition box');
+        for (const frame of conditions) {
+            assert.equal(display(frame), vocabulary.condition);
+            assert(frame.lhat.noExecutionHandles && frame.lhat.foldable);
+            assert(frame.children[0].lhat.callTree);
+            assert(flatten(frame).filter(n => n.lhat?.invocation).every(n => n.lhat.noExecutionHandles));
+            assert(frame.width >= frame.children[0].x + frame.children[0].width);
+            assert(frame.height >= frame.children[0].y + frame.children[0].height);
+            const folded = flatten(toElk(reply, { ...options, folds: { [frame.lhat.foldKey]: true } }));
+            const hidden = folded.find(n => n.lhat?.foldKey === frame.lhat.foldKey);
+            assert(hidden.lhat.collapsed && !hidden.children);
+            assert.equal(display(hidden), vocabulary.condition);
+            assert.equal(hidden.lhat.foldedSummary, reply.source.slice(frame.lhat.start, frame.lhat.end));
+            assert(folded.some(n => n.lhat?.condition && n.lhat.foldKey !== frame.lhat.foldKey && !n.lhat.collapsed));
+        }
+    }
+    assert.equal(JSON.stringify(reply), original);
+});
+
+test('pattern trees have bilingual captions and horizontal statement arms or vertical expression alternatives', async () => {
+    for (const expression of [false, true]) for (const vocabulary of [ENGLISH_VOCABULARY, japanese]) for (const scale of [0.7, 1, 2]) {
+        const reply = patternMatching({ expression }), original = JSON.stringify(reply);
+        const options = { vocabulary, scale, collapse: false };
+        const graph = stackWideDefinitions(await new ELK().layout(toElk(reply, options)), 5000);
+        const all = flatten(graph), match = all.find(n => n.lhat?.kind === 'for');
+        assert.equal(display(match), expression ? vocabulary.patternSelection : vocabulary.patternBranch);
+        assert.equal(titleOf(reply.root, reply.source, vocabulary), display(match));
+        const junction = all.find(n => n.lhat?.kind === (expression ? 'if-expr' : 'if-stmt'));
+        assert(junction.lhat.layoutOnly, 'lowered IF adds no redundant visible box');
+        assert.equal(junction.layoutOptions['elk.direction'], expression ? 'DOWN' : 'RIGHT');
+        assert.equal(junction.children.length, 3);
+        for (let i = 1; i < junction.children.length; i++) {
+            const before = junction.children[i - 1], after = junction.children[i];
+            assert(expression ? after.y >= before.y + before.height : after.x >= before.x + before.width);
+        }
+        const patterns = all.filter(n => n.lhat?.kind === 'pattern');
+        assert.equal(patterns.length, 2, 'the default arm has no fabricated pattern');
+        assert(patterns.every(n => display(n) === vocabulary.pattern && n.lhat.noExecutionHandles && n.lhat.foldable));
+        assert.equal(flatten(patterns[0]).filter(n => n.lhat?.invocation).length, 2, 'the pattern retains its operator and nested call');
+        assert(flatten(patterns[1]).some(n => n.lhat?.literal?.value === '3'), 'literal patterns use the normal value node');
+        for (const frame of patterns) {
+            assert.equal(frame.lhat.condition.axis, expression ? 'horizontal' : undefined);
+            assert(frame.width >= frame.children[0].x + frame.children[0].width);
+            assert(frame.height >= frame.children[0].y + frame.children[0].height);
+            const folded = flatten(toElk(reply, { ...options, folds: { [frame.lhat.foldKey]: true } }));
+            const hidden = folded.find(n => n.lhat?.foldKey === frame.lhat.foldKey);
+            assert(hidden.lhat.collapsed && !hidden.children);
+            assert.equal(display(hidden), vocabulary.pattern);
+            assert.equal(hidden.lhat.foldedSummary, reply.source.slice(frame.lhat.start, frame.lhat.end));
+        }
+        const foldedMatch = flatten(toElk(reply, { ...options, folds: { [match.lhat.foldKey]: true } })).find(n => n.lhat?.kind === 'for');
+        assert(foldedMatch.lhat.collapsed);
+        assert.equal(display(foldedMatch), display(match));
+        assert.equal(JSON.stringify(reply), original);
+    }
+});
+
 test('type menu spellings use the graph vocabulary and structural tables need only braces', () => {
     for (const [vocabulary, number, text, fn, proc] of [
         [ENGLISH_VOCABULARY, 'Number', 'Text', 'Function', 'Procedure'],
@@ -66,6 +179,27 @@ test('type menu spellings use the graph vocabulary and structural tables need on
         const source = 't^{ count:number^ }';
         const root = fixture(source)('table-type', source);
         assert.equal(labelText(createLabeler(source, root, vocabulary)(root, [])), `{ count:${number} }`);
+    }
+});
+
+test('folded conditions and patterns keep a separate title and textual preview, including literal-only predicates', () => {
+    for (const pattern of [false, true]) for (const [kind, code] of [
+        ['binary', 'foo = 1'], ['binary', '"foo", "bar"'], ['string', '"日本語"'], ['int', '123'], ['hat-ident', 'true^'],
+    ]) for (const scale of [0.7, 1, 2]) {
+        const source = pattern ? `for^ subject { when^ ${code}: print("ok") }` : `if^ ${code} { print("ok") }`;
+        const n = fixture(source), predicate = n(kind, code);
+        const body = n('block', 'print("ok")', { items: [n('call-stmt', 'print("ok")')] });
+        const clause = n('if-clause', `${pattern ? 'when^ ' : 'if^ '}${code}${pattern ? ':' : ' {'}`, { condition: predicate, body });
+        const conditional = n('if-stmt', pattern ? source.slice(source.indexOf('{')) : source, { items: [clause] });
+        const root = pattern ? n('for', source, { focus: [n('ident', 'subject')], body: conditional }) : conditional;
+        const role = pattern ? 'pattern' : 'condition', key = `${role}:${predicate.start}:${predicate.end}`;
+        const graph = toElk({ source, root }, { vocabulary: japanese, scale, folds: { [key]: true } });
+        const folded = flatten(graph).find(node => node.lhat?.foldKey === key);
+        assert.equal(display(folded), pattern ? 'パターン' : '条件');
+        assert.equal(folded.lhat.foldedSummary, code);
+        assert(!folded.lhat.literal && !folded.children, 'a folded literal is a text preview, not an editable literal slot');
+        assert(folded.height >= Math.round(54 * scale));
+        assert(folded.width >= Math.ceil(labelColumns(code) * 7.2 * scale), 'the preview is included in layout width');
     }
 });
 

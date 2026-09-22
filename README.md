@@ -46,10 +46,37 @@ the bundled server, so it is also the way to try a locally built server.
 Open the Command Palette and run **L^: Show Graph View** to switch a `.lh`
 file to its graph view. Run **L^: Show Source** to switch back. Set
 `lhat.graph.openBeside` to `true` when the graph should open in a split editor.
+**PageUp / PageDown** scroll vertically by about one screen, except while editing text or using a menu.
 
 Calls and operators place argument expressions in columns by depth. Each column
 starts at the same top and retains source order. Input groups sit at the right
 of each call card, with bent definition lines connecting them to the values.
+
+Reassignments and compound assignments use vertical target/value pairs, like
+`let^` / `var^`, with a definition line for each pair. The heading identifies
+the operation (`Reassignment`, `Addition Assignment`, etc.). All eight compound
+operators and their nil-checked `?` forms are supported; compiler-generated
+compound-operation trees are displayed using the written RHS only.
+
+Source-backed non-leaf nodes, including calls, operators, index expressions and
+control structures, can be folded with their arrow button or **Toggle Fold/Unfold**
+in the right-click menu. **Fold All / Unfold All** also covers these nodes.
+Folding changes only the graph view; input/output slots and layout-only groups
+do not have independent folds.
+
+`if^` statements are labelled **Conditional Branch**, and `if^` expressions
+**Conditional Selection**. Their conditions are expression graphs inside
+independently foldable **Condition** boxes.
+Pattern matches use **Pattern Matching Branch** for statements, with arms arranged
+horizontally, and **Pattern Matching Selection** for expressions, with alternatives
+arranged vertically. Each **Pattern** box contains an independently foldable
+expression tree; the default arm has no pattern box.
+Statement branches without an `else` show a no-match route around their contents.
+Completed arms merge below the branch, and execution lines continue to statement
+addition buttons, including the start-to-add line in an empty document.
+`return^` and `panic^` end their execution paths without an outgoing line or a
+statement append button. Already-written code after an unconditional end remains
+visible, but is not connected to the execution flow.
 
 For illustrations, use **SVG…** in the graph toolbar, choose whether to include
 the background and editing controls, and select **Save SVG**. The export covers

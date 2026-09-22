@@ -1,12 +1,16 @@
 import type { AstNode, SourceSpan, TypeSite } from "../protocol";
 import { typeSites } from "../graphTypes";
 import { HATS, type LabelCategory } from "./vocabulary";
+import { ASSIGNMENT_LABELS, assignmentOperator } from "../graphAssignments";
 
 export type LabelRole = "variableDefinition" | "mutableVariableDefinition" |
     "variableDeclaration" | "mutableVariableDeclaration" | "string" | "number";
 export type Vocabulary = Record<LabelRole, string> & {
     hats?: Record<string, string>; outer?: string; levels?: string; tableDefinition?: string; table?: string;
     input?: string; output?: string; noOutput?: string; missingInput?: string; call?: string;
+    condition?: string; conditionalBranch?: string; conditionalSelection?: string;
+    pattern?: string; patternBranch?: string; patternSelection?: string;
+    assignments?: Record<string, string>; nilCheckedAssignment?: string;
 };
 export const ENGLISH_VOCABULARY: Vocabulary = {
     variableDefinition: "Variable Definition", mutableVariableDefinition: "Mutable Variable Definition",
@@ -17,6 +21,9 @@ export const ENGLISH_VOCABULARY: Vocabulary = {
     tableDefinition: "Table type definition",
     table: "Table",
     input: "Input", output: "Output", noOutput: "No output", missingInput: "Missing input", call: "Call",
+    condition: "Condition", conditionalBranch: "Conditional Branch", conditionalSelection: "Conditional Selection",
+    pattern: "Pattern", patternBranch: "Pattern Matching Branch", patternSelection: "Pattern Matching Selection",
+    assignments: ASSIGNMENT_LABELS, nilCheckedAssignment: "{0} (nil-checked)",
 };
 export interface RenameTarget { start: number; end: number; value: string }
 export const renameTargetKey = (name: RenameTarget): string => `${name.start}:${name.end}`;
@@ -197,6 +204,25 @@ export function createLabeler(source: string, root: AstNode, vocabulary: Vocabul
     const tokens = semanticTokens(source, root);
     const sites = typeSites({ source, root });
     return (node: AstNode, drawn: AstNode[], max = 48, typed = false): DisplayLabel => {
+        if (node.kind === "reassign") {
+            const operator = assignmentOperator(node, source), base = operator?.base ?? ":=";
+            let text = vocabulary.assignments?.[base] ?? ASSIGNMENT_LABELS[base];
+            if (operator?.nilChecked) text = (vocabulary.nilCheckedAssignment ?? ENGLISH_VOCABULARY.nilCheckedAssignment!).replace("{0}", text);
+            return { text, parts: [{ text, role: "reassignment", category: "declaration", source: operator?.text ?? ":=" }] };
+        }
+        const body = node.fields?.body;
+        if (node.kind === "for" && body && !Array.isArray(body) &&
+            ((body.kind === "if-stmt" && source[body.start] === "{") ||
+                (body.kind === "if-expr" && source[body.start] === ":"))) {
+            const role = body.kind === "if-stmt" ? "patternBranch" : "patternSelection";
+            const text = vocabulary[role] ?? ENGLISH_VOCABULARY[role]!;
+            return { text, parts: [{ text, role, category: "control", source: "for^" }] };
+        }
+        if ((node.kind === "if-stmt" || node.kind === "if-expr") && source.startsWith("if^", node.start)) {
+            const role = node.kind === "if-stmt" ? "conditionalBranch" : "conditionalSelection";
+            const text = vocabulary[role] ?? ENGLISH_VOCABULARY[role]!;
+            return { text, parts: [{ text, role, category: "control", source: "if^" }] };
+        }
         if (node.kind === "table") return { text: "Table", parts: [
             { text: vocabulary.table ?? ENGLISH_VOCABULARY.table!, role: "table", category: "value" },
         ] };

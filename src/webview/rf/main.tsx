@@ -125,6 +125,9 @@ interface BoxData extends Record<string, unknown>, SlideData {
     slideOwner: boolean;
     isStart: boolean;
     isAdd: boolean;
+    executionAppend: boolean;
+    executionMerge: boolean;
+    executionTerminal: boolean;
     isReturn: boolean;
     isCondition: boolean;
     noExecutionHandles: boolean;
@@ -171,6 +174,8 @@ interface BoxData extends Record<string, unknown>, SlideData {
     flashed: boolean;
     /** Whether this one can be folded shut, which is what shows the button. */
     foldable: boolean;
+    foldKey?: string;
+    foldedSummary?: string;
     /** The button: fold this one node, or open it, whatever the bar says. */
     onFold: (data: BoxData) => void;
 }
@@ -281,6 +286,7 @@ function toFlow(
         parentX: number,
         inheritedReorder?: ReorderSite,
         inheritedStatement?: StatementSite,
+        unreachable = false,
     ): void => {
         for (const c of parent.children ?? []) {
             const topLevel = parentId === undefined;
@@ -411,9 +417,12 @@ function toFlow(
                     isContainer,
                     isStart,
                     isAdd,
+                    executionAppend: c.lhat?.executionAppend === true,
+                    executionMerge: !!c.lhat?.executionBranchExits?.length || c.lhat?.executionBypass === true,
+                    executionTerminal: c.lhat?.executionTerminal === true,
                     isReturn,
                     isCondition,
-                    noExecutionHandles: c.lhat?.noExecutionHandles === true,
+                    noExecutionHandles: c.lhat?.noExecutionHandles === true || unreachable || c.lhat?.unreachable === true,
                     literal: c.lhat?.literal,
                     literalTypeLabel: c.lhat?.literalTypeLabel,
                     inline: c.lhat?.inline,
@@ -437,6 +446,8 @@ function toFlow(
                     flashed: c.lhat !== undefined &&
                         slideKeyOf(c.lhat) === flashKey,
                     foldable: c.lhat?.foldable === true,
+                    foldKey: c.lhat?.foldKey,
+                    foldedSummary: c.lhat?.foldedSummary,
                     // Counter the base-left landing and horizontal slide,
                     // clamping to the frame if it moves past the line's axis.
                     flowHandleX: baseShift !== 0 || ownDx !== 0
@@ -463,7 +474,7 @@ function toFlow(
 
             if (isContainer) {
                 walk(c, c.id, depth + (layoutOnly ? 0 : 1), slide, parentX + x,
-                    layoutOnly ? reorder : undefined, statement);
+                    layoutOnly ? reorder : undefined, statement, unreachable || c.lhat?.unreachable === true);
             }
         }
         for (const e of parent.edges ?? []) {
@@ -472,6 +483,7 @@ function toFlow(
             const target = endpoints.get(e.targets[0]);
             if (source === undefined || target === undefined) continue;
             const definition = e.definition === true;
+            if (!definition && (unreachable || source.lhat?.executionTerminal || source.lhat?.unreachable || target.lhat?.unreachable)) continue;
             if (definition && source.lhat?.definitionOutputs?.length === 0) continue;
             (definition ? definitions : exec).push({
                 id: `${definition ? "d" : "x"}__${e.id}`,
@@ -492,7 +504,7 @@ function toFlow(
                 sourceHandle: "definition-out", targetHandle: "definition-in",
                 selectable: false, focusable: false });
         }
-        if (parentId !== undefined && !parent.lhat?.disabled) {
+        if (parentId !== undefined && !parent.lhat?.disabled && !unreachable) {
             for (const entry of parent.lhat?.executionBranches ?? []) {
                 const target = endpoints.get(entry);
                 if (target === undefined) continue;
@@ -504,6 +516,26 @@ function toFlow(
                     data: { branchOffset: parent.lhat?.branchOffset },
                     selectable: false, focusable: false,
                 });
+            }
+            for (const exit of parent.lhat?.executionBranchExits ?? []) {
+                const source = endpoints.get(exit);
+                if (!source) continue;
+                exec.push({ ...routedExecutionEdge, markerEnd: undefined,
+                    id: `x__${parent.id}__merge__${exit}`,
+                    source: executionEnd(source, "Exit").id, target: parent.id,
+                    sourceHandle: "flow-out", targetHandle: "flow-merge",
+                    selectable: false, focusable: false });
+            }
+            if (parent.lhat?.executionBypass) {
+                const rendered = nodes.find(node => node.id === parent.id);
+                const width = parent.width ?? 0;
+                exec.push({ ...routedExecutionEdge, type: "execution-bypass", markerEnd: undefined,
+                    id: `x__${parent.id}__bypass`, source: parent.id, target: parent.id,
+                    sourceHandle: "flow-branch", targetHandle: "flow-merge",
+                    data: { branchOffset: parent.lhat.branchOffset,
+                        laneInset: parent.lhat.executionLaneInset,
+                        laneOffset: width - (parent.lhat.executionLaneInset ?? 12) - (rendered?.data.flowHandleX ?? width / 2) },
+                    selectable: false, focusable: false });
             }
         }
         if (parentId !== undefined) {
@@ -845,6 +877,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         data.branchOffset === undefined && data.definitionBranchOffset === undefined) return null;
 
     const classes = ["box"];
+    if (data.foldedSummary !== undefined) classes.push("has-fold-summary");
     if (data.ioGroup) classes.push("io-group", `io-${data.ioGroup}`);
     if (data.isCall) classes.push("call-node");
     if (data.isStart) classes.push("start-node");
@@ -869,7 +902,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         <>
             {data.scrollSurface && <div className="call-tree-surface"
                 data-source-start={data.start} data-source-end={data.sourceEnd}
-                data-vscode-context={statements.context(data.statement)}
+                data-vscode-context={statements.context(data.statement, data)}
                 onPointerDown={onPointerDown} onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp} onPointerCancel={onPointerCancel}
                 onAuxClick={onAuxClick} />}
@@ -887,7 +920,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
             {!data.layoutOnly && <div
                 className={[...classes, data.inline ? "inline-box" : "", data.operator ? "operator-box" : "", data.decoration ? "decoration" : ""].join(" ")}
                 data-source-start={data.start} data-source-end={data.sourceEnd}
-                data-vscode-context={statements.context(data.statement)}
+                data-vscode-context={statements.context(data.statement, data)}
                 data-reference-start={leafSymbol?.start} data-reference-end={leafSymbol?.end}
                 data-reorder-list={data.reorder?.list}
                 data-reorder-kind={data.reorder?.kind}
@@ -923,8 +956,9 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                         type="button"
                         className="foldbtn"
                         title={data.collapsed
-                            ? "Unfold this definition"
-                            : "Fold this definition shut"}
+                            ? l10n.t("Unfold this node")
+                            : l10n.t("Fold this node")}
+                        aria-expanded={!data.collapsed}
                         onMouseDown={keepFocusOff}
                         onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
@@ -962,10 +996,11 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                     : <span key={i} className="semantic-label" data-role={part.role} data-category={part.category}
                         data-reference-start={part.symbol?.start} data-reference-end={part.symbol?.end}
                         title={part.source}>{part.text}</span>) ?? data.label}</span></div>}
+                {data.foldedSummary !== undefined && <div className="fold-summary">{data.foldedSummary}</div>}
             </div>}
             {/* Execution ports counter the box's horizontal slide, keeping
                 the outer execution chain on the document's axis. */}
-            {!data.isAdd && !data.isCondition && !data.noExecutionHandles && data.definitionRole !== "value" &&
+            {(!data.isAdd || data.executionAppend) && !data.isCondition && !data.noExecutionHandles && data.definitionRole !== "value" &&
                 data.definitionBranchOffset === undefined && (
                 <>
                     {!data.isStart && <Handle type="target" position={Position.Top} id="flow-in"
@@ -978,10 +1013,13 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                                 style={data.flowHandleX !== undefined
                                     ? { left: data.flowHandleX } : undefined} />
                     )}
-                    <Handle type="source" position={Position.Bottom} id="flow-out"
+                    {data.executionMerge && <Handle type="target" position={Position.Bottom} id="flow-merge"
+                        className="flowhandle" isConnectable={false}
+                        style={data.flowHandleX !== undefined ? { left: data.flowHandleX } : undefined} />}
+                    {!data.executionTerminal && <Handle type="source" position={Position.Bottom} id="flow-out"
                             className="flowhandle" isConnectable={false}
                             style={data.flowHandleX !== undefined
-                                ? { left: data.flowHandleX } : undefined} />
+                                ? { left: data.flowHandleX } : undefined} />}
                 </>
             )}
             {data.definitionRole === "declaration" && (
@@ -1019,6 +1057,19 @@ function ExecutionEdge({ id, sourceX, sourceY, targetX, targetY, style, markerEn
     return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
 }
 
+function ExecutionBypassEdge({ id, sourceX, sourceY, targetX, targetY, style, data }: EdgeProps) {
+    const inset = typeof data?.laneInset === "number" ? data.laneInset : 12;
+    const top = sourceY + (typeof data?.branchOffset === "number" ? data.branchOffset : 18);
+    const bottom = targetY - inset;
+    const lane = sourceX + (typeof data?.laneOffset === "number" ? data.laneOffset : inset);
+    const radius = Math.max(0, Math.min(6, (bottom - top) / 2, (lane - sourceX) / 2, (lane - targetX) / 2));
+    const path = `M ${sourceX} ${sourceY} V ${top - radius} Q ${sourceX} ${top} ${sourceX + radius} ${top}` +
+        ` H ${lane - radius} Q ${lane} ${top} ${lane} ${top + radius}` +
+        ` V ${bottom - radius} Q ${lane} ${bottom} ${lane - radius} ${bottom}` +
+        ` H ${targetX + radius} Q ${targetX} ${bottom} ${targetX} ${bottom + radius} V ${targetY}`;
+    return <BaseEdge id={id} path={path} style={style} />;
+}
+
 // The branch output shares its top input position, but heads down into
 // the box. Every arm uses one header lane, regardless of its target's depth.
 function BranchEdge({ id, sourceX, sourceY, targetX, targetY, style, markerEnd, data }: EdgeProps) {
@@ -1051,7 +1102,7 @@ function CallDefinitionEdge({ id, sourceX, sourceY, targetX, targetY, style, mar
     return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
 }
 
-const edgeTypes: EdgeTypes = { execution: ExecutionEdge, branch: BranchEdge, "definition-branch": DefinitionBranchEdge, "call-definition": CallDefinitionEdge };
+const edgeTypes: EdgeTypes = { execution: ExecutionEdge, "execution-bypass": ExecutionBypassEdge, branch: BranchEdge, "definition-branch": DefinitionBranchEdge, "call-definition": CallDefinitionEdge };
 
 // ---------------------------------------------------------------------------
 // The app
@@ -1121,7 +1172,8 @@ function App() {
     // node's own, this alone says nothing about what is on screen.
     const [foldByDefault, setFoldByDefault] = useState(true);
     // What the reader folded or unfolded one at a time, over that default.
-    const [folds, setFolds] = useState<Record<number, boolean>>({});
+    const [folds, setFolds] = useState<Record<string, boolean>>({});
+    const [collapseAll, setCollapseAll] = useState(false);
     const [trail, setTrail] = useState<number[]>([]);
     const [slides, setSlides] = useState<Slides>({});
     const slidesRef = useRef(slides);
@@ -1231,6 +1283,7 @@ function App() {
             literalValues: literalSizes.sourceKey === sourceKey ? literalSizes.values : undefined,
             nameValues: nameSizes.sourceKey === sourceKey ? nameSizes.values : undefined,
             collapse: foldByDefault,
+            collapseAll,
             folds,
             root: view.path.length > 0 ? view.root : undefined,
             scale,
@@ -1250,7 +1303,7 @@ function App() {
             if (!stale) setNote(l10n.t("Graph layout failed: {0}", reason instanceof Error ? reason.message : String(reason)));
         });
         return () => { stale = true; request.cancel(); };
-    }, [reply, view, foldByDefault, folds, scale, viewWidth, vocabulary, literalSizes, nameSizes, sourceKey, layoutClient]);
+    }, [reply, view, foldByDefault, collapseAll, folds, scale, viewWidth, vocabulary, literalSizes, nameSizes, sourceKey, layoutClient]);
 
     // What the bar's button says and does, both from the picture itself. One
     // definition still folded is enough to make the press an unfold: the way
@@ -1459,9 +1512,8 @@ function App() {
     // is now comes from the bar's default as often as from an earlier press,
     // so the entry records the state asked for, not a flip of one held here.
     const onFold = useCallback((data: BoxData) => {
-        if (data.start === undefined) return;
-        const start = data.start;
-        setFolds((f) => ({ ...f, [start]: !data.collapsed }));
+        if (!data.foldable || !data.foldKey) return;
+        setFolds((f) => ({ ...f, [data.foldKey!]: !data.collapsed }));
     }, []);
 
     // The visual gesture never carries a coordinate. It names two source
@@ -1489,6 +1541,17 @@ function App() {
             onSlide, onEnter, onReveal, onFold, onSpring,
             onDocumentStart, onDocumentSlide, onDocumentRelease, onDocumentSpring, onReorder]);
     const nodes = flow.nodes;
+    // One listener for the view; context-menu actions use the same callback as
+    // buttons and validate the currently displayed node/version before acting.
+    useEffect(() => {
+        const receive = ({ data }: MessageEvent<ToWebview>) => {
+            if (data.type !== "toggleFold" || data.version !== version || layoutPending || laidSourceKey !== sourceKey) return;
+            const node = nodes.find(node => node.data.foldable && node.data.foldKey === data.key);
+            if (node) onFold(node.data);
+        };
+        window.addEventListener("message", receive);
+        return () => window.removeEventListener("message", receive);
+    }, [nodes, version, layoutPending, laidSourceKey, sourceKey, onFold]);
     const updateNodeInternals = useUpdateNodeInternals();
     const handleGeometry = useRef(new Map<string, string>());
     useEffect(() => {
@@ -1530,6 +1593,25 @@ function App() {
             max: 8,
         };
     }, [laid, viewHeight]);
+
+    // Page through the document with a little overlap. One view-level listener
+    // also works when the canvas background (rather than a node) has focus.
+    useEffect(() => {
+        const page = (event: KeyboardEvent) => {
+            if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey ||
+                (event.key !== "PageUp" && event.key !== "PageDown")) return;
+            const target = event.target instanceof Element ? event.target : document.activeElement;
+            if (target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="menu"], [role="listbox"], .nokey')) return;
+            const height = flowRef.current?.clientHeight ?? 0;
+            if (!height) return;
+            event.preventDefault();
+            event.stopPropagation();
+            onDocumentStart();
+            onDocumentSlide((event.key === "PageUp" ? 1 : -1) * height * 0.9);
+        };
+        document.addEventListener("keydown", page);
+        return () => document.removeEventListener("keydown", page);
+    }, [onDocumentStart, onDocumentSlide]);
 
     // 8.6: dragging the background scrolls the document -- vertically only,
     // like everything global here -- and keeps its momentum when let go.
@@ -1730,6 +1812,7 @@ function App() {
                     onMouseDown={keepFocusOff}
                     onClick={() => {
                         setFoldByDefault(folded === 0);
+                        setCollapseAll(folded === 0);
                         setFolds({});
                         place.current = true;
                     }}

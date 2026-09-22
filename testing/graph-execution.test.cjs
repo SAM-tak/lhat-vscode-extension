@@ -7,6 +7,8 @@ const vm = require('node:vm');
 const { buildSync, transformSync } = require('esbuild');
 const ELK = require('elkjs/lib/elk.bundled.js');
 const { branchedCalls } = require('./call-tree-fixture.cjs');
+const { branchFlow, terminalFlow } = require('./condition-fixture.cjs');
+const { patternMatching } = require('./pattern-fixture.cjs');
 
 const mappingPath = path.resolve(__dirname, '../src/webview/map.ts');
 const mapping = new Module(mappingPath);
@@ -100,7 +102,7 @@ test('fitting expressions are centred as a whole; oversized expressions start le
 });
 
 const labelsOfEdges = flow => {
-    const labels = new Map(flow.nodes.map(n => [n.id, n.data.isStart ? '<start>' : n.data.label]));
+    const labels = new Map(flow.nodes.map(n => [n.id, n.data.isStart ? '<start>' : n.data.isAdd ? '<add>' : n.data.label]));
     return Array.from(flow.exec, e => `${labels.get(e.source)} -> ${labels.get(e.target)}`);
 };
 
@@ -130,7 +132,8 @@ test('an empty file has a source-free start and append control at every font sca
             assert.equal(start.data.end, undefined);
             assert.equal(start.data.foldable, false);
             assert.equal(start.data.collapsed, false);
-            assert.equal(flow.exec.length, 0);
+            assert.deepEqual(labelsOfEdges(flow), ['<start> -> <add>']);
+            assert(flow.nodes[1].data.executionAppend);
         }
     }
 });
@@ -146,7 +149,7 @@ test('the first top-level statement always has an incoming line; disabled statem
     ] });
     const { graph, flow } = await draw({ source, root });
     assert.equal(starts(graph).length, 1);
-    assert.deepEqual(labelsOfEdges(flow), ['<start> -> let^ x', 'let^ x -> last()']);
+    assert.deepEqual(labelsOfEdges(flow).sort(), ['<start> -> let^ x', 'let^ x -> last()', 'last() -> <add>'].sort());
     for (const edge of flow.exec) {
         assert.equal(edge.selectable, false);
         assert.equal(edge.deletable, false);
@@ -158,7 +161,7 @@ test('the first top-level statement always has an incoming line; disabled statem
     assert.equal(flow.definitions.length, 1);
     assert(flow.nodes.every(node => node.connectable === false));
     const only = n('block', 'last()', { items: [n('call-stmt', 'last()')] });
-    assert.deepEqual(labelsOfEdges((await draw({ source, root: only })).flow), ['<start> -> last()']);
+    assert.deepEqual(labelsOfEdges((await draw({ source, root: only })).flow), ['<start> -> last()', 'last() -> <add>']);
 });
 
 test('functions and procedures have independent starts, including empty bodies and drill-down', async () => {
@@ -182,6 +185,7 @@ test('functions and procedures have independent starts, including empty bodies a
     assert(functions.every(n => n.lhat.executionEntry === undefined), 'callable bodies remain independent chains');
     assert.deepEqual(labelsOfEdges(open.flow).sort(), [
         '<start> -> let^ f', 'let^ f -> let^ p', '<start> -> one()', 'one() -> two()',
+        '<start> -> <add>', 'let^ p -> <add>', 'two() -> <add>',
     ].sort());
     assert.equal(starts((await draw(reply, { collapse: true })).graph).length, 1, 'folded contents are hidden');
     const drilled = await draw(reply, { root: fn, collapse: true, folds: { [fn.start]: true } });
@@ -189,10 +193,10 @@ test('functions and procedures have independent starts, including empty bodies a
     const drilledFunction = flatten(drilled.graph).find(n => n.lhat?.kind === 'func');
     assert.equal(drilledFunction.children[0].lhat.kind, 'signature', 'drill-down retains the editable declaration');
     assert.equal(drilledFunction.children[1].lhat.synthetic, 'start', 'the body begins directly below the signature');
-    assert.deepEqual(labelsOfEdges(drilled.flow), ['<start> -> one()', 'one() -> two()']);
+    assert.deepEqual(labelsOfEdges(drilled.flow), ['<start> -> one()', 'one() -> two()', 'two() -> <add>']);
     const empty = await draw(reply, { root: proc, collapse: true });
     assert.equal(starts(empty.graph).length, 1);
-    assert.equal(empty.flow.exec.length, 0);
+    assert.deepEqual(labelsOfEdges(empty.flow), ['<start> -> <add>']);
     assert(empty.flow.nodes.some(n => n.data.isStart));
     assert(flatten(empty.graph).some(n => n.lhat?.kind === 'signature'));
     assert.equal(empty.flow.nodes.filter(n => n.data.isStart || n.data.isAdd).length, 4,
@@ -219,8 +223,8 @@ test('only the immediate callable body is hoisted; nested blocks, statements and
     const inner = flatten(graph).find(n => n.lhat?.kind === 'func' && n.lhat.start === nestedFunction.start);
     assert.deepEqual(inner.children.map(n => n.lhat.kind), ['signature', 'start', 'call-stmt', 'add']);
     assert.deepEqual(labelsOfEdges(flow).sort(), [
-        '<start> -> before()', 'before() -> nested()', 'nested() -> let^ inner',
-        'let^ inner -> after()', '<start> -> value()',
+        '<start> -> before()', 'before() -> nested()', 'nested() -> <add>', '<add> -> let^ inner',
+        'let^ inner -> after()', '<start> -> value()', 'value() -> <add>', 'after() -> <add>',
     ].sort());
     const folded = await draw({ source, root }, { root, collapse: true });
     assert.equal(starts(folded.graph).length, 1, 'the inner function still folds independently');
@@ -326,7 +330,7 @@ test('execution crosses with and nested block boundaries at their actual first a
     assert.equal(starts(graph).length, 1, 'inline scopes continue the same chain');
     assert.deepEqual(labelsOfEdges(flow).sort(), [
         '<start> -> before()', 'before() -> with^log', 'with^log -> inside()',
-        'inside() -> nested()', 'nested() -> after()', 'after() -> last()',
+        'inside() -> nested()', 'nested() -> <add>', '<add> -> after()', 'after() -> <add>', '<add> -> last()', 'last() -> <add>',
     ].sort());
     const byId = new Map(flow.nodes.map(n => [n.id, n]));
     assert(flow.exec.every(e => !byId.get(e.source).data.layoutOnly && !byId.get(e.target).data.layoutOnly));
@@ -351,7 +355,7 @@ test('member lists have no execution start, and disabled nested code has no acti
     assert.equal(entered.flow.definitions.length, 1);
     assert(entered.flow.nodes.filter(n => !n.data.isAdd && !n.data.layoutOnly).every(n => n.data.noExecutionHandles));
     const file = await draw({ source, root });
-    assert.deepEqual(labelsOfEdges(file.flow), ['<start> -> enum^Mode']);
+    assert.deepEqual(labelsOfEdges(file.flow), ['<start> -> enum^Mode', 'enum^Mode -> <add>']);
 });
 
 test('table wrapping rows are invisible layout parents, not boxes or interaction targets', async () => {
@@ -411,7 +415,8 @@ test('list member rows hide execution handles without hiding definitions or call
         assert(flow.nodes.some(n => n.data.isStart && !n.data.noExecutionHandles));
         assert(flow.nodes.some(n => n.data.isReturn && !n.data.noExecutionHandles));
         assert.equal(flow.definitions.length, 3, 'count, run and returned value retain their definition handles');
-        assert.equal(flow.exec.length, 1, 'callable body start still reaches its return');
+        assert.equal(flow.exec.length, 1, 'callable body ends at its return');
+        assert(!flow.nodes.some(node => node.data.executionAppend));
     }
 });
 
@@ -598,6 +603,7 @@ test('return pictograms survive simple branch clauses, disabled code and implici
     assert.equal(tail.flow.definitions[0].source, flatten(tail.graph).find(n => n.id === value.id).lhat.definitionOutputs[0]);
     assert.equal(tail.flow.definitions[0].target, marker.id);
     assert.equal(tail.flow.exec.length, 1);
+    assert(!tail.flow.nodes.some(node => node.data.executionAppend));
     assert.equal(tail.flow.exec[0].source, start.id);
     assert.equal(tail.flow.exec[0].target, marker.id);
     const callable = flatten(tail.graph).find(n => n.lhat?.kind === 'func');
@@ -704,13 +710,14 @@ test('if statements fan out through condition-only boxes to real entries and hoi
     for (const scale of [1, 2]) {
         const { graph, flow } = await draw({ source, root }, { scale });
         const mapped = flatten(graph).find(n => n.lhat?.kind === 'if-stmt');
-        assert.deepEqual(mapped.children.map(n => conditionOf(n)?.labels[0].text), ['ready', 'other', undefined]);
+        assert.deepEqual(mapped.children.map(n => conditionOf(n)?.labels[0].text), ['Condition', 'Condition', undefined]);
+        assert.deepEqual(mapped.children.map(n => conditionOf(n)?.children[0].labels[0].text), ['ready', 'other', undefined]);
         assert(mapped.children.every(n => n.labels[0].text === ''), 'conditions are not printed in the enclosing headers');
         for (const clause of mapped.children) {
             const predicate = conditionOf(clause);
             if (!predicate) continue;
-            assert.equal(source.slice(predicate.lhat.start, predicate.lhat.end), predicate.labels[0].text, 'condition reveal selects only its expression');
-            assert(!predicate.children, 'condition is an independent leaf');
+            assert.equal(source.slice(predicate.lhat.start, predicate.lhat.end), predicate.children[0].labels[0].text, 'condition reveal selects only its expression');
+            assert(predicate.children.length === 1 && predicate.lhat.noExecutionHandles, 'condition contains its expression without joining execution flow');
             assert(!flow.exec.some(e => e.source === predicate.id || e.target === predicate.id), 'execution passes behind the condition, not into a new statement');
         }
         assert.deepEqual(statementsOf(mapped.children[0]).map(n => n.lhat.kind), ['disabled', 'define-row', 'call-stmt']);
@@ -733,6 +740,14 @@ test('if statements fan out through condition-only boxes to real entries and hoi
         assert(flow.exec.some(e => byId.get(e.source).data.label === 'let^ x' && byId.get(e.target).data.label === 'second()'));
         assert(flow.exec.filter(e => e.sourceHandle !== 'flow-branch').every(e => e.type === 'execution'), 'ordinary execution lines use the target-near orthogonal router');
         assert(flow.exec.every(e => e.pathOptions.borderRadius === 6 && e.pathOptions.offset === 6));
+        assert(mapped.lhat.foldable && mapped.lhat.foldKey);
+        const folded = await draw({ source, root }, { scale, folds: { [mapped.lhat.foldKey]: true } });
+        const foldedBranch = folded.flow.nodes.find(node => node.data.foldKey === mapped.lhat.foldKey);
+        assert(foldedBranch.data.collapsed);
+        assert(folded.flow.exec.some(edge => edge.target === foldedBranch.id));
+        assert(folded.flow.exec.some(edge => edge.source === foldedBranch.id));
+        assert(!folded.flow.exec.some(edge => edge.sourceHandle === 'flow-branch'),
+            'a collapsed control structure keeps outer execution but removes hidden branch wires');
     }
     const entered = await draw({ source, root }, { root: branch });
     const visible = new Set(entered.flow.nodes.map(n => n.id));
@@ -740,10 +755,10 @@ test('if statements fan out through condition-only boxes to real entries and hoi
     assert(entered.flow.exec.every(e => visible.has(e.source) && visible.has(e.target)));
     const offRoot = { ...root, fields: { items: [{ ...branch, kind: 'disabled', fields: { items: [branch] } }] } };
     const off = await draw({ source, root: offRoot });
-    assert.equal(off.flow.exec.length, 0, 'disabled IFs have no active branch lines');
+    assert.deepEqual(labelsOfEdges(off.flow), ['<start> -> <add>'], 'disabled IFs are bypassed on the way to the append point');
 });
 
-test('nested ifs have separate junctions; empty and disabled-only clauses have no fabricated entry', async () => {
+test('nested ifs have separate junctions and empty clauses enter their statement append points', async () => {
     const source = 'if^ outer { if^ inner { one() } el^ off: #[~ skip() ]# el^: }';
     const n = nodesFor(source);
     const inner = n('if-stmt', 'if^ inner { one() }', { items: [n('if-clause', 'inner { one()', {
@@ -758,8 +773,10 @@ test('nested ifs have separate junctions; empty and disabled-only clauses have n
     ] });
     const { graph, flow } = await draw({ source, root });
     const branches = flatten(graph).filter(n => n.lhat?.kind === 'if-stmt');
-    const arms = flow.exec.filter(e => e.sourceHandle === 'flow-branch');
-    assert.equal(arms.length, 2);
+    const arms = flow.exec.filter(e => e.type === 'branch');
+    assert.equal(arms.length, 4);
+    assert.equal(arms.filter(e => flow.nodes.find(n => n.id === e.target).data.executionAppend).length, 2);
+    assert.equal(flow.exec.filter(e => e.type === 'execution-bypass').length, 1, 'only the inner IF lacks an else arm');
     assert(arms.some(e => e.source === branches[0].id && e.target === branches[1].id));
     assert(arms.some(e => e.source === branches[1].id && flow.nodes.find(n => n.id === e.target).data.label === 'one()'));
     const empty = branches[0].children.at(-1);
@@ -767,6 +784,81 @@ test('nested ifs have separate junctions; empty and disabled-only clauses have n
     assert(empty.width > 0 && empty.height > 0, 'empty else still has a visible box');
     assert.equal(empty.children.length, 1, 'only the append control remains in an empty body');
     assert.equal(empty.children[0].lhat.synthetic, 'add');
+});
+
+test('statement branches merge completed arms and route no-match paths around their contents', async () => {
+    for (const otherwise of [false, true]) for (const next of [false, true]) for (const empty of [false, true]) {
+        const reply = branchFlow({ otherwise, next, empty });
+        const { graph, flow } = await draw(reply);
+        const branch = flatten(graph).find(node => node.lhat?.kind === 'if-stmt');
+        const byId = new Map(flow.nodes.map(node => [node.id, node]));
+        const bypass = flow.exec.filter(edge => edge.type === 'execution-bypass');
+        assert.equal(bypass.length, otherwise ? 0 : 1, 'an explicit else replaces the no-match path');
+        if (!otherwise) {
+            assert.equal(bypass[0].source, branch.id);
+            assert.equal(bypass[0].target, branch.id);
+            assert.equal(bypass[0].sourceHandle, 'flow-branch');
+            assert.equal(bypass[0].targetHandle, 'flow-merge');
+            assert(bypass[0].data.laneOffset > 0);
+        }
+        const merges = flow.exec.filter(edge => edge.targetHandle === 'flow-merge' && edge.type !== 'execution-bypass');
+        assert.equal(merges.length, otherwise ? 2 : 1);
+        assert(merges.every(edge => byId.get(edge.source).data.executionAppend && edge.target === branch.id));
+        const continuation = flow.exec.find(edge => edge.source === branch.id && edge.sourceHandle === 'flow-out');
+        assert(continuation, 'the joined branch always has a continuation');
+        assert.equal(byId.get(continuation.target).data.executionAppend, !next);
+        for (const node of flow.nodes.filter(node => node.data.executionAppend)) {
+            assert(flow.exec.some(edge => edge.target === node.id), 'every visible statement footer has an incoming path');
+        }
+        const folded = await draw(reply, { folds: { [branch.lhat.foldKey]: true } });
+        assert(!folded.flow.exec.some(edge => edge.type === 'execution-bypass' || edge.targetHandle === 'flow-merge'),
+            'folding hides internal branch routes');
+        assert(folded.flow.exec.some(edge => folded.flow.nodes.find(node => node.id === edge.target).data.executionAppend));
+    }
+});
+
+test('return and panic end their paths and terminal branches do not merge or offer statement appends', async () => {
+    for (const panic of [false, true]) for (const branch of ['none', 'partial', 'all']) for (const trailing of [false, true]) {
+        const reply = terminalFlow({ panic, branch, trailing }), original = JSON.stringify(reply);
+        const { graph, flow } = await draw(reply);
+        const all = new Map(flatten(graph).map(node => [node.id, node]));
+        const terminals = flow.nodes.filter(node => node.data.isReturn || all.get(node.id).lhat?.kind === 'panic');
+        assert.equal(terminals.length, branch === 'all' ? 2 : 1);
+        for (const terminal of terminals) {
+            assert(terminal.data.executionTerminal);
+            assert(flow.exec.some(edge => edge.target === terminal.id), 'live terminal statements still have incoming execution');
+            assert(!flow.exec.some(edge => edge.source === terminal.id), 'terminal statements have no outgoing execution');
+        }
+        assert(!flow.exec.some(edge => edge.targetHandle === 'flow-merge' && edge.type !== 'execution-bypass'),
+            'terminating arms do not rejoin the branch');
+        assert.equal(flow.nodes.filter(node => node.data.executionAppend).length, branch === 'partial' ? 1 : 0);
+        assert.equal(flow.exec.filter(edge => edge.type === 'execution-bypass').length, branch === 'partial' ? 1 : 0);
+        if (trailing) {
+            const following = flow.nodes.find(node => node.data.isCall && node.data.start === reply.source.indexOf('print'));
+            assert(following, 'already-written unreachable source remains visible');
+            assert.equal(following.data.noExecutionHandles, branch !== 'partial');
+            assert.equal(!!following.data.insertion, branch === 'partial');
+            assert.equal(flow.exec.some(edge => edge.target === following.id), branch === 'partial');
+        }
+        assert.equal(JSON.stringify(reply), original);
+    }
+});
+
+test('disabled terminals do not cut live execution, and panic unary nodes are also terminal', async () => {
+    for (const panic of [false, true]) {
+        const reply = terminalFlow({ panic, trailing: true, disabled: true });
+        const { flow } = await draw(reply);
+        const after = flow.nodes.find(node => node.data.isCall);
+        assert(flow.exec.some(edge => edge.target === after.id));
+        assert(flow.nodes.some(node => node.data.executionAppend));
+    }
+    const reply = terminalFlow({ panic: true, trailing: true });
+    reply.root.fields.body.fields.items[0].kind = 'unary';
+    const { graph, flow } = await draw(reply);
+    assert(!flow.nodes.some(node => node.data.executionAppend));
+    const panic = flatten(graph).find(node => node.lhat?.invocation && node.lhat.executionTerminal);
+    assert(panic);
+    assert(!flow.exec.some(edge => edge.source === panic.id));
 });
 
 test('if expressions remain expression branches without execution fan-out', async () => {
@@ -820,7 +912,9 @@ test('pattern-match statements enter through their focus and an unboxed shared b
         assert(junction.lhat.layoutOnly, 'the lowered IF is not another visible box');
         assert.equal(junction.labels[0].text, '');
         assert.equal(junction.layoutOptions['elk.direction'], 'RIGHT');
-        assert.deepEqual(junction.children.map(n => conditionOf(n)?.labels[0].text), ['0', '1 to^ 3, 5', 'fits^ number^', undefined]);
+        assert.deepEqual(junction.children.map(n => conditionOf(n)?.labels[0].text), ['Pattern', 'Pattern', 'Pattern', undefined]);
+        assert.deepEqual(junction.children.map(n => { const pattern = conditionOf(n); return pattern && source.slice(pattern.lhat.start, pattern.lhat.end); }),
+            ['0', '1 to^ 3, 5', 'fits^ number^', undefined]);
         assert.deepEqual(statementsOf(junction.children[0]).map(n => n.lhat.kind), ['disabled', 'define-row', 'call-stmt']);
         assert.equal(statementsOf(junction.children[1])[0].lhat.kind, 'return-row');
         assert.equal(statementsOf(junction.children[2])[0].lhat.kind, 'block', 'explicit nested blocks survive');
@@ -841,12 +935,12 @@ test('pattern-match statements enter through their focus and an unboxed shared b
         assert(flow.exec.every(e => byId.has(e.source) && byId.has(e.target)));
     }
     const drilled = await draw({ source, root }, { root: match });
-    assert(drilled.flow.nodes.some(n => n.data.branchOffset !== undefined && !n.data.layoutOnly && n.data.label.startsWith('for^')));
+    assert(drilled.flow.nodes.some(n => n.data.branchOffset !== undefined && !n.data.layoutOnly && n.data.label === 'Pattern Matching Branch'));
     const disabled = n('disabled', source, { items: [match] });
     assert.equal((await draw({ source, root: disabled })).flow.exec.length, 0);
 });
 
-test('implicit match focuses retain their value; empty arms do not fabricate execution entries', async () => {
+test('implicit match focuses retain their value and empty arms connect their append points', async () => {
     const source = 'for^ input { when^ 0: other^: }', n = nodesFor(source);
     const root = n('for', source, {
         focus: [n('define', 'input', { targets: [n('focus (it^)', 'input')], values: [n('ident', 'input')] })],
@@ -857,9 +951,9 @@ test('implicit match focuses retain their value; empty arms do not fabricate exe
     });
     const { graph, flow } = await draw({ source, root });
     const junction = flatten(graph).find(n => n.lhat?.layoutOnly);
-    assert.equal(junction.lhat.executionBranches.length, 0);
+    assert.equal(junction.lhat.executionBranches.length, 2);
     assert.equal(flow.definitions.length, 1);
-    assert.equal(flow.exec.length, 2, 'FOR enters its focus, then the empty branch junction');
+    assert.equal(flow.exec.length, 6, 'focus and junction connect the two empty arms and merge their exits');
     assert(junction.children.every(n => n.width > 0 && n.height > 0));
 });
 
@@ -879,7 +973,7 @@ test('match expressions merge candidate definitions without execution lines; ord
     const junction = flatten(graph).find(n => n.lhat?.kind === 'if-expr');
     assert(junction.lhat.layoutOnly, 'the lowered expression branch has no redundant box');
     assert.equal(junction.layoutOptions['elk.direction'], 'DOWN');
-    assert.deepEqual(junction.children.map(n => conditionOf(n)?.labels[0].text), ['0', undefined]);
+    assert.deepEqual(junction.children.map(n => conditionOf(n)?.labels[0].text), ['Pattern', undefined]);
     assert.deepEqual(junction.children.map(n => statementsOf(n)[0].labels[0].text), ['1', '2']);
     assert.deepEqual(match.lhat.definitionBranches, [junction.id]);
     assert.equal(flow.definitions.filter(e => e.targetHandle === 'definition-branch').length, 3);
@@ -894,12 +988,37 @@ test('match expressions merge candidate definitions without execution lines; ord
     assert(ordinary.flow.nodes.every(n => n.data.branchOffset === undefined));
 });
 
+test('structured patterns retain their value connections without becoming execution steps', async () => {
+    for (const expression of [false, true]) for (const defaultArm of [false, true]) {
+        const reply = patternMatching({ expression, defaultArm });
+        const { graph, flow } = await draw(reply);
+        const patterns = flatten(graph).filter(node => node.lhat?.kind === 'pattern');
+        assert.equal(patterns.length, 2);
+        const inside = new Set(patterns.flatMap(flatten).map(node => node.id));
+        assert(flow.exec.every(edge => !inside.has(edge.source) && !inside.has(edge.target)));
+        assert.equal(flow.definitions.filter(edge => inside.has(edge.source) && inside.has(edge.target)).length, 3,
+            'the pattern call and addition keep their three input wires');
+        if (expression) {
+            assert.equal(flow.exec.length, 0);
+            assert.equal(flow.definitions.filter(edge => edge.targetHandle === 'definition-branch').length, defaultArm ? 4 : 3);
+        } else {
+            assert.equal(flow.exec.filter(edge => edge.type === 'execution-bypass').length, defaultArm ? 0 : 1);
+        }
+        const folded = await draw(reply, { folds: { [patterns[0].lhat.foldKey]: true } });
+        assert(flatten(folded.graph).some(node => node.lhat?.foldKey === patterns[0].lhat.foldKey && node.lhat.collapsed));
+        assert.equal(folded.flow.exec.length, flow.exec.length, 'folding a pattern leaves statement dispatch intact');
+    }
+});
+
 test('if expression conditions and values are separate, source-backed boxes joined by merging definition lines', async () => {
     const source = 'let^ grade = f^score:number^{ if^score >= 90: "A" el^score >= 80: "B" el^: "F" ; }';
     const n = nodesFor(source);
+    const comparison = (text, value) => n('binary', text, {
+        left: n('ident', 'score', undefined, source.indexOf(text)), right: n('int', value),
+    });
     const expression = n('if-expr', 'if^score >= 90: "A" el^score >= 80: "B" el^: "F" ;', { items: [
-        n('if-clause', 'if^score >= 90: "A"', { condition: n('binary', 'score >= 90'), body: n('string', '"A"') }),
-        n('if-clause', 'el^score >= 80: "B"', { condition: n('binary', 'score >= 80'), body: n('string', '"B"') }),
+        n('if-clause', 'if^score >= 90: "A"', { condition: comparison('score >= 90', '90'), body: n('string', '"A"') }),
+        n('if-clause', 'el^score >= 80: "B"', { condition: comparison('score >= 80', '80'), body: n('string', '"B"') }),
         n('if-clause', 'el^: "F"', { body: n('string', '"F"') }),
     ] });
     const ret = { ...expression, kind: 'return', fields: { value: [expression] } };
@@ -910,7 +1029,9 @@ test('if expression conditions and values are separate, source-backed boxes join
         const branch = flatten(graph).find(n => n.lhat?.kind === 'if-expr');
         assert.equal(branch.layoutOptions['elk.direction'], 'DOWN');
         assert(branch.children.every(n => n.layoutOptions['elk.direction'] === 'RIGHT'));
-        assert.deepEqual(branch.children.map(n => conditionOf(n)?.labels[0].text), ['score >= 90', 'score >= 80', undefined]);
+        assert.deepEqual(branch.children.map(n => conditionOf(n)?.labels[0].text), ['Condition', 'Condition', undefined]);
+        assert.deepEqual(branch.children.map(n => { const p = conditionOf(n); return p && source.slice(p.lhat.start, p.lhat.end); }),
+            ['score >= 90', 'score >= 80', undefined]);
         const values = branch.children.map(n => statementsOf(n)[0]);
         assert.deepEqual(values.map(n => n.labels[0].text), ['"A"', '"B"', '"F"']);
         assert.deepEqual(branch.lhat.definitionBranches, values.map(n => n.id));
@@ -935,9 +1056,15 @@ test('if expression conditions and values are separate, source-backed boxes join
             if (!predicate) continue;
             assert.equal(predicate.lhat.condition.axis, 'horizontal');
             assert.equal(predicate.lhat.condition.entry, value.id);
-            assert.equal(source.slice(predicate.lhat.start, predicate.lhat.end), predicate.labels[0].text);
+            const expression = predicate.children[0];
+            assert(expression.lhat.callTree, 'the comparison uses the normal expression layout');
+            assert(flatten(expression).some(n => n.lhat?.operator?.text === '>='));
+            const inside = new Set(flatten(predicate).map(n => n.id));
+            assert(flow.exec.every(e => !inside.has(e.source) && !inside.has(e.target)));
+            assert.equal(flow.definitions.filter(e => inside.has(e.source) && inside.has(e.target)).length, 2);
             const rendered = flow.nodes.find(n => n.id === predicate.id);
-            assert.equal(rendered.position.y + rendered.height / 2, value.y + value.lhat.definitionHandleY);
+            const desired = value.y + value.lhat.definitionHandleY - rendered.height / 2;
+            assert.equal(rendered.position.y, Math.max(10 * scale, Math.min(clause.height - rendered.height - 10 * scale, desired)));
             assert(rendered.position.y >= 10 * scale && rendered.position.y + rendered.height <= clause.height - 10 * scale);
         }
     }
@@ -947,7 +1074,8 @@ test('if expression conditions and values are separate, source-backed boxes join
     assert.equal(drilled.flow.definitions.filter(e => e.targetHandle === 'definition-branch').length, 3);
     const bare = await draw({ source, root }, { root: expression });
     assert.equal(bare.flow.exec.length, 0);
-    assert.equal(bare.flow.definitions.length, 3);
+    assert.equal(bare.flow.definitions.filter(e => e.targetHandle === 'definition-branch').length, 3);
+    assert.equal(bare.flow.definitions.length, 7, 'the condition comparisons retain their four input connections');
     const visible = new Set(bare.flow.nodes.map(n => n.id));
     assert(bare.flow.definitions.every(e => visible.has(e.source) && visible.has(e.target)));
 });

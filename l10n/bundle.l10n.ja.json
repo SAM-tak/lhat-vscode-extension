@@ -1,6 +1,22 @@
 {
     "Input": "入力",
     "Call": "呼び出し",
+    "Condition": "条件",
+    "Conditional Branch": "条件分岐",
+    "Conditional Selection": "条件選択",
+    "Pattern": "パターン",
+    "Pattern Matching Branch": "パターン分岐",
+    "Pattern Matching Selection": "パターン選択",
+    "Reassignment": "再代入",
+    "Addition Assignment": "加算再代入",
+    "Subtraction Assignment": "減算再代入",
+    "Multiplication Assignment": "乗算再代入",
+    "Division Assignment": "除算再代入",
+    "Remainder Assignment": "剰余再代入",
+    "Floor Division Assignment": "切り捨て除算再代入",
+    "Exponentiation Assignment": "べき乗再代入",
+    "Concatenation Assignment": "連結再代入",
+    "{0} (nil-checked)": "{0}（nilチェック付き）",
     "Output": "出力",
     "No output": "出力なし",
     "Missing input": "入力が未指定",
@@ -228,5 +244,7 @@
     "Include background": "背景を含める",
     "Include editing controls": "操作ボタンを含める",
     "Exporting…": "書き出し中…",
-    "Graph layout failed: {0}": "グラフのレイアウトに失敗しました: {0}"
+    "Graph layout failed: {0}": "グラフのレイアウトに失敗しました: {0}",
+    "Fold this node": "このノードを折りたたむ",
+    "Unfold this node": "このノードを展開する"
 }

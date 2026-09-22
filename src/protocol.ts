@@ -85,6 +85,7 @@ export type ToWebview =
     | { type: "reorderResult"; id: string; error?: string }
     | { type: "statementResult"; id: string; error?: string }
     | { type: "svgResult"; id: string; error?: string }
+    | { type: "toggleFold"; key: string; version: number }
     | { type: "referenceResult"; id: string; version: number; target?: ReferenceTarget }
     /** The unit is not part of any checked root yet (06 の 4.3). */
     | { type: "pending" }

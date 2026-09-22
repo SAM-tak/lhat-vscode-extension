@@ -3,6 +3,7 @@ import type { SourceEdit } from "./graphReorder";
 import type { StatementInsertion, StatementTemplate } from "./graphStatements";
 import { resultTypes, syntaxTokens } from "./graphSyntax";
 import { callInfo, canInsertBinding } from "./graphCalls";
+import { assignmentOperator, assignmentValues } from "./graphAssignments";
 
 export interface ListInsertion extends StatementInsertion { category: "list" }
 export type InsertionSite = StatementInsertion | ListInsertion;
@@ -49,8 +50,9 @@ export function commaLists(tree: AstReply): CommaList[] {
             const marker = tokens[0]?.text === `${node.kind}^` ? tokens[0].end : node.start;
             add("value", "value", marker, node.end);
         } else if (["define", "reassign"].includes(node.kind)) {
-            const targets = array(node.fields?.targets), values = array(node.fields?.values);
-            const equal = tokens.find(t => ["=", ":="].includes(t.text) && t.start >= (targets.slice(-1)[0]?.end ?? node.start));
+            const targets = array(node.fields?.targets), values = node.kind === "reassign" ? assignmentValues(node, source) : array(node.fields?.values);
+            const equal = node.kind === "reassign" ? assignmentOperator(node, source)
+                : tokens.find(t => ["=", ":="].includes(t.text) && t.start >= (targets.slice(-1)[0]?.end ?? node.start));
             if (targets.length) add("targets", node.kind === "define" ? "parameter" : "name", targets[0].start, equal?.start ?? node.end);
             if (equal) add("values", "value", equal.end, node.end, values);
         } else if (["func", "type-func"].includes(node.kind)) {

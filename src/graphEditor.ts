@@ -45,6 +45,15 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
             version: context.lhatGraphVersion as number });
     }
 
+    public toggleFold(context: Record<string, unknown> | undefined): void {
+        if (!context || context.lhatFoldable !== true || typeof context.lhatGraphUri !== "string" ||
+            typeof context.lhatFoldKey !== "string" || !Number.isInteger(context.lhatGraphVersion)) return;
+        const panels = [...this.panels.get(context.lhatGraphUri) ?? []];
+        const panel = panels.find(panel => panel.active) ?? panels[0];
+        if (panel) void panel.webview.postMessage({ type: "toggleFold", key: context.lhatFoldKey,
+            version: context.lhatGraphVersion as number } satisfies ToWebview);
+    }
+
     public constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly client: () => LanguageClient | undefined,

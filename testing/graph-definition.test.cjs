@@ -170,10 +170,11 @@ test('var declarations use the same definition lines, types and execution endpoi
         }),
     ] });
     const graph = await new ELK().layout(toElk({ source, root }));
-    assert.equal(rows(graph).length, 1, 'no definition line for an uninitialized variable or reassignment');
+    assert.equal(rows(graph).length, 2, 'initialized variables and reassignments have definition lines; uninitialized variables do not');
     assertDefinition(rows(graph)[0], source, ['count:number^', '0']);
+    assertDefinition(rows(graph)[1], source, ['count', '1']);
     assert.equal(statements(graph)[1].labels[0].text, 'var^ pending:number^');
-    assert.equal(statements(graph)[2].labels[0].text, 'count := 1');
+    assert.equal(statements(graph)[2].labels[0].text, 'Reassignment');
     assert.equal(graph.edges[1].sources[0], statements(graph)[0].id);
     assert(graph.edges.filter(e => !e.targets.includes(graph.children.at(-1).id)).every(e => e.drawn && !e.definition));
     assert.equal(graph.children.at(-1).lhat.synthetic, 'add');

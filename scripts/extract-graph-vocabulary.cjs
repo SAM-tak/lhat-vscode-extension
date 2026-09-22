@@ -18,6 +18,8 @@ for (const [name, column] of [['bundle.l10n.json', 2], ['bundle.l10n.ja.json', 3
     const target = path.resolve(__dirname, '../l10n', name);
     const bundle = JSON.parse(fs.readFileSync(target, 'utf8'));
     for (const entry of mod.exports.HAT_GROUPS) bundle[entry[2]] = entry[column];
+    const assignments = load(path.resolve(__dirname, '../src/graphAssignments.ts'));
+    for (const label of Object.values(assignments.exports.ASSIGNMENT_LABELS)) bundle[label] ??= label;
     for (const label of Object.values(statements.exports.STATEMENT_TEMPLATE_LABELS)) bundle[label] ??= label;
     const lists = load(path.resolve(__dirname, '../src/graphLists.ts'));
     for (const label of Object.values(lists.exports.LIST_TEMPLATE_LABELS)) bundle[label] ??= label;

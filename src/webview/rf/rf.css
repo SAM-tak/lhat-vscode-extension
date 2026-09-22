@@ -338,6 +338,21 @@ html, body, #root {
     color: var(--vscode-lhat-graph-function, #89cff0);
 }
 
+.has-fold-summary > .boxlabel {
+    height: calc(24px * var(--lhat-scale, 1));
+    box-sizing: border-box;
+    padding-right: calc(22px * var(--lhat-scale, 1));
+}
+.fold-summary {
+    height: calc(100% - 24px * var(--lhat-scale, 1));
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    padding: 0 calc(8px * var(--lhat-scale, 1));
+    white-space: pre;
+    overflow: hidden;
+}
+
 /* Only semantic role/type text is italic; user names and literal values are not. */
 .semantic-label { font-style: italic; }
 .semantic-label[data-category="declaration"] { color: var(--vscode-lhat-graph-declaration, #82b7ed); }

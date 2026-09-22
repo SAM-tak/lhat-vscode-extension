@@ -30,7 +30,7 @@ export function syntaxTokens(source: string, start = 0, end = source.length): Sy
                 }
             }
         } else {
-            const word = /^[\p{L}\p{N}_]+\^*|^(?:->|\.\.\.|\.\.|\*\*|\/\/|:=|==|!=|<=|>=|&&|\|\||\?\?)/u.exec(source.slice(i, end))?.[0];
+            const word = /^[\p{L}\p{N}_]+\^*|^(?:\??(?::=|(?:\.\.|\*\*|\/\/|[+\-*/%])=)|->|\.\.\.|\.\.|\*\*|\/\/|==|!=|<=|>=|&&|\|\||\?\?)/u.exec(source.slice(i, end))?.[0];
             i += word?.length ?? 1;
         }
         tokens.push({ start: from, end: i, text: source.slice(from, i) });

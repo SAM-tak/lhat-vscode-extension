@@ -4,6 +4,7 @@
     "graph.showGraph": "ビジュアルエディターを表示",
     "graph.showSource": "ソースを表示",
     "graph.toggleStatement": "文の有効・無効を切り替え",
+    "graph.toggleFold": "折りたたみ・展開を切り替え",
     "graph.language.auto": "VS Codeに従う",
     "graph.language.description": "ビジュアルエディター内の翻訳対応済みラベルの表示言語。auto はVS Codeに従います。変更は開いているグラフにも再起動なしで反映されます。VS Codeのメニューや設定画面の言語は変わりません。"
 }

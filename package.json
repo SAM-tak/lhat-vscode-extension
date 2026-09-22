@@ -259,6 +259,11 @@
         "command": "lhat.graph.toggleStatement",
         "title": "%graph.toggleStatement%",
         "category": "L^"
+      },
+      {
+        "command": "lhat.graph.toggleFold",
+        "title": "%graph.toggleFold%",
+        "category": "L^"
       }
     ],
     "menus": {
@@ -285,6 +290,10 @@
       ],
       "commandPalette": [
         {
+          "command": "lhat.graph.toggleFold",
+          "when": "false"
+        },
+        {
           "command": "lhat.graph.toggleStatement",
           "when": "false"
         },
@@ -310,6 +319,11 @@
         }
       ],
       "webview/context": [
+        {
+          "command": "lhat.graph.toggleFold",
+          "when": "webviewId == lhat.graph && lhatFoldable",
+          "group": "1_edit@1"
+        },
         {
           "command": "lhat.graph.toggleStatement",
           "when": "webviewId == lhat.graph && lhatStatement",

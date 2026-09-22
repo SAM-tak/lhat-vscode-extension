@@ -26,6 +26,9 @@ test('every template and the native statement menu have Japanese labels', () => 
     const command = pkg.contributes.menus['webview/context'].find(m => m.command === 'lhat.graph.toggleStatement');
     assert(command.when.includes('lhatStatement'));
     assert.equal(require('../package.nls.ja.json')['graph.toggleStatement'], '文の有効・無効を切り替え');
+    assert(pkg.contributes.menus['webview/context'].find(m => m.command === 'lhat.graph.toggleFold').when.includes('lhatFoldable'));
+    assert.equal(require('../package.nls.json')['graph.toggleFold'], 'Toggle Fold/Unfold');
+    assert.equal(require('../package.nls.ja.json')['graph.toggleFold'], '折りたたみ・展開を切り替え');
 });
 
 test('empty files and callable bodies have a real append action below their start', () => {
@@ -34,7 +37,7 @@ test('empty files and callable bodies have a real append action below their star
         assert.equal(start.lhat.synthetic, 'start');
         assert.equal(add.lhat.synthetic, 'add');
         assert.deepEqual(add.lhat.insertion, api.statementInsertions(tree)[0]);
-        assert(!graph.edges.some(edge => edge.drawn));
+        assert(graph.edges.some(edge => edge.drawn && edge.sources[0] === start.id && edge.targets[0] === add.id));
         assert.equal(apply(tree.source, api.insertStatementEdit(tree, add.lhat.insertion, 'let')), tree.source + 'let^ value = 0\n');
     }
 });
@@ -171,6 +174,14 @@ test('the native context command edits its graph document without needing an act
     provider.toggleStatement({ ...context, lhatGraphVersion: 0 }); await new Promise(setImmediate);
     assert.equal(h.edits.length, 1);
     assert(messages.some(m => m.type === 'statementResult' && m.error?.includes('source changed')));
-    dispose(); provider.toggleStatement(context); await new Promise(setImmediate);
+    const foldContext = { ...context, lhatFoldable: true, lhatFoldKey: 'call:0:6' };
+    provider.toggleFold(foldContext);
+    assert.deepEqual(messages.at(-1), { type: 'toggleFold', key: 'call:0:6', version: 1 });
+    const count = messages.length;
+    provider.toggleFold({ ...foldContext, lhatFoldable: false });
+    provider.toggleFold({ ...foldContext, lhatGraphUri: 'file:another-graph' });
+    assert.equal(messages.length, count, 'invalid or other-document contexts do not reach the graph');
+    dispose(); provider.toggleStatement(context); provider.toggleFold(foldContext); await new Promise(setImmediate);
+    assert.equal(messages.length, count, 'closed graph contexts are ignored');
     assert.equal(h.edits.length, 1);
 });

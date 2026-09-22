@@ -6,11 +6,12 @@ import { statementTemplates, type StatementInsertion, type StatementSite, type S
 import { isListInsertion, listTemplates, groupedOperatorSites, type InsertionSite, type OperatorSite } from "../../graphLists";
 
 type Host = { tree?: AstReply; uri: string; version?: number; post: (message: FromWebview) => void };
+type FoldContext = { foldable: boolean; foldKey?: string };
 type Picker = { id: string; site?: InsertionSite; operator?: OperatorSite; anchor: HTMLElement; version: number;
     choices: StatementTemplate[]; saving?: boolean; error?: string };
 const Statements = createContext({
     version: undefined as number | undefined,
-    context: (_site?: StatementSite): string | undefined => undefined,
+    context: (_site?: StatementSite, _fold?: FoldContext): string | undefined => undefined,
     open: (_site: InsertionSite, _anchor: HTMLElement) => {},
     operator: (_site: OperatorSite, _anchor: HTMLElement) => {},
 });
@@ -60,8 +61,9 @@ export function StatementProvider({ value, children }: { value: Host; children: 
             : { ...common, type: "insertStatement", site: current.site, template });
     };
     return <Statements.Provider value={{ version: value.version, open, operator,
-        context: site => site ? JSON.stringify({ webviewSection: "statement", lhatStatement: value.version !== undefined,
-            lhatGraphUri: value.uri, lhatGraphVersion: value.version, lhatStatementStart: site.start, lhatStatementEnd: site.end }) : undefined }}>
+        context: (site, fold) => JSON.stringify({ webviewSection: "statement", lhatStatement: !!site && value.version !== undefined,
+            lhatGraphUri: value.uri, lhatGraphVersion: value.version, lhatStatementStart: site?.start, lhatStatementEnd: site?.end,
+            lhatFoldable: !!fold?.foldable && !!fold.foldKey && value.version !== undefined, lhatFoldKey: fold?.foldKey }) }}>
         {children}
         {picker && createPortal(<TemplateMenu key={picker.id} picker={picker} close={close} select={select} />, document.body)}
     </Statements.Provider>;
@@ -74,7 +76,7 @@ export function StatementButton({ site, append = false, floating = false, axis =
     const title = isListInsertion(site) ? append ? l10n.t("Add element") : l10n.t("Insert element here")
         : append ? l10n.t("Add statement") : l10n.t("Insert statement here");
     return <button type="button" className={`statement-button nodrag nopan nowheel nokey ${append ? "append-statement" : "insert-statement"} ${floating ? "floating-add" : ""} insertion-${axis}`}
-        data-vscode-context={JSON.stringify({ lhatStatement: false })} style={style}
+        data-vscode-context={JSON.stringify({ lhatStatement: false, lhatFoldable: false })} style={style}
         title={title} aria-label={title} aria-haspopup="dialog" disabled={actions.version === undefined}
         onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
         onDoubleClick={event => event.stopPropagation()}

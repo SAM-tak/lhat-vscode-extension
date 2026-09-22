@@ -5,6 +5,7 @@ const Module = require('node:module');
 const { buildSync } = require('esbuild');
 const ELK = require('elkjs/lib/elk.bundled.js');
 const { branchedCalls } = require('./call-tree-fixture.cjs');
+const { assignment } = require('./assignment-fixture.cjs');
 function load(file) {
     const entry = path.resolve(__dirname, '../src', file), mod = new Module(entry);
     mod._compile(buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
@@ -13,6 +14,8 @@ function load(file) {
 const { listInsertions, insertListEdit, listTemplates, groupedOperatorSites, replaceOperatorEdit, operatorGroup, operatorSites } = load('graphLists.ts');
 const { callInfo } = load('graphCalls.ts');
 const { toElk, stackWideDefinitions } = load('webview/map.ts');
+const { ASSIGNMENT_LABELS, assignmentOperator, assignmentValues } = load('graphAssignments.ts');
+const { commaLists } = load('graphLists.ts');
 const flatten = node => [node, ...(node.children ?? []).flatMap(flatten)];
 const apply = (source, edit) => source.slice(0, edit.start) + edit.text + source.slice(edit.end);
 function fixture(source) {
@@ -394,6 +397,115 @@ test('port-aligned call subtrees reserve descendant space and keep literal wires
             assert(item.y >= 0 && item.y + item.height <= column.height);
             assert(column.y + column.height <= tree.height);
             assert(column.x + column.width <= tree.width);
+        }
+    }
+});
+
+test('call folds prune only their subtree, retain independent sibling state and restore on unfold', () => {
+    const reply = branchedCalls(), before = JSON.stringify(reply);
+    const expanded = flatten(toElk(reply, { collapse: true }));
+    const calls = expanded.filter(node => node.lhat?.invocation);
+    assert.equal(calls.length, 4, 'initial definition folding does not hide newly foldable calls');
+    assert(calls.every(node => node.lhat.foldable && node.lhat.foldKey));
+    assert(expanded.filter(node => ['ident', 'input-slot', 'output-slot'].includes(node.lhat?.kind))
+        .every(node => !node.lhat.foldable), 'leaves and port slots have no fold buttons');
+    const left = calls.find(node => reply.source.slice(node.lhat.start, node.lhat.end) === 'left(a)');
+    const right = calls.find(node => reply.source.slice(node.lhat.start, node.lhat.end) === 'right(b)');
+    const folds = { [left.lhat.foldKey]: true };
+    const folded = flatten(toElk(reply, { folds }));
+    assert.equal(folded.filter(node => node.lhat?.invocation).length, 3);
+    assert(folded.find(node => node.lhat?.foldKey === left.lhat.foldKey).lhat.collapsed);
+    assert(folded.some(node => node.lhat?.invocation && node.lhat.foldKey === right.lhat.foldKey));
+    assert(folded.length < expanded.length, 'hidden subtrees never reach ELK or React Flow');
+    assert.equal(flatten(toElk(reply, { folds: { ...folds, [left.lhat.foldKey]: false } }))
+        .filter(node => node.lhat?.invocation).length, 4);
+    const allFolded = flatten(toElk(reply, { collapseAll: true }));
+    assert.equal(allFolded.filter(node => node.lhat?.collapsed).length, 2, 'Fold All folds the two statements, not the view root');
+    assert.equal(JSON.stringify(reply), before);
+});
+
+test('nested calls with the same starting offset have independent fold identities', () => {
+    const source = 'f(1)(2)', n = fixture(source);
+    const inner = n('call', 'f(1)', { target: n('ident', 'f'), argument: [n('int', '1')] }, 0,
+        { callable: { inputs: [{ type: 'number^' }], outputs: ['number^'] } });
+    const outer = n('call', source, { target: inner, argument: [n('int', '2')] }, 0,
+        { callable: { inputs: [{ type: 'number^' }], outputs: ['number^'] } });
+    const reply = { source, root: outer };
+    const calls = flatten(toElk(reply)).filter(node => node.lhat?.invocation);
+    assert.equal(calls.length, 2);
+    const keys = calls.map(node => node.lhat.foldKey);
+    assert.equal(new Set(keys).size, 2);
+    for (const key of keys) {
+        const folded = flatten(toElk(reply, { folds: { [key]: true } }));
+        assert(folded.some(node => node.lhat?.foldKey === key && node.lhat.collapsed));
+        if (key === `call:${inner.start}:${inner.end}`) assert(folded.some(node => node.lhat?.invocation && node.lhat.foldKey !== key));
+    }
+});
+
+test('all reassignment spellings align positional pairs vertically and retain only written RHS values', async () => {
+    for (const base of Object.keys(ASSIGNMENT_LABELS)) for (const guarded of [false, true]) for (const lowered of [false, true]) {
+        const operator = (guarded ? '?' : '') + base, reply = assignment(operator, { lowered, comments: true });
+        const before = JSON.stringify(reply);
+        assert.equal(assignmentOperator(reply.root, reply.source).text, operator);
+        assert.deepEqual(assignmentValues(reply.root, reply.source).map(n => reply.source.slice(n.start, n.end)), ['1', '2']);
+        const values = commaLists(reply).find(list => list.node === reply.root && list.field === 'values');
+        assert.deepEqual(values.items.map(n => reply.source.slice(n.start, n.end)), ['1', '2']);
+        const graph = stackWideDefinitions(await new ELK().layout(toElk(reply)), 5000);
+        const all = flatten(graph), group = all.find(n => n.lhat?.kind === 'reassign-row');
+        assert(group && group.lhat.bindingGroup && group.lhat.foldable);
+        assert.equal(group.layoutOptions['elk.direction'], 'DOWN');
+        assert.equal(group.children.length, 2);
+        assert(group.children[1].y > group.children[0].y + group.children[0].height);
+        group.children.forEach((pair, i) => {
+            const [target, value] = pair.children;
+            assert.equal(target.labels[0].text, ['a', 'b'][i]);
+            assert.equal(value.lhat.literal.value, ['1', '2'][i]);
+            assert(target.x + target.width < value.x);
+            assert.equal(target.y + target.lhat.definitionHandleY, value.y + value.lhat.definitionHandleY);
+            assert(pair.edges.some(edge => edge.drawn && edge.definition && edge.sources[0] === `${value.id}__definition-out` && edge.targets[0] === `${target.id}__definition-in`));
+        });
+        assert(!group.edges.some(edge => edge.drawn), 'pairs are not separate sequential execution steps');
+        assert(!all.some(n => n.lhat?.invocation), 'synthetic compound-operation trees are not displayed');
+        assert.equal(JSON.stringify(reply), before);
+    }
+});
+
+test('compound RHS expressions remain intact without duplicating indexed write targets', async () => {
+    const source = 'items[next()] += amount + 1', n = fixture(source);
+    const target = n('index', 'items[next()]', { target: n('ident', 'items'), argument: [
+        n('call', 'next()', { target: n('ident', 'next'), argument: [] }),
+    ] });
+    const right = n('binary', 'amount + 1', { left: n('ident', 'amount'), right: n('int', '1') }, 0, { inferredType: 'number^' });
+    for (const lowered of [false, true]) {
+        const value = lowered ? n('binary', source, { left: target, right }) : right;
+        const root = n('reassign', source, { targets: [target], values: [value] });
+        const reply = { source, root }, before = JSON.stringify(reply);
+        assert.equal(assignmentValues(root, source)[0], right);
+        const graph = stackWideDefinitions(await new ELK().layout(toElk(reply)), 5000), all = flatten(graph);
+        const targets = all.filter(node => node.lhat?.kind === 'index' && node.lhat?.definitionRole === 'declaration');
+        assert.equal(targets.length, 1);
+        assert.equal(targets[0].labels[0].text, 'items[next()]');
+        assert.equal(all.filter(node => node.lhat?.invocation).length, 1, 'only the written RHS addition is a call card');
+        assert.equal(all.find(node => node.lhat?.operator).lhat.operator.text, '+');
+        assert.equal(JSON.stringify(reply), before);
+    }
+});
+
+test('plain reassignments share multi-result calls, whereas compound assignments do not unpack arity mismatches', () => {
+    for (const operator of [':=', '?:=', '+=', '?+=']) {
+        const source = `a, b ${operator} pair()`, n = fixture(source);
+        const call = n('call', 'pair()', { target: n('ident', 'pair'), argument: [] }, 0,
+            { callable: { inputs: [], outputs: ['number^', 'string^'] } });
+        const root = n('reassign', source, { targets: [n('ident', 'a'), n('ident', 'b')], values: [call] });
+        const all = flatten(toElk({ source, root }));
+        assert.equal(all.filter(node => node.lhat?.invocation).length, 1);
+        if (operator.endsWith(':=')) {
+            const row = all.find(node => node.lhat?.kind === 'binding-outputs');
+            assert.equal(row.lhat.definitionLinks.length, 2);
+            assert.equal(new Set(row.lhat.definitionLinks.map(link => link.source)).size, 2);
+        } else {
+            assert(!all.some(node => node.lhat?.kind === 'binding-outputs'));
+            assert(all.some(node => node.lhat?.kind === 'missing-input'));
         }
     }
 });

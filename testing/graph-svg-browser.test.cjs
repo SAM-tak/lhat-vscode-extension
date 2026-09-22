@@ -5,6 +5,9 @@ const { test } = require('node:test');
 const { browser } = require('./browser.cjs');
 const ja = require('../l10n/bundle.l10n.ja.json');
 const { branchedCalls } = require('./call-tree-fixture.cjs');
+const { conditionalExpressions, branchFlow, terminalFlow } = require('./condition-fixture.cjs');
+const { patternMatching } = require('./pattern-fixture.cjs');
+const { assignment } = require('./assignment-fixture.cjs');
 
 const source = 'let^route = f^req:string^ { return^ 1, req }\nlet^a, b = route("Hello & <SVG>")\nlet^nested = {2, 3}\nlet^last = "日本語 & <text>"';
 const n = (kind, text, fields, from = 0, extra = {}) => {
@@ -138,7 +141,7 @@ test('call depth columns, right-aligned inputs and bent definition lines survive
         await new Promise(resolve => setTimeout(resolve, 500));
         await until(`!document.querySelector('.svg-export>button').disabled`);
         const before = await geometry(), first = before.calls[0];
-        const hit = {x:first.x+first.w-12,y:first.y+15};
+        const hit = {x:first.x+first.w-32,y:first.y+15};
         await call('Input.dispatchMouseEvent', {type:'mousePressed',...hit,button:'left',clickCount:1});
         for (const dx of [10, 50, 100]) await call('Input.dispatchMouseEvent', {type:'mouseMoved',x:hit.x-dx,y:hit.y,buttons:1});
         await call('Input.dispatchMouseEvent', {type:'mouseReleased',x:hit.x-100,y:hit.y,button:'left',clickCount:1});
@@ -208,4 +211,272 @@ test('a fitting expression is centred as a whole and scrolls from a left-aligned
         assert.equal(moved.frames[2].x, before.frames[2].x, 'other statements remain fixed');
         assert.equal(errors.length, 0, JSON.stringify(errors));
     });
+});
+
+test('fold buttons and native-menu messages toggle the same call without source edits or stale actions', { timeout: 60000 }, async () => {
+    const reply = branchedCalls(), leftStart = reply.source.indexOf('left(');
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelectorAll('.call-node').length===4 && !document.querySelector('.svg-export>button').disabled`);
+        const context = await evaluate(`JSON.parse(document.querySelector('.call-node[data-source-start="${leftStart}"]').dataset.vscodeContext)`);
+        assert(context.lhatFoldable && context.lhatFoldKey);
+        assert.equal(await evaluate(`document.querySelectorAll('.call-node > .foldbtn').length`), 4);
+        assert(await evaluate(`[...document.querySelectorAll('.definitionhandle')].length>0`));
+        const send = version => evaluate(`window.postMessage({type:'toggleFold',key:${JSON.stringify(context.lhatFoldKey)},version:${version}},'*')`);
+        await send(0);
+        await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+        assert.equal(await evaluate(`document.querySelectorAll('.call-node').length`), 4, 'a stale menu cannot fold a new source version');
+        await send(1);
+        await until(`document.querySelector('.box.folded[data-source-start="${leftStart}"]') && !document.querySelector('.svg-export>button').disabled`);
+        assert.equal(await evaluate(`document.querySelectorAll('.call-node').length`), 3);
+        const foldedContext = await evaluate(`JSON.parse(document.querySelector('.box.folded[data-source-start="${leftStart}"]').dataset.vscodeContext)`);
+        assert.equal(foldedContext.lhatFoldKey, context.lhatFoldKey);
+        await evaluate(`document.querySelector('.box.folded[data-source-start="${leftStart}"] > .foldbtn').click()`);
+        await until(`document.querySelectorAll('.call-node').length===4 && !document.querySelector('.svg-export>button').disabled`);
+        await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Fold All').click()`);
+        await until(`document.querySelectorAll('.box.folded').length===2 && !document.querySelector('.svg-export>button').disabled`);
+        assert.equal(await evaluate(`document.querySelectorAll('.call-node').length`), 0);
+        await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All').click()`);
+        await until(`document.querySelectorAll('.call-node').length===4 && !document.querySelector('.svg-export>button').disabled`);
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('conditional frames render real expression nodes, expose bilingual titles and fold independently', { timeout: 60000 }, async () => {
+    const reply = conditionalExpressions();
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelectorAll('.condition-node').length===2 && !document.querySelector('.svg-export>button').disabled`);
+        assert.equal(await evaluate(`document.querySelectorAll('.condition-node.folded .fold-summary').length`), 2);
+        await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All').click()`);
+        await until(`!document.querySelector('.condition-node.folded') && !document.querySelector('.svg-export>button').disabled`);
+        const titles = () => evaluate(`[...document.querySelectorAll('.box > .boxlabel')].map(n=>n.textContent)`);
+        const japanese = await titles();
+        assert(japanese.includes('条件分岐') && japanese.includes('条件選択'));
+        assert.equal(japanese.filter(t => t === '条件').length, 2);
+        const callCount = await evaluate(`document.querySelectorAll('.call-node').length`);
+        assert.equal(callCount, 4, 'comparison, nested call, body call and selection comparison all render');
+        const visible = await evaluate(`(()=>{
+            const frame=document.querySelector('.condition-node'), r=frame.getBoundingClientRect();
+            const card=[...document.querySelectorAll('.call-node')].find(n=>{
+                const c=n.getBoundingClientRect();return c.left>r.left && c.right<r.right && c.top>r.top && c.bottom<r.bottom;
+            });
+            if(!card)return false;
+            const c=card.getBoundingClientRect();return card.contains(document.elementFromPoint(c.left+8,c.top+8));
+        })()`);
+        assert(visible, 'the opaque condition frame does not cover its expression children');
+        await evaluate(`document.querySelector('.condition-node > .foldbtn').click()`);
+        await until(`document.querySelector('.condition-node.folded') && !document.querySelector('.svg-export>button').disabled`);
+        assert.equal(await evaluate(`document.querySelectorAll('.call-node').length`), 2, 'only this condition subtree is hidden');
+        const preview = await evaluate(`(()=>{
+            const box=document.querySelector('.condition-node.folded'), title=box.querySelector('.boxlabel'), summary=box.querySelector('.fold-summary');
+            const a=title.getBoundingClientRect(), b=summary.getBoundingClientRect(), r=box.getBoundingClientRect();
+            return {title:title.textContent, text:summary.textContent, below:b.top>=a.bottom, inside:b.bottom<=r.bottom};
+        })()`);
+        assert.deepEqual(preview, {title:'条件', text:'check(value) = 1', below:true, inside:true});
+        await evaluate(`document.querySelector('.svg-export>button').click()`);
+        await evaluate(`document.querySelector('.svg-export-menu>button').click()`);
+        await until('window.exports.length>0');
+        const exportedText = await evaluate(`new DOMParser().parseFromString(window.exports.at(-1).svg,'image/svg+xml').documentElement.textContent`);
+        assert(exportedText.includes('check(value) = 1'), 'SVG contains the collapsed source preview');
+        await evaluate(`document.querySelector('.condition-node.folded > .foldbtn').click()`);
+        await until(`document.querySelectorAll('.call-node').length===4 && !document.querySelector('.svg-export>button').disabled`);
+        await evaluate(`window.postMessage({type:'localization',language:'en'},'*')`);
+        await until(`[...document.querySelectorAll('.boxlabel')].some(n=>n.textContent==='Conditional Selection') && !document.querySelector('.svg-export>button').disabled`);
+        const english = await titles();
+        assert(english.includes('Conditional Branch'));
+        assert.equal(english.filter(t => t === 'Condition').length, 2);
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('an unmatched IF has a visible outer route and completed arms join the statement footer', { timeout: 60000 }, async () => {
+    await browser({ ...routes, '/': { type: 'text/html', body: html(branchFlow()) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelector('.react-flow__edge-execution-bypass .react-flow__edge-path') && !document.querySelector('.svg-export>button').disabled`);
+        const route = await evaluate(`(()=>{
+            const path=document.querySelector('.react-flow__edge-execution-bypass .react-flow__edge-path');
+            const cards=[...document.querySelectorAll('.condition-node,.call-node')].map(n=>n.getBoundingClientRect());
+            const matrix=path.getScreenCTM(); let maxX=-Infinity,collisions=0;
+            for(let t=0;t<=path.getTotalLength();t+=2){
+                const p=path.getPointAtLength(t),screen=new DOMPoint(p.x,p.y).matrixTransform(matrix);
+                maxX=Math.max(maxX,screen.x);
+                if(cards.some(r=>screen.x>r.left+1 && screen.x<r.right-1 && screen.y>r.top+1 && screen.y<r.bottom-1))collisions++;
+            }
+            return {collisions, maxX, right:Math.max(...cards.map(r=>r.right)),
+                merges:document.querySelectorAll('.react-flow__edge[data-id*="__merge__"] .react-flow__edge-path').length,
+                appendInputs:document.querySelectorAll('.react-flow__node:has(.add-node) [data-handleid="flow-in"]').length};
+        })()`);
+        assert.equal(route.collisions, 0);
+        assert(route.maxX > route.right, 'the no-match route passes to the right of all condition and body nodes');
+        assert.equal(route.merges, 1);
+        assert.equal(route.appendInputs, 2, 'body and outer statement-list footers both accept execution lines');
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('an empty document draws a start-to-add arrow', { timeout: 60000 }, async () => {
+    const reply = { source: '', root: { kind: 'block', start: 0, end: 0, line: 1, column: 1 } };
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelector('.react-flow__edge-execution .react-flow__edge-path') && !document.querySelector('.svg-export>button').disabled`);
+        assert.equal(await evaluate(`document.querySelectorAll('.react-flow__edge-path').length`), 1);
+        assert(await evaluate(`!!document.querySelector('.react-flow__edge-path').getAttribute('marker-end')`));
+        assert(await evaluate(`!!document.querySelector('.react-flow__node:has(.add-node) [data-handleid="flow-in"]')`));
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('terminal statements have incoming paths but no outgoing handles, merge wires or statement footers', { timeout: 60000 }, async () => {
+    for (const panic of [false, true]) {
+        const reply = terminalFlow({ panic, branch: 'all', trailing: true });
+        await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
+            await until(`document.querySelector('.svg-export>button') && !document.querySelector('.svg-export>button').disabled`);
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All').click()`);
+            await until(`document.querySelectorAll('.condition-node').length===1 && !document.querySelector('.svg-export>button').disabled`);
+            const geometry = await evaluate(`(()=>{
+                const boxes=[...document.querySelectorAll('.react-flow__node')].filter(n=>{
+                    const box=n.querySelector('.box[data-source-start]');
+                    if(!box)return false;
+                    return ${JSON.stringify(reply.source)}.slice(Number(box.dataset.sourceStart),Number(box.dataset.sourceEnd)).startsWith(${JSON.stringify(panic ? 'panic^' : 'return^')}) &&
+                        (box.classList.contains('return-node') || (!box.classList.contains('container') && !box.classList.contains('condition-node')));
+                });
+                const after=[...document.querySelectorAll('.call-node')].find(n=>Number(n.dataset.sourceStart)===${reply.source.indexOf('print')});
+                return {terminals:boxes.length, inputs:boxes.filter(n=>n.querySelector('[data-handleid="flow-in"]')).length,
+                    outputs:boxes.filter(n=>n.querySelector('[data-handleid="flow-out"]')).length,
+                    footers:document.querySelectorAll('.react-flow__node:has(.add-node) [data-handleid="flow-in"]').length,
+                    merges:document.querySelectorAll('.react-flow__edge[data-id*="__merge__"]').length,
+                    bypass:document.querySelectorAll('.react-flow__edge-execution-bypass').length,
+                    afterVisible:!!after, afterHandles:after?.parentElement.querySelectorAll('.flowhandle').length};
+            })()`);
+            assert.equal(geometry.terminals, 2);
+            assert.equal(geometry.inputs, 2);
+            assert.equal(geometry.outputs, 0);
+            assert.equal(geometry.footers, 0);
+            assert.equal(geometry.merges, 0);
+            assert.equal(geometry.bypass, 0);
+            assert(geometry.afterVisible, 'unreachable source is still displayed');
+            assert.equal(geometry.afterHandles, 0);
+            assert.equal(errors.length, 0, JSON.stringify(errors));
+        });
+    }
+});
+
+test('pattern frames show expression trees in horizontal statement arms and vertical expression alternatives', { timeout: 60000 }, async () => {
+    for (const expression of [false, true]) {
+        const reply = patternMatching({ expression });
+        await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
+            await until(`document.querySelectorAll('.condition-node').length===2 && !document.querySelector('.svg-export>button').disabled`);
+            assert.equal(await evaluate(`document.querySelectorAll('.condition-node.folded .fold-summary').length`), 2);
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All').click()`);
+            await until(`!document.querySelector('.condition-node.folded') && !document.querySelector('.svg-export>button').disabled`);
+            const geometry = () => evaluate(`(()=>{
+                const rect=n=>{const r=n.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height}};
+                const frames=[...document.querySelectorAll('.condition-node')];
+                return {frames:frames.map(rect),labels:frames.map(n=>n.querySelector('.boxlabel').textContent),
+                    calls:[...document.querySelectorAll('.call-node')].map(rect),
+                    titles:[...document.querySelectorAll('.boxlabel')].map(n=>n.textContent)};
+            })()`);
+            const initial = await geometry(), [first, second] = initial.frames;
+            assert.deepEqual(initial.labels, ['パターン', 'パターン']);
+            assert(initial.titles.includes(expression ? 'パターン選択' : 'パターン分岐'));
+            assert(expression ? second.y >= first.y + first.h : second.x >= first.x + first.w,
+                'candidate ordering follows the requested orientation');
+            assert.equal(initial.calls.filter(c => c.x > first.x && c.x + c.w < first.x + first.w &&
+                c.y > first.y && c.y + c.h < first.y + first.h).length, 2, 'the first pattern contains its operator and nested call');
+            await evaluate(`document.querySelector('.condition-node > .foldbtn').click()`);
+            await until(`document.querySelector('.condition-node.folded') && !document.querySelector('.svg-export>button').disabled`);
+            const folded = await geometry();
+            assert.equal(folded.calls.length, initial.calls.length - 2);
+            assert.equal(await evaluate(`document.querySelector('.condition-node.folded .fold-summary').textContent`), 'threshold(1) + 2');
+            assert.equal(await evaluate(`document.querySelector('.condition-node.folded .boxlabel').textContent`), 'パターン');
+            await evaluate(`document.querySelector('.condition-node.folded > .foldbtn').click()`);
+            await until(`document.querySelectorAll('.call-node').length===${initial.calls.length} && !document.querySelector('.svg-export>button').disabled`);
+            await evaluate(`window.postMessage({type:'localization',language:'en'},'*')`);
+            await until(`[...document.querySelectorAll('.boxlabel')].some(n=>n.textContent===${JSON.stringify(expression ? 'Pattern Matching Selection' : 'Pattern Matching Branch')}) && !document.querySelector('.svg-export>button').disabled`);
+            assert.deepEqual((await geometry()).labels, ['Pattern', 'Pattern']);
+            assert.equal(errors.length, 0, JSON.stringify(errors));
+        });
+    }
+});
+
+test('PageUp and PageDown page vertically, clamp at document ends and leave editors and menus alone', { timeout: 60000 }, async () => {
+    const lines = Array.from({ length: 12 }, (_, i) => `print("row ${i}")`), source = lines.join('\n');
+    let offset = 0;
+    const items = lines.map((text, i) => {
+        const start = offset; offset += text.length + 1;
+        const node = (kind, from, end) => ({ kind, start: from, end, line: i + 1, column: from - start + 1 });
+        const value = { ...node('call', start, start + text.length),
+            fields: { target: node('ident', start, start + 5), argument: [node('string', start + 6, start + text.length - 1)] },
+            callable: { inputs: [{ name: 'value', type: 'string^' }], outputs: [] } };
+        return { ...node('call-stmt', start, start + text.length), fields: { value } };
+    });
+    const reply = { source, root: { kind: 'block', start: 0, end: source.length, line: 1, column: 1, fields: { items } } };
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, call, errors }) => {
+        await until(`document.querySelectorAll('.call-node').length===12 && !document.querySelector('.svg-export>button').disabled`);
+        const position = () => evaluate(`(()=>{const m=new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);return {x:m.e,y:m.f}})()`);
+        const page = async key => {
+            const code = key === 'PageDown' ? 34 : 33;
+            await call('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: code });
+            await call('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: code });
+            await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+        };
+        const initial = await position(), height = await evaluate(`document.getElementById('flow').clientHeight`);
+        await page('PageDown');
+        const down = await position();
+        assert.equal(down.x, initial.x);
+        assert(Math.abs(down.y - (initial.y - height * 0.9)) < 1);
+        await page('PageUp');
+        assert.deepEqual(await position(), initial);
+        await page('PageUp');
+        assert.deepEqual(await position(), initial, 'PageUp stays at the top');
+        for (let i = 0; i < 12; i++) await page('PageDown');
+        const bottom = await position();
+        await page('PageDown');
+        assert.deepEqual(await position(), bottom, 'PageDown stays at the bottom');
+        for (let i = 0; i < 12; i++) await page('PageUp');
+        assert.deepEqual(await position(), initial);
+        await evaluate(`document.querySelector('.literal-editor textarea').focus({preventScroll:true})`);
+        await page('PageDown');
+        assert.deepEqual(await position(), initial, 'literal editing keeps its keyboard behavior');
+        await evaluate(`document.activeElement.blur();document.querySelector('.svg-export>button').click()`);
+        await until(`!!document.querySelector('.svg-export-menu')`);
+        await evaluate(`document.querySelector('.svg-export-menu>button').focus({preventScroll:true})`);
+        await page('PageDown');
+        assert.deepEqual(await position(), initial, 'menu navigation does not scroll the graph');
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('reassignment pairs render in vertical rows with matching definition wires and translated operation titles', { timeout: 60000 }, async () => {
+    for (const [operator, japanese, english] of [
+        [':=', '再代入', 'Reassignment'], ['+=', '加算再代入', 'Addition Assignment'],
+        ['?*=', '乗算再代入（nilチェック付き）', 'Multiplication Assignment (nil-checked)'],
+    ]) {
+        const reply = assignment(operator, { lowered: true });
+        await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
+            await until(`document.querySelectorAll('.react-flow__edge.definition .react-flow__edge-path').length===2 && !document.querySelector('.svg-export>button').disabled`);
+            const geometry = await evaluate(`(()=>{
+                const rect=n=>{const r=n.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height}};
+                const targets=[...document.querySelectorAll('.react-flow__node:has([data-handleid="definition-in"])')].map(rect);
+                const values=[...document.querySelectorAll('.literal-number')].map(n=>({...rect(n),value:n.querySelector('input').value}));
+                const lines=[...document.querySelectorAll('.react-flow__edge.definition .react-flow__edge-path')].map(p=>{
+                    const a=p.getPointAtLength(0),b=p.getPointAtLength(p.getTotalLength()),m=p.getScreenCTM();
+                    const from=new DOMPoint(a.x,a.y).matrixTransform(m),to=new DOMPoint(b.x,b.y).matrixTransform(m);
+                    return {sx:from.x,sy:from.y,tx:to.x,ty:to.y};
+                });
+                return {title:document.querySelector('[data-role="reassignment"]').textContent,targets,values,lines,calls:document.querySelectorAll('.call-node').length};
+            })()`);
+            assert.equal(geometry.title, japanese);
+            assert.equal(geometry.calls, 0, 'the compiler-generated compound tree is absent');
+            assert.equal(geometry.targets.length, 2); assert.equal(geometry.values.length, 2);
+            assert(geometry.targets[1].y > geometry.targets[0].y + geometry.targets[0].h);
+            for (let i = 0; i < 2; i++) {
+                const target = geometry.targets[i], value = geometry.values[i], line = geometry.lines[i];
+                assert.equal(value.value, String(i + 1));
+                assert(value.x > target.x + target.w);
+                assert(Math.abs(line.sy - line.ty) < 1 && line.sx > line.tx, 'the value connects to the corresponding target');
+                assert(line.ty > target.y && line.ty < target.y + target.h);
+            }
+            await evaluate(`window.postMessage({type:'localization',language:'en'},'*')`);
+            await until(`document.querySelector('[data-role="reassignment"]')?.textContent===${JSON.stringify(english)} && !document.querySelector('.svg-export>button').disabled`);
+            assert.equal(errors.length, 0, JSON.stringify(errors));
+        });
+    }
 });
