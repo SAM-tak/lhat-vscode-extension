@@ -1,0 +1,24 @@
+let^f = f^{(1, 2, 3)}
+let^a, b, c = f()
+print(a, b, c)
+
+let^f3 = f^x{x * 10}
+let^f2 = f^x, y, z{(x * 2 + 1, f3(y) + 2, z + 3)}
+let^a1, b1, c1 = f2(3, 4, 5)
+print(a1, b1, c1)
+
+errordef^E {
+    Err1
+}
+
+let^f4 = f^x{ if^x > 0: x el^:error^E.Err1{}; }
+var^a2 = try^f4(10)
+print(a2)
+var^b2 = f4(10)
+print(try^b2)
+var^a3 = f4(10) catch^ 0
+let^b3 = print(a3)
+
+a2, a3 := 0, 0
+
+print(f^{100}())
