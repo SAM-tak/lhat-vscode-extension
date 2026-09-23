@@ -67,9 +67,10 @@ test('declaration/value ports point left, while expression branches transpose do
     const [first, second] = rows(graph);
     assert.equal(first.children[0].labels[0].text, 'y');
     assert.equal(second.children[0].labels[0].text, 'z:number^');
-    assert.equal(first.children[1].layoutOptions['elk.direction'], 'RIGHT');
-    assert.equal(first.children[1].lhat.callTree, true);
-    assert(flatten(first.children[1]).some(node => node.lhat?.ioGroup === 'input'));
+    assert.equal(first.children[1].layoutOptions['elk.direction'], 'DOWN');
+    assert.equal(first.children[1].lhat.expressionTree, true);
+    assert.equal(first.children[1].children[0].layoutOptions['elk.direction'], 'RIGHT');
+    assert(flatten(first.children[1]).some(node => node.lhat?.operandInput));
     assert.equal(flatten(first.children[1]).find(node => node.lhat?.kind === 'if-expr').layoutOptions['elk.direction'], 'DOWN');
     const laid = await new ELK().layout(graph);
     for (const row of rows(laid)) {

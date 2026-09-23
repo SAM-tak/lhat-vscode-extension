@@ -7,7 +7,7 @@ export type LabelRole = "variableDefinition" | "mutableVariableDefinition" |
     "variableDeclaration" | "mutableVariableDeclaration" | "string" | "number";
 export type Vocabulary = Record<LabelRole, string> & {
     hats?: Record<string, string>; outer?: string; levels?: string; tableDefinition?: string; table?: string;
-    input?: string; output?: string; noOutput?: string; missingInput?: string; call?: string;
+    input?: string; output?: string; noOutput?: string; missingInput?: string; call?: string; methodCall?: string;
     condition?: string; conditionalBranch?: string; conditionalSelection?: string;
     pattern?: string; patternBranch?: string; patternSelection?: string;
     assignments?: Record<string, string>; nilCheckedAssignment?: string;
@@ -20,7 +20,7 @@ export const ENGLISH_VOCABULARY: Vocabulary = {
     outer: "Outer {0}: {1}", levels: "{0} ({1} levels)",
     tableDefinition: "Table type definition",
     table: "Table",
-    input: "Input", output: "Output", noOutput: "No output", missingInput: "Missing input", call: "Call",
+    input: "Input", output: "Output", noOutput: "No output", missingInput: "Missing input", call: "Call", methodCall: "Method Call",
     condition: "Condition", conditionalBranch: "Conditional Branch", conditionalSelection: "Conditional Selection",
     pattern: "Pattern", patternBranch: "Pattern Matching Branch", patternSelection: "Pattern Matching Selection",
     assignments: ASSIGNMENT_LABELS, nilCheckedAssignment: "{0} (nil-checked)",

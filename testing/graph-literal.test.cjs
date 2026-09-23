@@ -99,3 +99,20 @@ test('multiline string leaves reserve bounded height while negative literals rem
         assert.equal(slot.lhat.literalTypeLabel, kind === 'unary' ? 'Number' : 'Text');
     }
 });
+
+test('long text soft-wraps up to five rows without widening the clamp or changing its value', () => {
+    for (const scale of [7 / 12, 1, 2]) {
+        const slot = value => {
+            const source = JSON.stringify(value);
+            return flatten(toElk({ source, root: node('string', source) }, { scale })).find(n => n.lhat?.literal);
+        };
+        const short = slot('short'), two = slot('word '.repeat(15)), five = slot('1\n2\n3\n4\n5');
+        const long = '日本語の長い文章'.repeat(100), capped = slot(long);
+        assert(two.height > short.height, 'a long source line gains display rows');
+        assert.equal(five.height, Math.round(108 * scale));
+        assert.equal(capped.height, five.height, 'soft wrapping stops growing after five rows');
+        assert.equal(slot('1\n2\n3\n4\n5\n6\n7').height, five.height, 'explicit newlines share the cap');
+        assert.equal(capped.width, two.width, 'the existing horizontal clamp is preserved');
+        assert.equal(capped.lhat.literal.value, long, 'soft wrapping never inserts source newlines');
+    }
+});

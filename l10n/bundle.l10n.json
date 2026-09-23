@@ -39,6 +39,7 @@
     "Input": "Input",
     "Output": "Output",
     "Call": "Call",
+    "Method Call": "Method Call",
     "Condition": "Condition",
     "Conditional Branch": "Conditional Branch",
     "Conditional Selection": "Conditional Selection",

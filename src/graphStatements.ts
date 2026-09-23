@@ -111,7 +111,9 @@ export function insertStatementEdit(tree: AstReply, site: StatementInsertion, te
     const lineStart = (offset: number) => offset <= 0 ? 0 : source.lastIndexOf("\n", offset - 1) + 1;
     const indentation = (offset: number) => /^[\t ]*/.exec(source.slice(lineStart(offset), offset))![0];
     const before = list.items.find(item => item.start === site.before);
-    const extra = list.node.fields?.extra;
+    const extra = [list.node.fields?.extra, list.node.fields?.arms]
+        .flatMap(value => Array.isArray(value) ? value : value ? [value] : [])
+        .sort((a, b) => a.start - b.start);
     const lastItemEnd = list.items[list.items.length - 1]?.end ?? list.node.start;
     const firstExtra = (Array.isArray(extra) ? extra : extra ? [extra] : []).find(clause => clause.start >= lastItemEnd);
     const file = list.node === tree.root && tree.root.kind === "block";

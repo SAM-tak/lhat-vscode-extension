@@ -12,10 +12,13 @@ function load(file) {
     return mod.exports;
 }
 const { listInsertions, insertListEdit, listTemplates, groupedOperatorSites, replaceOperatorEdit, operatorGroup, operatorSites } = load('graphLists.ts');
-const { callInfo } = load('graphCalls.ts');
+const { callInfo, callReceiver, takesSelf } = load('graphCalls.ts');
+const { methodCall } = require('./method-fixture.cjs');
+const { indexExpression } = require('./index-fixture.cjs');
 const { toElk, stackWideDefinitions } = load('webview/map.ts');
 const { ASSIGNMENT_LABELS, assignmentOperator, assignmentValues } = load('graphAssignments.ts');
 const { commaLists } = load('graphLists.ts');
+const { expressionCells, isInlineValue } = load('webview/operatorExpression.ts');
 const flatten = node => [node, ...(node.children ?? []).flatMap(flatten)];
 const apply = (source, edit) => source.slice(0, edit.start) + edit.text + source.slice(edit.end);
 function fixture(source) {
@@ -29,6 +32,194 @@ function binding(source = 'let^ a, b = 1, 2') {
     return { source, root: n('define', source, { targets: [n('ident', 'a', undefined, 4), n('ident', 'b', undefined, 4)],
         values: [n('int', '1'), n('int', '2')] }) };
 }
+
+test('operator rows preserve precedence, unary spelling, primitive values and parentheses outside AST spans', () => {
+    for (const source of ['a + b * 2', 'a + #[ (ignored) ]# b * 2']) {
+        const n = fixture(source);
+        const product = n('binary', 'b * 2', { left: n('ident', 'b'), right: n('int', '2') });
+        const root = n('binary', source, { left: n('ident', 'a'), right: product });
+        const cells = expressionCells(root, source);
+        assert.deepEqual(cells.map(cell => cell.token?.text ?? source.slice(cell.operand.start, cell.operand.end)), ['a', '+', 'b', '*', '2']);
+        assert(cells.filter(cell => cell.operand).every(cell => cell.inline));
+    }
+    const source = '!flag and^ true^ or^ "(text)" = "text"', n = fixture(source);
+    const unary = n('unary', '!flag', { value: n('ident', 'flag') });
+    const left = n('binary', '!flag and^ true^', { left: unary, right: n('hat-ident', 'true^') });
+    const right = n('binary', '"(text)" = "text"', { left: n('string', '"(text)"'), right: n('string', '"text"') });
+    const cells = expressionCells(n('binary', source, { left, right }), source);
+    assert.deepEqual(cells.map(cell => cell.token?.text ?? source.slice(cell.operand.start, cell.operand.end)),
+        ['!', 'flag', 'and^', 'true^', 'or^', '"(text)"', '=', '"text"']);
+    assert(cells.filter(cell => cell.operand).every(cell => cell.inline));
+    for (const source of ['(a + b) * c', 'a * (b + c)']) {
+        const n = fixture(source), grouped = source.startsWith('(') ? 'a + b' : 'b + c';
+        for (const includeParens of [false, true]) {
+            const inner = n('binary', includeParens ? `(${grouped})` : grouped,
+                { left: n('ident', grouped[0]), right: n('ident', grouped.at(-1)) });
+            const root = n('binary', source, source.startsWith('(') ? { left: inner, right: n('ident', 'c') }
+                : { left: n('ident', 'a'), right: inner });
+            const cells = expressionCells(root, source);
+            assert.equal(cells.filter(cell => cell.operand && !cell.inline).length, 1);
+            assert.equal(expressionCells(inner, source).filter(cell => cell.operand && !cell.inline).length, 0);
+        }
+    }
+});
+
+test('plain dotted name paths inline in operators, indices and method receivers', () => {
+    for (const source of ['a.b.c + 1', 'items[a.b.c]', 'a.b.c.Remove(1)']) {
+        const n = fixture(source);
+        const inner = n('member', 'a.b', { target: n('ident', 'a'), argument: n('ident', 'b') });
+        const path = n('member', 'a.b.c', { target: inner, argument: n('ident', 'c') }, 0, { inferredType: 'number^' });
+        assert(isInlineValue(path, source));
+        let root;
+        if (source.includes('+')) root = n('binary', source, { left: path, right: n('int', '1') });
+        else if (source.includes('[')) root = n('index', source, { target: n('ident', 'items'), argument: [path] });
+        else root = n('call', source, { target: n('member', 'a.b.c.Remove', { target: path, argument: n('ident', 'Remove') }),
+            argument: [n('int', '1')] }, 0, { callable: { signature: 'f^self^, number^ -> number^;', inputs: [{ type: 'number^' }], outputs: ['number^'] } });
+        const all = flatten(toElk({ source, root }));
+        assert(!all.some(node => node.lhat?.operandInput));
+        const rendered = all.find(node => node.lhat?.kind === 'member' && node.lhat.start === path.start && node.lhat.end === path.end);
+        assert(rendered && !rendered.children, 'the complete path is one source-backed leaf');
+        if (root.kind === 'call') assert(all.find(node => node.lhat?.ioGroup === 'self').children.includes(rendered));
+    }
+});
+
+test('dotted paths do not inline calls, indices, computed keys or grouped receivers', () => {
+    for (const [source, baseText, kind] of [['make().x.y', 'make()', 'call'], ['items[0].x.y', 'items[0]', 'index'],
+        ['(a).x.y', 'a', 'ident'], ['a.(x).y', 'a', 'ident']]) {
+        const n = fixture(source), base = n(kind, baseText);
+        const innerText = source.slice(0, source.lastIndexOf('.'));
+        const inner = n('member', innerText, { target: base, argument: n('ident', 'x') });
+        const path = n('member', source, { target: inner, argument: n('ident', 'y') });
+        assert(!isInlineValue(path, source), source);
+    }
+    const source = 'self^. #[ignore (.)]# value.0', n = fixture(source);
+    const inner = n('member', 'self^. #[ignore (.)]# value', { target: n('hat-ident', 'self^'), key: n('ident', 'value') });
+    const path = n('member', source, { target: inner, key: n('int', '0') });
+    assert(isInlineValue(path, source), 'comments and constant dot members do not turn a path into an expression');
+    inner.computed = true;
+    assert(!isInlineValue(path, source));
+});
+
+test('only resolved self signatures create method receivers, including legacy and explicit calls', () => {
+    for (const signature of ['f^self^;', 'p^ mutable^self^, number^;', 'closed^f^self^ -> number^;']) assert(takesSelf(signature));
+    for (const signature of ['f^number^;', 'f^f^self^; -> number^;', 'f^number^, self^;', '(f^self^;) & (f^number^;)']) assert(!takesSelf(signature));
+    for (const legacy of [false, true]) for (const explicit of [false, true]) {
+        const { root } = methodCall({ legacy, explicit });
+        const info = callInfo(root), receiver = callReceiver(root);
+        assert(receiver);
+        assert.equal(receiver.explicit, explicit);
+        assert.equal(receiver.value.kind, 'ident');
+        assert.equal(info.inputs.length, explicit ? 2 : 1);
+        assert.equal(info.inputs.at(-1).type, 'number^');
+    }
+    assert.equal(callReceiver(methodCall({ plain: true }).root), undefined, 'a function stored in a member is not a method');
+    const ambiguous = methodCall().root;
+    ambiguous.callable.signature = 'f^number^ -> number^;';
+    assert.equal(callReceiver(ambiguous), undefined, 'the resolved arm overrides the target type');
+});
+
+test('server receiver metadata identifies already-bound built-ins without guessing from member names', () => {
+    const reply = methodCall();
+    reply.root.callable.signature = 'f^number^ -> Dense;';
+    reply.root.fields.target.inferredType = reply.root.callable.signature;
+    reply.root.callable.receiver = { binding: 'member', type: 'Dense' };
+    assert.equal(callReceiver(reply.root).value.kind, 'ident');
+    assert.equal(callReceiver(reply.root).type, 'Dense');
+    let all = flatten(toElk(reply));
+    assert.equal(all.find(node => node.lhat?.invocation).lhat.labelParts[0].text, 'Method Call');
+    assert.equal(all.filter(node => node.lhat?.ioGroup === 'self').length, 1);
+    assert.equal(all.filter(node => node.lhat?.kind === 'input-slot').length, 1);
+    // An explicit negative answer is authoritative, including on a target
+    // whose unresolved signature still contains self.
+    reply.root.callable.receiver = null;
+    reply.root.callable.signature = 'f^self^, number^ -> Dense;';
+    assert.equal(callReceiver(reply.root), undefined);
+    all = flatten(toElk(reply));
+    assert(!all.some(node => node.lhat?.ioGroup === 'self'));
+    assert.equal(all.find(node => node.lhat?.invocation).lhat.labelParts[0].text, 'Call');
+    const explicit = methodCall({ explicit: true });
+    explicit.root.callable.receiver = { binding: 'argument', type: 'Dense' };
+    assert(callReceiver(explicit.root).explicit);
+    explicit.root.callable.receiver = { binding: 'implicit', type: '?' };
+    explicit.root.fields.argument = [];
+    explicit.root.callable.inputs = [];
+    all = flatten(toElk(explicit));
+    assert(all.some(node => node.lhat?.kind === 'implicit-self'));
+    assert(!all.some(node => node.lhat?.kind === 'missing-input'));
+});
+
+test('method Self is inline for simple values, separate from ordinary inputs and localized in its own group', async () => {
+    for (const receiver of ['dense', '3', '"text"', 'true^']) for (const explicit of [false, true]) {
+        const reply = methodCall({ receiver, explicit }), before = JSON.stringify(reply);
+        const graph = stackWideDefinitions(await new ELK().layout(toElk(reply)), 1200);
+        const all = flatten(graph), card = all.find(node => node.lhat?.invocation);
+        assert.equal(card.lhat.labelParts[0].text, 'Method Call');
+        const self = all.find(node => node.lhat?.ioGroup === 'self'), input = all.find(node => node.lhat?.ioGroup === 'input');
+        assert.equal(self.labels[0].text, 'Self');
+        assert.equal(self.children.length, 1);
+        assert.equal(reply.source.slice(self.children[0].lhat.start, self.children[0].lhat.end), receiver);
+        assert(self.y + self.height < input.y, 'Self sits above Input');
+        assert.equal(input.children.length, 1);
+        assert.equal(input.children[0].lhat.labelParts[0].text, 'index');
+        assert.equal(all.filter(node => node.lhat?.kind === 'self-slot').length, 0);
+        const tree = all.find(node => node.lhat?.callTree);
+        assert.equal(tree.lhat.definitionLinks.length, 1, 'only the written index argument needs a wire');
+        assert.equal(JSON.stringify(reply), before);
+    }
+    for (const procedure of [false, true]) {
+        const graph = toElk(methodCall({ noArgs: true, procedure }));
+        assert(flatten(graph).some(node => node.lhat?.ioGroup === 'self'));
+        assert(!flatten(graph).some(node => node.lhat?.ioGroup === 'input'));
+    }
+});
+
+test('complex Self values use the argument columns and are evaluated visually only once', async () => {
+    for (const receiver of ['make()', '(1 + 2)']) {
+        const reply = methodCall({ receiver });
+        for (const scale of [0.7, 1, 2]) {
+            const graph = stackWideDefinitions(await new ELK().layout(toElk(reply, { scale })), 1200);
+            const all = flatten(graph), self = all.find(node => node.lhat?.ioGroup === 'self');
+            const slot = self.children[0], tree = all.find(node => node.lhat?.callTree);
+            assert.equal(slot.lhat.kind, 'self-slot');
+            assert(tree.lhat.definitionLinks.some(link => link.target === slot.id));
+            assert.equal(tree.lhat.callArguments.length, 2, 'receiver and ordinary argument have distinct slots');
+            assert.equal(all.filter(node => node.lhat?.invocation).length, receiver === 'make()' ? 2 : 1);
+            assert.equal(all.filter(node => node.lhat?.operatorExpression).length, receiver === 'make()' ? 0 : 1);
+            const title = tree.children[0].children[0].children[0];
+            assert(!flatten(title).some(node => node.lhat?.invocation || node.lhat?.operatorExpression), 'the method title does not duplicate Self');
+        }
+    }
+});
+
+test('grouped operands and calls sit below compact operator rows with reserved definition lanes', async () => {
+    const reply = require('./operator-fixture.cjs').operatorExpression(), before = JSON.stringify(reply);
+    for (const scale of [0.7, 1, 2]) {
+        const graph = stackWideDefinitions(await new ELK().layout(toElk(reply, { scale })), 1000);
+        const all = flatten(graph), tree = all.find(node => node.lhat?.expressionTree);
+        const [row, column] = tree.children;
+        assert.deepEqual(row.children.map(cell => cell.labels[0].text), ['•', '*', '3', '+', '•', '+', '•']);
+        assert.equal(all.filter(node => node.lhat?.invocation).length, 1);
+        assert.equal(all.filter(node => node.lhat?.operatorExpression).length, 3);
+        assert.equal(column.children.length, 3);
+        assert(column.y > row.y + row.height);
+        for (const [i, value] of column.children.entries()) {
+            assert.equal(value.x, column.children[0].x);
+            if (i) assert(value.y > column.children[i - 1].y + column.children[i - 1].height);
+            const link = tree.lhat.operandLinks[i];
+            assert.equal(link.source, value.id);
+            assert(value.lhat.operandOutputY !== undefined);
+            const slot = row.children.find(cell => cell.id === link.target);
+            assert(slot.lhat.operandInput);
+            assert(link.laneOffset > 0 && link.laneOffset <= value.x);
+            assert(slot.y + slot.height + link.rise < column.y + value.y);
+        }
+        const key = row.lhat.foldKey;
+        const folded = flatten(toElk(reply, { folds: { [key]: true } }));
+        assert(folded.some(node => node.lhat?.collapsed));
+        assert(!folded.some(node => node.lhat?.operandLinks));
+    }
+    assert.equal(JSON.stringify(reply), before);
+});
 
 test('binding additions insert a discard and nil together, preserving Unicode comments and trailing commas', () => {
     for (const source of ['let^ a, b = 1, 2', 'let^ a, #[日本語]# b = 1, #[keep]# 2,']) {
@@ -104,8 +295,10 @@ test('one operator chain retains operand order and replaces every token in one e
     assert.equal(apply(tree.source, replaceOperatorEdit(tree, group.site, '*')), 'a * #[keep]# b * c');
     const graph = toElk(tree);
     assert.equal(flatten(graph).filter(node => node.lhat?.kind === 'binary').length, 1);
-    assert.equal(flatten(graph).filter(node => node.lhat?.kind === 'input-slot').length, 3);
-    assert(flatten(graph).filter(node => node.lhat?.kind === 'input-slot').every(node => node.lhat.labelParts[0].text === ''));
+    assert.equal(flatten(graph).filter(node => node.lhat?.kind === 'input-slot').length, 0);
+    const row = flatten(graph).find(node => node.lhat?.operatorExpression);
+    assert.deepEqual(row.children.map(node => node.labels[0].text), ['a', '+', 'b', '+', 'c']);
+    assert(row.children.filter(node => node.lhat.operator).every(node => node.lhat.operator.members.length === 2));
 });
 
 test('parentheses, overload boundaries and short circuiting prevent operator grouping', () => {
@@ -131,12 +324,12 @@ test('right associative chains retain source order and their existing associatio
     assert.equal(group.site.members.length, 2);
 });
 
-test('a single comparison uses callable slots; comparison chains keep their distinct operators', () => {
+test('single comparisons and comparison chains use inline values and distinct operators', () => {
     const source = 'a < b', n = fixture(source);
     const root = n('compare-chain', source, { operands: [n('ident', 'a'), n('ident', 'b')] }, 0, { inferredType: 'bool^' });
     const graph = toElk({ source, root });
-    assert.equal(flatten(graph).filter(node => node.lhat?.kind === 'input-slot').length, 2);
-    assert.equal(flatten(graph).filter(node => node.lhat?.kind === 'output-slot').length, 1);
+    assert(!flatten(graph).some(node => node.lhat?.invocation || node.lhat?.kind === 'input-slot' || node.lhat?.kind === 'output-slot'));
+    assert.deepEqual(flatten(graph).find(node => node.lhat?.operatorExpression).children.map(node => node.labels[0].text), ['a', '<', 'b']);
     assert.equal(flatten(graph).find(node => node.lhat?.operator).lhat.operator.text, '<');
     const chainSource = 'a < b <= c', c = fixture(chainSource);
     const chain = { source: chainSource, root: c('compare-chain', chainSource, { operands: [c('ident', 'a'), c('ident', 'b'), c('ident', 'c')] }) };
@@ -232,7 +425,7 @@ test('empty variadic calls retain insertion, missing inputs retain slots, and de
     assert(!all.some(node => node.lhat?.invocation));
 });
 
-test('nested calls and operators occupy shared depth columns with aligned tops and compact right-aligned inputs', async () => {
+test('call arguments retain inline operators and extract grouped expressions below their row', async () => {
     const source = 'f(a + (b * c), 4)', n = fixture(source);
     const number = (kind, text, fields) => ({ ...n(kind, text, fields), inferredType: 'number^' });
     const product = number('binary', 'b * c', { left: number('ident', 'b'), right: number('ident', 'c') });
@@ -251,14 +444,20 @@ test('nested calls and operators occupy shared depth columns with aligned tops a
         index(graph);
         assert.equal(all.filter(node => node.lhat?.kind === 'call').length, 1);
         assert.equal(all.filter(node => node.lhat?.kind === 'binary').length, 2);
-        assert.equal(all.filter(node => node.lhat?.invocation).length, 3);
+        assert.equal(all.filter(node => node.lhat?.invocation).length, 1);
         assert(!all.some(node => node.lhat?.ioGroup === 'output'));
         const calls = all.filter(node => node.lhat?.invocation);
         const trees = all.filter(node => node.lhat?.callTree);
         assert.equal(trees.length, 1, 'direct call arguments join one layout, without nested call trees');
         const layout = trees[0];
-        assert.equal(layout.children.length, 4);
-        assert.deepEqual(layout.children.map(column => column.children.length), [1, 2, 2, 2]);
+        assert.equal(layout.children.length, 2);
+        assert.deepEqual(layout.children.map(column => column.children.length), [1, 2]);
+        const expression = all.find(node => node.lhat?.expressionTree);
+        const [row, external] = expression.children;
+        assert.deepEqual(row.children.map(cell => cell.labels[0].text), ['a', '+', '•']);
+        assert(external.y > row.y + row.height);
+        assert.deepEqual(external.children[0].children.map(cell => cell.labels[0].text), ['b', '*', 'c']);
+        assert.equal(expression.lhat.operandLinks.length, 1);
         for (const column of layout.children) {
             assert.equal(column.y, layout.children[0].y, 'depth columns start at the same top');
             for (const [i, value] of column.children.entries()) {
@@ -266,7 +465,6 @@ test('nested calls and operators occupy shared depth columns with aligned tops a
                 if (i) assert(value.y > column.children[i - 1].y + column.children[i - 1].height);
             }
         }
-        assert.equal(calls[0].height, calls[1].height, 'a deep operand cannot stretch its consuming call');
         for (const call of calls) {
             const frame = flatten(call).find(node => node.lhat?.ioGroup === 'input'), f = points.get(frame.id);
             assert.equal(flatten(call).filter(node => node.lhat?.invocation).length, 1, 'no call card contains an argument call');
@@ -279,7 +477,7 @@ test('nested calls and operators occupy shared depth columns with aligned tops a
                 assert(p.y >= f.y && p.y + input.height <= f.y + frame.height);
             }
         }
-        assert.equal(layout.lhat.definitionLinks.length, 6);
+        assert.equal(layout.lhat.definitionLinks.length, 2);
         for (const link of layout.lhat.definitionLinks) {
             const left = layout.children[link.column], right = layout.children[link.column + 1];
             const input = all.find(node => node.id === link.target), p = points.get(input.id);
@@ -327,10 +525,46 @@ test('index expressions retain their own internal call scope outside the consumi
     const graph = stackWideDefinitions(await new ELK().layout(toElk({ source, root: outer })), 5000), all = flatten(graph);
     const trees = all.filter(node => node.lhat?.callTree), value = all.find(node => node.lhat?.kind === 'index');
     assert.equal(trees.length, 2);
-    assert(flatten(value).includes(trees[1]), 'index keeps its own expression boundary');
-    assert.equal(trees[0].children[1].children[0].id, value.id);
+    const scope = all.find(node => node.lhat?.expressionTree);
+    assert(flatten(scope).includes(trees[1]), 'index keeps its own expression boundary');
+    assert.equal(trees[0].children[1].children[0].id, scope.id);
+    assert.deepEqual(value.children.map(cell => cell.labels[0].text), ['items', '[', '•', ']']);
     assert.equal(value.lhat.definitionHandleY, value.height / 2);
     assert.equal(trees[0].lhat.definitionLinks[0].source, value.id);
+});
+
+test('index targets and subscripts embed only simple values and keep each complex value outside the row', async () => {
+    for (const options of [{ simple: true }, {}, { targetCall: true, simple: true },
+        { targetCall: true, indexCall: true }, { optional: true, simple: true }, { multi: true }]) {
+        const reply = indexExpression(options), before = JSON.stringify(reply);
+        for (const scale of [0.7, 1, 2]) {
+            const graph = stackWideDefinitions(await new ELK().layout(toElk(reply, { scale })), 1200);
+            const all = flatten(graph), row = all.find(node => node.lhat?.kind === 'index');
+            const expected = [options.targetCall ? '•' : 'dense', options.optional ? '?[' : '[', options.simple ? 'i' : '•',
+                ...options.multi ? [',', '2'] : [], ']'];
+            assert.deepEqual(row.children.map(cell => cell.labels[0].text), expected);
+            for (let i = 1; i < row.children.length; i++) {
+                const a = row.children[i - 1], b = row.children[i];
+                assert(a.x + a.width <= b.x);
+                assert.equal(a.y + a.height / 2, b.y + b.height / 2);
+            }
+            const holes = row.children.filter(cell => cell.lhat?.operandInput);
+            const scope = all.find(node => node.lhat?.expressionTree);
+            assert.equal(holes.length, Number(!!options.targetCall) + Number(!options.simple));
+            if (holes.length) {
+                assert.equal(scope.lhat.operandLinks.length, holes.length);
+                const [header, column] = scope.children;
+                assert.equal(header.id, row.id);
+                assert(column.y >= header.y + header.height);
+                for (const [i, child] of column.children.entries()) {
+                    assert.equal(scope.lhat.operandLinks[i].source, child.id);
+                    assert.equal(scope.lhat.operandLinks[i].target, holes[i].id);
+                }
+            }
+            assert.equal(all.filter(node => node.lhat?.invocation).length, Number(!!options.targetCall) + Number(!!options.indexCall));
+        }
+        assert.equal(JSON.stringify(reply), before);
+    }
 });
 
 test('port-aligned call subtrees reserve descendant space and keep literal wires horizontal', async () => {
@@ -485,7 +719,8 @@ test('compound RHS expressions remain intact without duplicating indexed write t
         const targets = all.filter(node => node.lhat?.kind === 'index' && node.lhat?.definitionRole === 'declaration');
         assert.equal(targets.length, 1);
         assert.equal(targets[0].labels[0].text, 'items[next()]');
-        assert.equal(all.filter(node => node.lhat?.invocation).length, 1, 'only the written RHS addition is a call card');
+        assert.equal(all.filter(node => node.lhat?.invocation).length, 0, 'the written RHS addition is an inline expression');
+        assert.equal(all.filter(node => node.lhat?.operatorExpression).length, 1);
         assert.equal(all.find(node => node.lhat?.operator).lhat.operator.text, '+');
         assert.equal(JSON.stringify(reply), before);
     }

@@ -12,6 +12,78 @@ function load(file) {
 }
 const { changedHandles } = load('handleUpdates.ts');
 const { LayoutClient } = load('layoutClient.ts');
+const { placeComments } = load('../comments.ts');
+
+test('comments occupy independent boxes above their owners without overlapping adjacent code', () => {
+    const ast = { kind: 'name', start: 10, end: 11, line: 2, column: 1,
+        comments: [{ start: 0, end: 9, block: false }] };
+    const owner = { id: 'owner', x: 10, y: 10, width: 30, height: 30, lhat: { ...ast } };
+    const next = { id: 'next', x: 10, y: 60, width: 30, height: 30 };
+    const right = { id: 'right', x: 60, y: 10, width: 30, height: 30 };
+    const graph = { id: 'view', width: 100, height: 100, children: [owner, next, right] };
+    placeComments(graph, { source: '# comment\nx', root: ast });
+    const comment = graph.children.find(child => child.lhat?.kind === 'comment');
+    assert.equal(comment.labels[0].text, 'comment');
+    assert.equal(comment.lhat.commentOwner, 'name (2:1)');
+    assert.equal(comment.x + comment.width / 2, owner.x + owner.width / 2);
+    assert.ok(comment.y + comment.height < owner.y - 18.7, 'the insertion button fits below the comment');
+    assert.ok(next.y >= owner.y + owner.height + 20);
+    assert.ok(right.x >= comment.x + comment.width + 20);
+    assert.equal(comment.lhat.commentAnchor.id, owner.id);
+    for (const child of graph.children) {
+        assert.ok(child.x + child.width <= graph.width);
+        assert.ok(child.y + child.height <= graph.height);
+    }
+});
+
+test('comment previews and folds preserve the exact source, delimiters, whitespace and spans', () => {
+    const source = '# 日本語😀 #tag \r\n#[\r\n\tfirst line\r\n  #[ nested ]#\r\nlast line\r\n]#\r\nx';
+    const comments = [{ start: 0, end: source.indexOf('\r\n'), block: false },
+        { start: source.indexOf('#['), end: source.lastIndexOf(']#') + 2, block: true }];
+    const root = { kind: 'name', start: source.length - 1, end: source.length, line: 8, column: 1, comments };
+    const reply = { source, root }, original = JSON.stringify(reply);
+    const make = () => ({ id: 'view', width: 100, height: 50, children: [
+        { id: 'owner', x: 10, y: 10, width: 80, height: 30, lhat: { ...root } },
+    ] });
+    const boxes = graph => graph.children.filter(child => child.lhat?.kind === 'comment');
+    const key = `comment:${comments[1].start}:${comments[1].end}`;
+    for (const scale of [7 / 12, 1, 28 / 12]) {
+        const open = boxes(placeComments(make(), reply, { scale, collapse: true }));
+        assert.deepEqual(open.map(box => box.labels[0].text), ['日本語😀 #tag', 'first line\n  #[ nested ]#\nlast line']);
+        assert(open.every(box => box.lhat.foldable && !box.lhat.collapsed), 'comments start expanded');
+        const graph = placeComments(make(), reply, { scale, folds: { [key]: true } });
+        const folded = boxes(graph), owner = graph.children.find(child => child.id === 'owner');
+        assert.equal(folded[0].lhat.collapsed, false, 'each comment folds independently');
+        assert.equal(folded[1].labels[0].text, 'first line…');
+        assert(folded[1].height < open[1].height);
+        assert(folded[1].y + folded[1].height < owner.y - 18.7 * scale);
+        folded.forEach((box, i) => assert.equal(reply.source.slice(box.lhat.start, box.lhat.end),
+            source.slice(comments[i].start, comments[i].end)));
+        const reopened = boxes(placeComments(make(), reply, { scale, folds: { [key]: false } }));
+        assert.deepEqual(reopened, open);
+    }
+    assert(boxes(placeComments(make(), reply, { collapseAll: true })).every(box => box.lhat.collapsed));
+    assert.equal(JSON.stringify(reply), original, 'display and fold operations leave the entire AST and source untouched');
+});
+
+test('root and unboxed AST comments remain visible, while folded descendants stay hidden', () => {
+    const hidden = { kind: 'param', start: 4, end: 5, line: 2, column: 1,
+        comments: [{ start: 0, end: 3, block: false }] };
+    const root = { kind: 'func', start: 0, end: 8, line: 1, column: 1, fields: { params: [hidden] },
+        comments: [{ start: 0, end: 3, block: false }] };
+    const make = collapsed => ({ id: 'view', width: 100, height: 50, children: [
+        { id: 'func', x: 10, y: 10, width: 80, height: 30, lhat: { ...root, collapsed } },
+    ] });
+    const open = placeComments(make(false), { source: '# a\nx   ', root });
+    assert.equal(open.children.filter(child => child.lhat?.kind === 'comment').length, 2);
+    assert.ok(open.children.some(child => child.lhat?.commentOwner === 'param (2:1)'));
+    const folded = placeComments(make(true), { source: '# a\nx   ', root });
+    assert.equal(folded.children.filter(child => child.lhat?.kind === 'comment').length, 1);
+    const view = { id: 'view', width: 0, height: 0 };
+    placeComments(view, { source: '# a\nx   ', root: hidden });
+    assert.equal(view.children[0].lhat.kind, 'comment');
+    assert.ok(view.height >= view.children[0].height);
+});
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => {
     let resolve, reject;

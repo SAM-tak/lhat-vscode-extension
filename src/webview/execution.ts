@@ -4,6 +4,7 @@ import type { AstNode } from "../protocol";
  * arbitrary calls/loops terminate. Callable bodies have their own execution. */
 export function analyzeExecution(root: AstNode, source: string) {
     const memo = new WeakMap<AstNode, boolean>();
+    const mainMemo = new WeakMap<AstNode, boolean>();
     const unreachable = new WeakSet<AstNode>();
     const unreachableStarts = new Set<number>();
     const field = (node: AstNode, name: string): AstNode[] => {
@@ -14,7 +15,9 @@ export function analyzeExecution(root: AstNode, source: string) {
         const known = memo.get(node);
         if (known !== undefined) return known;
         let result = false;
-        if (["return", "panic", "panic-stmt"].includes(node.kind)) result = true;
+        // Loop transfers end this path just like return. Their destination
+        // is outside the sequence; do not draw a fall-through/merge edge.
+        if (["return", "panic", "panic-stmt", "break", "next", "continue", "skip"].includes(node.kind)) result = true;
         else if (["call-stmt", "call", "unary", "expr-stmt"].includes(node.kind) &&
             /^panic\^(?!\^)/.test(source.slice(node.start, node.end))) result = true;
         else if (node.kind === "call-stmt" || node.kind === "expr-stmt") result = field(node, "value").some(stops);
@@ -29,6 +32,11 @@ export function analyzeExecution(root: AstNode, source: string) {
             // Pattern dispatch is a branch, unlike an ordinary possibly-empty loop.
             result = field(node, "body").some(body => body.kind === "if-stmt" && source[body.start] === "{" && stops(body));
         }
+        mainMemo.set(node, result);
+        // A handled error may leave the block normally even when its main
+        // path returns or raises. Handler paths are alternatives, not a tail.
+        const handlers = field(node, "arms");
+        if (handlers.length) result = result && handlers.every(stops);
         memo.set(node, result);
         return result;
     };
@@ -44,5 +52,6 @@ export function analyzeExecution(root: AstNode, source: string) {
         }
     };
     visit(root);
-    return { stops, unreachable, unreachableStarts };
+    const stopsMain = (node: AstNode): boolean => { stops(node); return mainMemo.get(node)!; };
+    return { stops, stopsMain, unreachable, unreachableStarts };
 }

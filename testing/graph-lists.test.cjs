@@ -101,6 +101,27 @@ test('binary expressions expose editable operators without expression insertion 
     assert(!flatten(graph).some(node => node.lhat?.synthetic === 'add'), 'expressions change through their operator menu');
 });
 
+test('index rows retain insertion controls on simple cells, external holes and empty brackets', () => {
+    const { indexExpression } = require('./index-fixture.cjs');
+    for (const options of [{ simple: true }, {}, { multi: true }, { empty: true }]) {
+        const tree = indexExpression(options), all = flatten(toElk(tree));
+        const row = all.find(node => node.lhat?.kind === 'index');
+        const append = row.children.find(node => node.lhat?.appendInsertion || node.lhat?.synthetic === 'add');
+        assert(append);
+        const site = append.lhat.appendInsertion ?? append.lhat.insertion;
+        assert.equal(site.kind, 'index');
+        assert.equal(site.field, 'argument');
+        const edit = insertListEdit(tree, site, 'number');
+        assert.equal(apply(tree.source, edit), tree.source.slice(0, -1) + (options.empty ? '0' : ', 0') + ']');
+        if (options.multi) {
+            const second = row.children.find(node => node.lhat?.insertion);
+            assert(second);
+            assert.equal(second.lhat.insertionAxis, 'horizontal');
+            assert.equal(apply(tree.source, insertListEdit(tree, second.lhat.insertion, 'number')), 'dense[dense.length^ - 1, 0, 2]');
+        }
+    }
+});
+
 test('function drill layout keeps signature cells and horizontal/vertical insertion directions', () => {
     const tree = richFixture(), graph = toElk(tree, { root: tree.fn });
     const signature = flatten(graph).find(node => node.lhat?.kind === 'signature');

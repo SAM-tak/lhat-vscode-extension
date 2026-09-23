@@ -16,6 +16,15 @@ const node = (kind, start, end, fields) => ({ kind, start, end, fields, line: 1,
 const simple = source => ({ source, root: node('block', 0, source.length, { items: [] }) });
 const apply = (source, edit) => source.slice(0, edit.start) + edit.text + source.slice(edit.end);
 
+test('appending to a handled block stays in the main body before its catch clauses', () => {
+    const tree = require('./catch-fixture.cjs').catchFlow();
+    const block = tree.root.fields.items[0];
+    const site = api.statementInsertions(tree).find(site => site.start === block.start && site.end === block.end && site.before === undefined);
+    const edit = api.insertStatementEdit(tree, site, 'let');
+    assert.equal(edit.start, tree.source.indexOf('catch^'));
+    assert(apply(tree.source, edit).includes('work()\nlet^ value = 0\ncatch^IOError.Eof:'));
+});
+
 test('every template and the native statement menu have Japanese labels', () => {
     const ja = require('../l10n/bundle.l10n.ja.json'), en = require('../l10n/bundle.l10n.json');
     for (const label of Object.values(api.STATEMENT_TEMPLATE_LABELS)) {

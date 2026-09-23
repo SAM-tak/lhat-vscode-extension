@@ -27,7 +27,7 @@ const japanese = {
     tableDefinition: ja['Table type definition'],
     table: ja.Table,
     input: ja.Input, output: ja.Output, noOutput: ja['No output'], missingInput: ja['Missing input'],
-    call: ja.Call,
+    call: ja.Call, methodCall: ja['Method Call'],
     condition: ja.Condition, conditionalBranch: ja['Conditional Branch'], conditionalSelection: ja['Conditional Selection'],
     pattern: ja.Pattern, patternBranch: ja['Pattern Matching Branch'], patternSelection: ja['Pattern Matching Selection'],
     assignments: Object.fromEntries(Object.entries(ENGLISH_VOCABULARY.assignments).map(([operator, label]) => [operator, ja[label]])),
@@ -53,6 +53,24 @@ test('VS Code bundles select Japanese, default English and per-message English f
         hats: { ...ENGLISH_VOCABULARY.hats, string: '文字列' } });
     configureLocalization();
     assert.deepEqual(graphVocabulary(), ENGLISH_VOCABULARY);
+});
+
+test('operator cells use localized words without changing their edit tokens, and holes match numeric widths', () => {
+    const source = 'flag and^ true^', n = fixture(source);
+    const reply = { source, root: n('binary', source, { left: n('ident', 'flag'), right: n('hat-ident', 'true^') }) };
+    for (const [vocabulary, word] of [[japanese, 'かつ'], [ENGLISH_VOCABULARY, 'And']]) {
+        const operator = flatten(toElk(reply, { vocabulary })).find(node => node.lhat?.operator);
+        assert.equal(display(operator), word);
+        assert.equal(operator.lhat.operator.text, 'and^');
+        assert(operator.width >= labelColumns(word) * 7.2 + 12);
+        const graph = toElk(require('./operator-fixture.cjs').operatorExpression(), { vocabulary });
+        const hole = flatten(graph).find(node => node.lhat?.operandInput);
+        const number = flatten(graph).find(node => node.lhat?.literal?.value === '3');
+        assert.equal(hole.width, number.width);
+        const method = flatten(toElk(require('./method-fixture.cjs').methodCall(), { vocabulary }));
+        assert.equal(display(method.find(node => node.lhat?.invocation)), vocabulary.methodCall);
+        assert.equal(display(method.find(node => node.lhat?.ioGroup === 'self')), vocabulary.hats.self);
+    }
 });
 
 test('reassignment and all compound operations have consistent translated titles, including nil-checked forms', () => {
@@ -108,7 +126,7 @@ test('if statements and expressions have distinct bilingual titles and structure
         for (const frame of conditions) {
             assert.equal(display(frame), vocabulary.condition);
             assert(frame.lhat.noExecutionHandles && frame.lhat.foldable);
-            assert(frame.children[0].lhat.callTree);
+            assert(frame.children[0].lhat.operatorExpression || frame.children[0].lhat.expressionTree);
             assert(flatten(frame).filter(n => n.lhat?.invocation).every(n => n.lhat.noExecutionHandles));
             assert(frame.width >= frame.children[0].x + frame.children[0].width);
             assert(frame.height >= frame.children[0].y + frame.children[0].height);
@@ -142,7 +160,8 @@ test('pattern trees have bilingual captions and horizontal statement arms or ver
         const patterns = all.filter(n => n.lhat?.kind === 'pattern');
         assert.equal(patterns.length, 2, 'the default arm has no fabricated pattern');
         assert(patterns.every(n => display(n) === vocabulary.pattern && n.lhat.noExecutionHandles && n.lhat.foldable));
-        assert.equal(flatten(patterns[0]).filter(n => n.lhat?.invocation).length, 2, 'the pattern retains its operator and nested call');
+        assert.equal(flatten(patterns[0]).filter(n => n.lhat?.invocation).length, 1, 'the nested call retains its call card');
+        assert.equal(flatten(patterns[0]).filter(n => n.lhat?.operatorExpression).length, 1, 'the pattern operator is inline');
         assert(flatten(patterns[1]).some(n => n.lhat?.literal?.value === '3'), 'literal patterns use the normal value node');
         for (const frame of patterns) {
             assert.equal(frame.lhat.condition.axis, expression ? 'horizontal' : undefined);
@@ -453,8 +472,8 @@ test('try recursively renders its calls and operators, including through an encl
             const body = flatten(wrappers[0]);
             assert.equal(body.filter(node => node.lhat?.kind === 'call').length, 2);
             assert.equal(body.filter(node => node.lhat?.kind === 'binary').length, 1);
-            assert.equal(body.filter(node => node.lhat?.kind === 'input-slot').length, 4);
-            assert.equal(body.filter(node => node.lhat?.kind === 'output-slot').length, 3);
+            assert.equal(body.filter(node => node.lhat?.kind === 'input-slot').length, 2);
+            assert.equal(body.filter(node => node.lhat?.kind === 'output-slot').length, 2);
             assert.equal(body.find(node => node.lhat?.literal?.value === '10')?.lhat.start, source.indexOf('10'));
             assert.equal(nodes.find(node => node.lhat?.kind === 'pack').children[0].id, wrappers[1].id);
             const binding = nodes.find(node => node.lhat?.kind === 'binding-pair');

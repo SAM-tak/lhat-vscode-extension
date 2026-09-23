@@ -7,6 +7,7 @@ export interface HandleNode {
         branchOffset?: number; definitionBranchOffset?: number;
         executionAppend?: boolean; executionMerge?: boolean;
         executionTerminal?: boolean;
+        operatorExpression?: boolean; operandInput?: boolean; operandOutputY?: number;
     };
 }
 
@@ -18,7 +19,7 @@ export function changedHandles(nodes: HandleNode[], previous: Map<string, string
     for (const { id, data: d } of nodes) {
         const signature = JSON.stringify([d.flowHandleX, d.definitionHandleY, d.definitionRole,
             d.noExecutionHandles, d.isAdd, d.isStart, d.isCondition, d.branchOffset, d.definitionBranchOffset,
-            d.executionAppend, d.executionMerge, d.executionTerminal]);
+            d.executionAppend, d.executionMerge, d.executionTerminal, d.operatorExpression, d.operandInput, d.operandOutputY]);
         geometry.set(id, signature);
         if (previous.has(id) && previous.get(id) !== signature) changed.push(id);
     }

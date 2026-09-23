@@ -36,6 +36,9 @@ export interface CallableInput { type: string; name?: string; default?: string }
 export interface CallableInfo {
     inputs: CallableInput[];
     outputs: string[];
+    /** Resolved receiver, including built-ins whose signature is already bound.
+     * Absent on older servers; null explicitly denotes an ordinary call. */
+    receiver?: { binding: "member" | "argument" | "implicit"; type: string } | null;
     variadic?: CallableInput;
     signature?: string;
 }

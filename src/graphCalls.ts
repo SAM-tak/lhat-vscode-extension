@@ -3,6 +3,54 @@ import { resultTypes, syntaxTokens } from "./graphSyntax";
 
 const nodes = (value: AstNode | AstNode[] | undefined): AstNode[] => value ? Array.isArray(value) ? value : [value] : [];
 
+/** Only the first parameter of the resolved signature denotes a receiver.
+ * Nested callback types and ordinary functions stored in members are not methods.
+ */
+export function takesSelf(signature: string | undefined): boolean {
+    if (!signature) return false;
+    const tokens = syntaxTokens(signature);
+    let i = tokens[0]?.text === "closed^" ? 1 : 0;
+    if (!["f^", "p^"].includes(tokens[i++]?.text)) return false;
+    if (tokens[i]?.text === "mutable^") i++;
+    return tokens[i]?.text === "self^" && [",", "->", ";"].includes(tokens[i + 1]?.text);
+}
+
+export interface CallReceiver {
+    value?: AstNode;
+    type?: string;
+    implicit?: boolean;
+    /** A bare method value receives self as its first written argument. */
+    explicit: boolean;
+    member?: AstNode;
+}
+
+export function callReceiver(node: AstNode, info = callInfo(node)): CallReceiver | undefined {
+    const target = nodes(node.fields?.target)[0];
+    if (!target) return undefined;
+    if (info?.receiver !== undefined) {
+        const receiver = info.receiver;
+        if (receiver === null) return undefined;
+        if (receiver.binding === "member") {
+            if (target.kind !== "member") return undefined;
+            const value = nodes(target.fields?.target)[0];
+            return value ? { value, type: receiver.type, explicit: false,
+                member: nodes(target.fields?.argument ?? target.fields?.key)[0] } : undefined;
+        }
+        if (receiver.binding === "implicit") return { type: receiver.type, explicit: false, implicit: true };
+        return { value: nodes(node.fields?.argument)[0], type: receiver.type, explicit: true };
+    }
+    if (!takesSelf(info?.signature ?? target.inferredType) && info?.inputs[0]?.name !== "self^") return undefined;
+    if (target.kind === "member") {
+        const value = nodes(target.fields?.target)[0];
+        if (!value) return undefined;
+        return { value, explicit: false, member: nodes(target.fields?.argument ?? target.fields?.key)[0] };
+    }
+    // An implicit super^ receiver has no expression in the argument list.
+    // Only use a written self slot for non-member calls.
+    if (info?.inputs[0]?.name !== "self^") return undefined;
+    return { value: nodes(node.fields?.argument)[0], explicit: true };
+}
+
 /** Older servers still provide types, but never invent declaration names from them. */
 export function callInfo(node: AstNode): CallableInfo | undefined {
     if (node.callable) return node.callable;
@@ -11,9 +59,10 @@ export function callInfo(node: AstNode): CallableInfo | undefined {
     if (!text) return undefined;
     const tokens = syntaxTokens(text);
     const last = tokens[tokens.length - 1];
-    if (!["f^", "p^"].includes(tokens[0]?.text) || last?.text !== ";") return undefined;
+    const first = tokens[0]?.text === "closed^" ? 1 : 0;
+    if (!["f^", "p^"].includes(tokens[first]?.text) || last?.text !== ";") return undefined;
     let depth = 0, arrow: number | undefined;
-    for (let i = 1; i < tokens.length - 1; i++) {
+    for (let i = first + 1; i < tokens.length - 1; i++) {
         const token = tokens[i];
         if (["(", "[", "{", "f^", "p^"].includes(token.text)) depth++;
         else if ([")", "]", "}", ";"].includes(token.text)) depth--;
@@ -21,9 +70,13 @@ export function callInfo(node: AstNode): CallableInfo | undefined {
         else if (["&", "|"].includes(token.text) && depth === 0) return undefined;
     }
     const end = arrow === undefined ? last.start : tokens[arrow].start;
-    const params = text.slice(tokens[0].end, end).trim();
+    const params = text.slice(tokens[first].end, end).trim();
     const inputs: CallableInput[] = [], info: CallableInfo = { inputs, outputs: [], signature: text };
-    for (const part of params ? resultTypes(params) : []) {
+    for (const [index, part] of (params ? resultTypes(params) : []).entries()) {
+        if (index === 0 && takesSelf(text)) {
+            if (target?.kind !== "member") inputs.push({ name: "self^", type: nodes(node.fields?.argument)[0]?.inferredType ?? "?" });
+            continue;
+        }
         if (part.startsWith("...")) info.variadic = { type: part.replace(/^\.\.\.\s*:\s*/, "") };
         else inputs.push({ type: part });
     }

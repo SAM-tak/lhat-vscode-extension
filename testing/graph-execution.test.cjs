@@ -9,6 +9,7 @@ const ELK = require('elkjs/lib/elk.bundled.js');
 const { branchedCalls } = require('./call-tree-fixture.cjs');
 const { branchFlow, terminalFlow } = require('./condition-fixture.cjs');
 const { patternMatching } = require('./pattern-fixture.cjs');
+const { catchFlow } = require('./catch-fixture.cjs');
 
 const mappingPath = path.resolve(__dirname, '../src/webview/map.ts');
 const mapping = new Module(mappingPath);
@@ -39,6 +40,120 @@ const draw = async (reply, options = {}) => {
     const graph = await new ELK().layout(toElk(reply, options));
     return { graph, flow: toFlow(graph, {}, 947, undefined, noop, noop, noop, noop, { current: null }, noop) };
 };
+
+test('break and continue stop their path without hiding the other branch or the code after the loop', async () => {
+    for (const kind of ['break', 'next', 'continue', 'skip']) {
+        for (const conditional of [false, true]) {
+            const jumpText = `${kind}^`;
+            const inner = `before()\n${jumpText}\ndead()`;
+            const branchText = `if^true^ {\n${inner}\n}`;
+            const bodyText = `{\n${conditional ? branchText : inner}\nalive()\n}`;
+            const loopText = `repeat^3 ${bodyText}`;
+            const source = `${loopText}\nafter()`;
+            const n = (kind, text, fields) => {
+                const start = source.indexOf(text);
+                assert(start >= 0);
+                return { kind, start, end: start + text.length, line: 1, column: 1, fields };
+            };
+            const call = name => {
+                const value = n('call', `${name}()`, { target: n('ident', name), argument: [] });
+                value.callable = { inputs: [], outputs: [] };
+                return { ...value, kind: 'call-stmt', fields: { value }, callable: undefined };
+            };
+            const jump = n(kind, jumpText);
+            const branch = conditional ? n('if-stmt', branchText, { items: [n('if-clause', branchText, {
+                condition: n('hat-ident', 'true^'), body: n('block', `{\n${inner}\n}`, { items: [call('before'), jump, call('dead')] }),
+            })] }) : undefined;
+            const body = n('block', bodyText, { items: conditional ? [branch, call('alive')] : [call('before'), jump, call('dead'), call('alive')] });
+            const loop = n('repeat', loopText, { count: n('int', '3'), body });
+            const reply = { source, root: n('block', source, { items: [loop, call('after')] }) };
+            const { graph, flow } = await draw(reply);
+            const transfer = flatten(graph).find(node => node.lhat?.kind === kind);
+            assert(transfer.lhat.executionTerminal);
+            assert(flow.exec.some(edge => edge.target === transfer.id));
+            assert(!flow.exec.some(edge => edge.source === transfer.id), 'no fall-through, merge or speculative jump route');
+            const dead = flow.nodes.find(node => node.data.isCall && node.data.start === source.indexOf('dead()'));
+            assert(dead.data.noExecutionHandles);
+            assert(!flow.exec.some(edge => edge.source === dead.id || edge.target === dead.id));
+            const alive = flow.nodes.find(node => node.data.isCall && node.data.start === source.indexOf('alive()'));
+            assert.equal(alive.data.noExecutionHandles, !conditional);
+            if (conditional) {
+                const junction = flatten(graph).find(node => node.lhat?.kind === 'if-stmt');
+                assert.equal(junction.lhat.executionBranchExits.length, 0);
+                assert(junction.lhat.executionBypass, 'the condition-false path still continues');
+                assert(flow.exec.some(edge => edge.target === alive.id));
+            }
+            const after = flow.nodes.find(node => node.data.isCall && node.data.start === source.indexOf('after()'));
+            assert(!after.data.noExecutionHandles);
+            assert(flow.exec.some(edge => edge.target === after.id), 'termination does not escape the loop scope');
+        }
+    }
+});
+
+test('catch handlers occupy separate columns and are never entered by normal execution', async () => {
+    const reply = catchFlow();
+    const { graph, flow } = await draw(reply);
+    const scope = flatten(graph).find(n => n.lhat?.catchScope);
+    assert(scope);
+    const [main, ...handlers] = scope.children;
+    assert.equal(handlers.length, 2);
+    assert(handlers[0].x >= main.x + main.width);
+    assert(handlers[1].x >= handlers[0].x + handlers[0].width);
+    for (const lane of handlers) assert(Math.abs(lane.y - main.y) < 1, 'lanes have aligned tops');
+    const headers = handlers.map(lane => flatten(lane).find(n => n.lhat?.kind === 'catch'));
+    assert.equal(scope.lhat.executionBranches.length, 1, 'only the main body is entered');
+    for (const header of headers) {
+        assert.equal(header.labels[0].text, 'Catch');
+        assert(!flow.exec.some(e => e.target === header.id), 'no normal path enters a catch');
+        assert(flow.exec.some(e => e.source === header.id), 'each handler has its own vertical path');
+    }
+    assert.equal(headers[0].lhat.foldedSummary, 'IOError.Eof');
+    assert.equal(headers[1].lhat.foldedSummary, undefined);
+    assert(!flatten(scope).some(n => n.lhat?.kind === 'error'), 'filters belong inside the Catch box');
+    for (const header of headers) {
+        const edge = flow.exec.find(e => e.source === header.id);
+        assert(flow.nodes.find(n => n.id === edge.target).data.isCall, 'Catch connects directly to its body');
+    }
+    assert.equal(scope.lhat.executionBranchExits.length, 3);
+    assert.equal(flow.exec.filter(e => e.target === scope.id && e.targetHandle === 'flow-merge').length, 3);
+    const after = flow.nodes.find(n => n.data.isCall && n.data.start === reply.source.indexOf('after()'));
+    assert(flow.exec.some(e => e.source === scope.id && e.target === after.id), 'merged paths continue after the block');
+    assert(scope.edges.every(e => !e.drawn), 'lane ordering is not execution');
+});
+
+test('catch fall-through remains reachable after a terminal main path and terminal handlers do not merge', async () => {
+    for (const callable of [false, true]) {
+        const reply = catchFlow({ mainTerminal: true, handlerTerminal: true, callable });
+        const { graph, flow } = await draw(reply);
+        const scope = flatten(graph).find(n => n.lhat?.catchScope);
+        assert(scope, 'callable-body hoisting preserves the catch junction');
+        assert.equal(scope.lhat.executionTerminal, false, 'the first handler can still complete');
+        assert.equal(scope.lhat.executionBranchExits.length, 1);
+        const terminals = flatten(scope).filter(n => n.lhat?.pictogram === 'return');
+        assert.equal(terminals.length, 2);
+        for (const terminal of terminals) assert(!flow.exec.some(e => e.source === terminal.id));
+        const after = flow.nodes.find(n => n.data.isCall && n.data.start === reply.source.indexOf('after()'));
+        assert(flow.exec.some(e => e.source === scope.id && e.target === after.id));
+    }
+});
+
+test('drilled catch scopes and immediate callable bodies keep their own start without an incoming edge', async () => {
+    const reply = catchFlow(), body = reply.root.fields.items[0];
+    const callable = catchFlow({ callable: true });
+    const callableBody = callable.root.fields.body;
+    const handled = callableBody.fields.items[0];
+    callableBody.fields = { items: handled.fields.items, arms: handled.fields.arms };
+    for (const [tree, options] of [[reply, { root: body }], [callable, {}]]) {
+        const { graph, flow } = await draw(tree, options);
+        const scope = flatten(graph).find(n => n.lhat?.catchScope);
+        assert(scope);
+        assert.equal(scope.lhat.executionBranches.length, 0);
+        const markers = starts(scope);
+        assert.equal(markers.length, 1);
+        assert(!flow.exec.some(edge => edge.target === markers[0].id));
+        assert.equal(flow.exec.filter(edge => edge.target === scope.id && edge.targetHandle === 'flow-merge').length, 3);
+    }
+});
 
 test('wide call trees scroll as one group while execution and routed definitions retain their actual endpoints', async () => {
     const graph = stackWideDefinitions(await new ELK().layout(toElk(branchedCalls(), { width: 320 })), 304);
@@ -856,7 +971,7 @@ test('disabled terminals do not cut live execution, and panic unary nodes are al
     reply.root.fields.body.fields.items[0].kind = 'unary';
     const { graph, flow } = await draw(reply);
     assert(!flow.nodes.some(node => node.data.executionAppend));
-    const panic = flatten(graph).find(node => node.lhat?.invocation && node.lhat.executionTerminal);
+    const panic = flatten(graph).find(node => node.lhat?.operatorExpression && node.lhat.executionTerminal);
     assert(panic);
     assert(!flow.exec.some(edge => edge.source === panic.id));
 });
@@ -996,8 +1111,8 @@ test('structured patterns retain their value connections without becoming execut
         assert.equal(patterns.length, 2);
         const inside = new Set(patterns.flatMap(flatten).map(node => node.id));
         assert(flow.exec.every(edge => !inside.has(edge.source) && !inside.has(edge.target)));
-        assert.equal(flow.definitions.filter(edge => inside.has(edge.source) && inside.has(edge.target)).length, 3,
-            'the pattern call and addition keep their three input wires');
+        assert.equal(flow.definitions.filter(edge => inside.has(edge.source) && inside.has(edge.target)).length, 2,
+            'the call retains its input wire and feeds the inline addition through an operand slot');
         if (expression) {
             assert.equal(flow.exec.length, 0);
             assert.equal(flow.definitions.filter(edge => edge.targetHandle === 'definition-branch').length, defaultArm ? 4 : 3);
@@ -1057,11 +1172,11 @@ test('if expression conditions and values are separate, source-backed boxes join
             assert.equal(predicate.lhat.condition.axis, 'horizontal');
             assert.equal(predicate.lhat.condition.entry, value.id);
             const expression = predicate.children[0];
-            assert(expression.lhat.callTree, 'the comparison uses the normal expression layout');
+            assert(expression.lhat.operatorExpression, 'the comparison uses the inline expression layout');
             assert(flatten(expression).some(n => n.lhat?.operator?.text === '>='));
             const inside = new Set(flatten(predicate).map(n => n.id));
             assert(flow.exec.every(e => !inside.has(e.source) && !inside.has(e.target)));
-            assert.equal(flow.definitions.filter(e => inside.has(e.source) && inside.has(e.target)).length, 2);
+            assert.equal(flow.definitions.filter(e => inside.has(e.source) && inside.has(e.target)).length, 0);
             const rendered = flow.nodes.find(n => n.id === predicate.id);
             const desired = value.y + value.lhat.definitionHandleY - rendered.height / 2;
             assert.equal(rendered.position.y, Math.max(10 * scale, Math.min(clause.height - rendered.height - 10 * scale, desired)));
@@ -1075,7 +1190,7 @@ test('if expression conditions and values are separate, source-backed boxes join
     const bare = await draw({ source, root }, { root: expression });
     assert.equal(bare.flow.exec.length, 0);
     assert.equal(bare.flow.definitions.filter(e => e.targetHandle === 'definition-branch').length, 3);
-    assert.equal(bare.flow.definitions.length, 7, 'the condition comparisons retain their four input connections');
+    assert.equal(bare.flow.definitions.length, 3, 'inline condition operands need no separate input connections');
     const visible = new Set(bare.flow.nodes.map(n => n.id));
     assert(bare.flow.definitions.every(e => visible.has(e.source) && visible.has(e.target)));
 });
@@ -1100,7 +1215,7 @@ test('nested expression alternatives merge locally and do not bypass enclosing c
     const declaration = flow.nodes.find(n => n.data.definitionRole === 'declaration' && n.data.label === 'y');
     const outward = flow.definitions.filter(e => e.target === declaration.id);
     assert.equal(outward.length, 1);
-    assert.equal(flatten(graph).find(n => n.id === outward[0].source).lhat.kind, 'output-slot');
+    assert(flatten(graph).find(n => n.id === outward[0].source).lhat.operatorExpression);
     assert.equal(outward[0].source, flatten(graph).find(n => n.lhat?.kind === 'binary').lhat.definitionOutputs[0]);
     const returnedTable = flatten(graph).find(n => n.lhat?.kind === 'table');
     assert(flow.definitions.some(e => e.source === returnedTable.id && e.target === branches[0].id));

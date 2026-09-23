@@ -1,6 +1,7 @@
 {
     "Input": "入力",
     "Call": "呼び出し",
+    "Method Call": "メソッド呼び出し",
     "Condition": "条件",
     "Conditional Branch": "条件分岐",
     "Conditional Selection": "条件選択",

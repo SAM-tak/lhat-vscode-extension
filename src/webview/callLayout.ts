@@ -55,30 +55,33 @@ export function arrangeCallTrees(root: ElkNode, scale: number): ElkNode {
         // first card owns execution handles, and its output slots own values.
         node.id = `${id}__card`;
         node.ports = undefined;
-        node.lhat = { ...node.lhat, definitionRole: undefined, definitionHandleY: undefined };
+        node.lhat = { ...node.lhat, definitionRole: undefined, definitionHandleY: undefined, operandOutputY: undefined };
         const columns: ElkNode[][] = [], links: { source: string; target: string; column: number }[] = [];
         const arguments_: { owner: string; value: string; input: string }[] = [];
         const collect = (card: ElkNode, depth: number): void => {
             (columns[depth] ??= []).push(card);
             if (card.children?.[0]) card.children[0] = visit(card.children[0]);
             const groups = card.children?.find(child => child.lhat?.kind === "call-groups");
-            const input = groups?.children?.find(child => child.lhat?.callInputWidth !== undefined);
-            if (!input) return;
-            const rows = input.children ?? [], slots: ElkNode[] = [];
-            for (const row of rows) {
-                if (row.lhat?.synthetic === "add") { slots.push(row); continue; }
-                const slot = row.children?.[0], value = row.children?.[1];
-                if (!slot || !value) continue;
-                slots.push(slot);
-                arguments_.push({ owner: card.id, value: value.id, input: slot.id });
-                const output = value.lhat?.definitionOutputs;
-                if (!output || output.length) links.push({ source: output?.[0] ?? value.id, target: slot.id, column: depth });
-                if (value.lhat?.invocation) collect(value, depth + 1);
-                else (columns[depth + 1] ??= []).push(visit(value));
+            // A method stacks Self above Input; both can own external values.
+            const inputGroups = (group: ElkNode): ElkNode[] => group.lhat?.callInputWidth !== undefined
+                ? [group] : (group.children ?? []).flatMap(inputGroups);
+            for (const input of groups ? inputGroups(groups) : []) {
+                const rows = input.children ?? [], slots: ElkNode[] = [];
+                for (const row of rows) {
+                    if (row.lhat?.synthetic === "add") { slots.push(row); continue; }
+                    const slot = row.children?.[0], value = row.children?.[1];
+                    if (!slot || !value) continue;
+                    slots.push(slot);
+                    arguments_.push({ owner: card.id, value: value.id, input: slot.id });
+                    const output = value.lhat?.definitionOutputs;
+                    if (!output || output.length) links.push({ source: output?.[0] ?? value.id, target: slot.id, column: depth });
+                    if (value.lhat?.invocation) collect(value, depth + 1);
+                    else (columns[depth + 1] ??= []).push(visit(value));
+                }
+                input.children = slots;
+                input.edges = order(input.id, slots);
+                input.lhat = { ...input.lhat!, callInputWidth: undefined };
             }
-            input.children = slots;
-            input.edges = order(input.id, slots);
-            input.lhat = { ...input.lhat!, callInputWidth: undefined };
         };
         collect(node, 0);
         const children = columns.map((items, depth) => {
@@ -209,6 +212,9 @@ export function alignCallPorts(root: ElkNode): void {
             width: child.width ?? 0, height: child.height ?? 0 })) ?? [];
         node.children?.forEach(visit);
         if (before.length && !node.lhat?.callTree && node.lhat?.kind !== "call-column") growContainer(node, before);
+        if (node.lhat?.kind === "call-receiver-inputs") {
+            for (const child of node.children ?? []) child.x = (node.width ?? 0) - (child.width ?? 0);
+        }
         if (node.lhat?.invocation) {
             const groups = node.children?.find(child => child.lhat?.kind === "call-groups");
             if (groups) {

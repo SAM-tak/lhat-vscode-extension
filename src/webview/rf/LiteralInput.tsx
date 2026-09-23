@@ -81,7 +81,7 @@ export function LiteralInput({ literal }: { literal: LiteralValue }) {
         onClick={(event) => event.stopPropagation()}>
         {literal.kind === "string" && <span className="literal-quote" aria-hidden="true">“</span>}
         {literal.kind === "number" ? <input {...props} type="text" inputMode="decimal" />
-            : <textarea {...props} rows={1} wrap="off" />}
+            : <textarea {...props} rows={1} wrap="soft" />}
         {literal.kind === "string" && <span className="literal-quote" aria-hidden="true">”</span>}
     </div>;
 }

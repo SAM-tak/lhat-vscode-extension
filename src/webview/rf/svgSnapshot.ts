@@ -176,6 +176,22 @@ export function graphSvg(flow: HTMLElement, options: SvgExportOptions): string {
             const height = source.clientHeight - px(css.paddingTop) - px(css.paddingBottom);
             const { ascent, descent } = fontMetrics(css), lineHeight = px(css.lineHeight) || ascent + descent;
             const input = clip(content, new DOMRect(left, top, width, height));
+            if (source instanceof HTMLTextAreaElement && source.wrap !== "off") {
+                // A mirror exposes the browser's soft line breaks to Range,
+                // without inserting newlines into the literal's actual value.
+                const mirror = doc.createElement("div");
+                Object.assign(mirror.style, {
+                    position: "fixed", visibility: "hidden", margin: "0", padding: "0", border: "0",
+                    left: `${left - source.scrollLeft}px`, top: `${top - source.scrollTop}px`, width: `${width}px`,
+                    fontFamily: css.fontFamily, fontSize: css.fontSize, fontWeight: css.fontWeight,
+                    fontStyle: css.fontStyle, lineHeight: css.lineHeight, letterSpacing: css.letterSpacing,
+                    whiteSpace: css.whiteSpace, overflowWrap: css.overflowWrap, wordBreak: css.wordBreak,
+                    tabSize: css.tabSize, textAlign: css.textAlign, color: css.color,
+                });
+                const value = doc.createTextNode(source.value); mirror.append(value); doc.body.append(mirror);
+                try { textNode(value, input); } finally { mirror.remove(); }
+                return;
+            }
             const baseline = top + (source instanceof HTMLInputElement ? height : lineHeight) / 2 + (ascent - descent) / 2;
             source.value.split(/\r?\n/).forEach((line, i) => {
                 context.font = `${css.fontStyle} ${css.fontWeight} ${css.fontSize} ${css.fontFamily}`;

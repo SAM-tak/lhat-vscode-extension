@@ -8,6 +8,10 @@ const { branchedCalls } = require('./call-tree-fixture.cjs');
 const { conditionalExpressions, branchFlow, terminalFlow } = require('./condition-fixture.cjs');
 const { patternMatching } = require('./pattern-fixture.cjs');
 const { assignment } = require('./assignment-fixture.cjs');
+const { catchFlow } = require('./catch-fixture.cjs');
+const { operatorExpression } = require('./operator-fixture.cjs');
+const { methodCall, boundSlice } = require('./method-fixture.cjs');
+const { indexExpression } = require('./index-fixture.cjs');
 
 const source = 'let^route = f^req:string^ { return^ 1, req }\nlet^a, b = route("Hello & <SVG>")\nlet^nested = {2, 3}\nlet^last = "日本語 & <text>"';
 const n = (kind, text, fields, from = 0, extra = {}) => {
@@ -44,6 +48,311 @@ const routes = { '/': { type: 'text/html', body: html({source,root}) } };
 for (const [url, file, type] of [['/graph.css', 'media/graph.css', 'text/css'], ['/bundle.css', 'media/rf/bundle.css', 'text/css'], ['/bundle.js', 'media/rf/bundle.js', 'text/javascript'], ['/layout-worker.js', 'media/rf/layout-worker.js', 'text/javascript']]) {
     routes[url] = { type, body: fs.readFileSync(path.resolve(__dirname, '..', file)) };
 }
+test('index brackets contain inline values or holes, with complex targets and subscripts below', { timeout: 60000 }, async () => {
+    for (const options of [{}, { simple: true }, { targetCall: true, indexCall: true }, { optional: true, simple: true }]) {
+        const reply = indexExpression(options);
+        const wires = options.simple ? 0 : options.targetCall ? 2 : 1;
+        await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
+            const selector = `.operator-expression[data-source-start="0"][data-source-end="${reply.source.length}"]`;
+            await until(`document.querySelector(${JSON.stringify(selector)}) && !document.querySelector('.svg-export>button').disabled &&
+                document.querySelectorAll('.react-flow__edge-operand-definition .react-flow__edge-path').length===${wires}`);
+            const result = await evaluate(`(()=>{
+                const row=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+                const inside=n=>{const r=n.getBoundingClientRect();return r.left>=row.left && r.right<=row.right && r.top>=row.top && r.bottom<=row.bottom};
+                return {holes:[...document.querySelectorAll('.operand-slot')].filter(inside).length,
+                    brackets:[...document.querySelectorAll('.box.decoration')].filter(inside).map(n=>n.textContent),
+                    calls:[...document.querySelectorAll('.call-node')].map(n=>({below:n.getBoundingClientRect().top>row.bottom})),
+                    nested:[...document.querySelectorAll('.operator-expression')].filter(n=>n!==document.querySelector(${JSON.stringify(selector)}))
+                        .map(n=>({below:n.getBoundingClientRect().top>row.bottom})),
+                    wires:document.querySelectorAll('.react-flow__edge-operand-definition .react-flow__edge-path').length};
+            })()`);
+            assert.equal(result.holes, Number(!!options.targetCall) + Number(!options.simple));
+            assert.deepEqual(result.brackets, [options.optional ? '?[' : '[', ']']);
+            assert.equal(result.wires, wires);
+            assert(result.calls.every(call=>call.below));
+            assert(result.nested.every(expression=>expression.below));
+            assert.equal(errors.length, 0, JSON.stringify(errors));
+        });
+    }
+});
+
+test('already-bound Slice metadata renders a Method Call with Self and both numeric inputs', { timeout: 60000 }, async () => {
+    await browser({ ...routes, '/': { type: 'text/html', body: html(boundSlice()) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelector('.io-self') && !document.querySelector('.svg-export>button').disabled`);
+        const result = await evaluate(`(()=>{
+            const self=document.querySelector('.io-self').getBoundingClientRect();
+            const value=[...document.querySelectorAll('.box[data-source-start="0"][data-source-end="6"]')]
+                .find(n=>{const r=n.getBoundingClientRect();return r.left>self.left && r.right<self.right && r.top>self.top && r.bottom<self.bottom});
+            return {title:document.querySelector('.call-node>.boxlabel').textContent,receiver:!!value,
+                inputs:document.querySelectorAll('.react-flow__node[data-id^="input-slot-"]').length,
+                values:[...document.querySelectorAll('.literal-number input')].map(n=>n.value),
+                wires:document.querySelectorAll('.react-flow__edge-call-definition .react-flow__edge-path').length};
+        })()`);
+        assert.equal(result.title, 'メソッド呼び出し');
+        assert(result.receiver);
+        assert.equal(result.inputs, 2);
+        assert.deepEqual(result.values, ['1', '2']);
+        assert.equal(result.wires, 2);
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('operator holes match numeric pills and translated operators have no redundant heading', { timeout: 60000 }, async () => {
+    const source = '(1 + 2) * 3 and^ true^';
+    const n = (kind, text, fields) => ({ kind, start: source.indexOf(text), end: source.indexOf(text) + text.length, line: 1, column: 1, fields });
+    const sum = n('binary', '1 + 2', { left: n('int', '1'), right: n('int', '2') });
+    const product = n('binary', '(1 + 2) * 3', { left: sum, right: n('int', '3') });
+    const reply = { source, root: n('binary', source, { left: product, right: n('hat-ident', 'true^') }) };
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelector('.operand-slot') && !document.querySelector('.svg-export>button').disabled`);
+        const result = await evaluate(`(()=>{
+            const hole=document.querySelector('.operand-slot'), number=[...document.querySelectorAll('.literal-number')].find(n=>n.querySelector('input').value==='3');
+            return {holeWidth:hole.getBoundingClientRect().width,numberWidth:number.getBoundingClientRect().width,
+                holeRadius:getComputedStyle(hole).borderRadius,numberRadius:getComputedStyle(number).borderRadius,
+                operators:[...document.querySelectorAll('.operator-cell')].map(n=>({text:n.textContent,clipped:n.scrollWidth>n.clientWidth || n.scrollHeight>n.clientHeight}))};
+        })()`);
+        assert.equal(result.holeWidth, result.numberWidth);
+        assert.equal(result.holeRadius, result.numberRadius);
+        assert(result.operators.some(op=>op.text==='かつ'));
+        assert(result.operators.every(op=>!op.clipped && !op.text.includes('Operator') && !op.text.includes('演算子')));
+        await evaluate(`window.postMessage({type:'localization',language:'en'},'*')`);
+        await until(`[...document.querySelectorAll('.operator-cell')].some(n=>n.textContent==='And') && !document.querySelector('.svg-export>button').disabled`);
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('method calls show Self above Input and route only complex receivers outside the card', { timeout: 60000 }, async () => {
+    for (const receiver of ['dense', 'make()']) {
+        const reply = methodCall({ receiver });
+        await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
+            await until(`document.querySelector('.io-self') && !document.querySelector('.svg-export>button').disabled`);
+            const result = await evaluate(`(()=>{
+                const rect=n=>{const r=n.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height}};
+                const self=document.querySelector('.io-self'), s=rect(self), input=document.querySelector('.io-input');
+                const method=[...document.querySelectorAll('.call-node')].find(n=>n.querySelector('.boxlabel').textContent==='メソッド呼び出し');
+                const wires=[...document.querySelectorAll('.react-flow__edge-call-definition .react-flow__edge-path')].filter(path=>{
+                    const p=path.getPointAtLength(path.getTotalLength()), point=new DOMPoint(p.x,p.y).matrixTransform(path.getScreenCTM());
+                    return point.x>s.x && point.x<s.x+s.w && point.y>s.y && point.y<s.y+s.h;
+                });
+                return {self:s,input:rect(input),card:rect(method),selfLabel:self.textContent,selfWires:wires.length,
+                    calls:document.querySelectorAll('.call-node').length,inputSlots:document.querySelectorAll('.react-flow__node[data-id^="input-slot-"]').length};
+            })()`);
+            assert.equal(result.selfLabel, '自身');
+            assert(result.self.y + result.self.h < result.input.y);
+            assert(result.self.x > result.card.x && result.self.x + result.self.w < result.card.x + result.card.w);
+            assert.equal(result.calls, receiver === 'dense' ? 1 : 2);
+            assert.equal(result.inputSlots, 1);
+            assert.equal(result.selfWires, receiver === 'dense' ? 0 : 1);
+            await evaluate(`window.postMessage({type:'localization',language:'en'},'*')`);
+            await until(`[...document.querySelectorAll('.call-node>.boxlabel')].some(n=>n.textContent==='Method Call') && !document.querySelector('.svg-export>button').disabled`);
+            assert.equal(await evaluate(`document.querySelector('.io-self legend').textContent`), 'Self');
+            assert.equal(errors.length, 0, JSON.stringify(errors));
+        });
+    }
+});
+
+test('operator expressions embed primitives and route external operands outside all visible boxes', { timeout: 60000 }, async () => {
+    const reply = operatorExpression();
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelectorAll('.react-flow__edge-operand-definition .react-flow__edge-path').length===3 && !document.querySelector('.svg-export>button').disabled`);
+        const inspect = () => evaluate(`(()=>{
+            const rows=[...document.querySelectorAll('.operator-expression')];
+            const boxes=[...document.querySelectorAll('.box')].map(box=>box.getBoundingClientRect());
+            let collisions=0;
+            for(const path of document.querySelectorAll('.react-flow__edge-operand-definition .react-flow__edge-path')) {
+                const matrix=path.getScreenCTM(), length=path.getTotalLength();
+                for(let t=2;t<length-2;t+=2) {
+                    const p=path.getPointAtLength(t), point=new DOMPoint(p.x,p.y).matrixTransform(matrix);
+                    if(boxes.some(r=>point.x>r.left+1 && point.x<r.right-1 && point.y>r.top+1 && point.y<r.bottom-1)) collisions++;
+                }
+            }
+            return {rows:rows.length,slots:document.querySelectorAll('.operand-slot').length,
+                calls:document.querySelectorAll('.call-node').length,collisions,
+                literalValues:[...document.querySelectorAll('input,textarea')].map(e=>e.value)};
+        })()`);
+        const first = await inspect();
+        assert.equal(first.rows, 3);
+        assert.equal(first.slots, 3);
+        assert.equal(first.calls, 1);
+        assert.equal(first.collisions, 0, JSON.stringify(first));
+        for (const value of ['1', '2', '3', '4', '5', '6']) assert(first.literalValues.includes(value));
+        await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='A+').click()`);
+        await until(`!document.querySelector('.svg-export>button').disabled`);
+        assert.equal((await inspect()).collisions, 0);
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('catch handlers render beside the main body with error types inside their Catch boxes', { timeout: 60000 }, async () => {
+    const reply = catchFlow();
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelectorAll('.box').length>0 && !document.querySelector('.svg-export>button').disabled`);
+        assert.equal(await evaluate(`document.querySelectorAll('[data-role="catch"]').length`), 2,
+            await evaluate(`document.querySelector('#flow').textContent`));
+        const geometry = await evaluate(`(()=>{
+            const rect=e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height}};
+            const call=start=>rect(document.querySelector('.call-node[data-source-start="'+start+'"]'));
+            return {headers:[...document.querySelectorAll('[data-role="catch"]')].map(e=>{
+                    const box=e.closest('.box'), summary=box.querySelector('.fold-summary');
+                    return {...rect(box),summary:summary?.textContent,filter:summary?rect(summary):null};}),
+                separateErrors:document.querySelectorAll('[data-role="error"]').length,
+                main:call(${reply.source.indexOf('work()')}),
+                eof:call(${reply.source.indexOf('print("eof")')}), other:call(${reply.source.indexOf('print("other")')})};
+        })()`);
+        assert(geometry.headers[0].x > geometry.main.x + geometry.main.w);
+        assert(geometry.headers[1].x > geometry.eof.x + geometry.eof.w);
+        assert(Math.abs(geometry.headers[0].y - geometry.headers[1].y) < 1);
+        assert.equal(geometry.headers[0].summary, 'IOError.Eof');
+        assert.equal(geometry.headers[1].filter, null);
+        assert.equal(geometry.separateErrors, 0);
+        assert(geometry.headers[0].filter.y > geometry.headers[0].y);
+        assert(geometry.headers[0].filter.y + geometry.headers[0].filter.h <= geometry.headers[0].y + geometry.headers[0].h);
+        assert(geometry.eof.y > geometry.headers[0].y + geometry.headers[0].h);
+        assert(geometry.other.y > geometry.headers[1].y + geometry.headers[1].h);
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('AST comments render above their owner as separate multiline boxes', { timeout: 60000 }, async () => {
+    const reply = { source, root: structuredClone(root) };
+    const owner = reply.root.fields.items[0].fields.values[0];
+    owner.comments = [];
+    for (const text of ['# function comment', '#[ 日本語のコメント\nsecond line ]#']) {
+        reply.source += '\n';
+        const start = reply.source.length;
+        reply.source += text;
+        owner.comments.push({ start, end: reply.source.length, block: text.startsWith('#[') });
+    }
+    reply.root.end = reply.source.length;
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, call, errors }) => {
+        await until(`document.querySelectorAll('.comment-box').length===2 && !document.querySelector('.svg-export>button').disabled`);
+        const result = await evaluate(`(()=>{
+            const rect=e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height}};
+            const owner=document.querySelector('.box.folded[data-source-start="${owner.start}"]');
+            return {owner:rect(owner),comments:[...document.querySelectorAll('.comment-box')].map(e=>({
+                ...rect(e),text:e.querySelector('.comment-text').textContent,title:e.title,handles:e.parentElement.querySelectorAll('.react-flow__handle').length,
+                overflow:e.scrollHeight>e.clientHeight}))};
+        })()`);
+        assert.equal(result.comments[0].text, 'function comment');
+        assert.equal(result.comments[1].text, '日本語のコメント\nsecond line');
+        for (const comment of result.comments) {
+            assert(comment.title.startsWith('func '));
+            assert(Math.abs(comment.x + comment.w / 2 - result.owner.x - result.owner.w / 2) < 1);
+            assert(comment.y + comment.h < result.owner.y);
+            assert.equal(comment.handles, 0);
+            assert.equal(comment.overflow, false);
+        }
+        assert(result.comments[0].y + result.comments[0].h < result.comments[1].y);
+        const toggle = async () => {
+            const point = await evaluate(`(()=>{const r=document.querySelectorAll('.comment-box .foldbtn')[1].getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+            await call('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
+            await call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+        };
+        await toggle();
+        await until(`document.querySelectorAll('.comment-box .foldbtn')[1].getAttribute('aria-expanded')==='false' && !document.querySelector('.svg-export>button').disabled`);
+        assert.equal(await evaluate(`document.querySelectorAll('.comment-text')[1].textContent`), '日本語のコメント…');
+        assert(await evaluate(`document.querySelectorAll('.comment-box')[1].getBoundingClientRect().height`) < result.comments[1].h);
+        await toggle();
+        await until(`document.querySelectorAll('.comment-box .foldbtn')[1].getAttribute('aria-expanded')==='true' && !document.querySelector('.svg-export>button').disabled`);
+        assert.equal(await evaluate(`document.querySelectorAll('.comment-text')[1].textContent`), result.comments[1].text);
+        assert.equal(await evaluate(`document.querySelectorAll('.comment-box')[1].getBoundingClientRect().height`), result.comments[1].h);
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('foreground comments leave insertion buttons clickable at different text sizes', { timeout: 60000 }, async () => {
+    const reply = { source, root: structuredClone(root) };
+    const owner = reply.root.fields.items[0];
+    const start = reply.source.length + 1;
+    reply.source += '\n#[ Statement comment\nwith a second line ]#';
+    owner.comments = [{ start, end: reply.source.length, block: true }];
+    reply.root.end = reply.source.length;
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, call, errors }) => {
+        await until(`document.querySelector('.comment-box') && !document.querySelector('.svg-export>button').disabled`);
+        for (const enlarged of [false, true]) {
+            if (enlarged) {
+                await evaluate(`(()=>{for(let i=0;i<4;i++)document.querySelector('button[title^="Larger text"]').click()})()`);
+                await until(`document.querySelector('#flow').style.getPropertyValue('--lhat-scale')==='${16 / 12}' && !document.querySelector('.svg-export>button').disabled`);
+            }
+            const result = await evaluate(`(()=>{
+                const comment=document.querySelector('.comment-box'), r=comment.getBoundingClientRect();
+                const owner=document.querySelector('.box[data-source-start="${owner.start}"]');
+                const button=owner.parentElement.querySelector('.insert-statement'), b=button.getBoundingClientRect();
+                const c=document.createElement('canvas').getContext('2d');c.fillStyle=getComputedStyle(comment).backgroundColor;c.fillRect(0,0,1,1);
+                return {bottom:r.bottom,buttonTop:b.top,x:b.x+b.width/2,y:b.y+b.height/2,
+                    hit:document.elementFromPoint(b.x+b.width/2,b.y+b.height/2)===button,
+                    alpha:c.getImageData(0,0,1,1).data[3],opacity:getComputedStyle(comment).opacity,
+                    z:Number(getComputedStyle(comment.parentElement).zIndex),
+                    edgeZ:Math.max(...[...document.querySelectorAll('.react-flow__edge')].map(e=>Number(getComputedStyle(e.closest('svg')).zIndex)))};
+            })()`);
+            assert(result.bottom < result.buttonTop, 'the whole button stays below the comment');
+            assert(result.hit, 'the comment does not intercept button clicks');
+            assert(result.z > result.edgeZ, 'comments render above execution lines');
+            assert(result.alpha > 0 && result.alpha < 255, 'the background is translucent');
+            assert.equal(result.opacity, '1', 'text remains opaque');
+            await call('Input.dispatchMouseEvent', { type: 'mousePressed', x: result.x, y: result.y, button: 'left', clickCount: 1 });
+            await call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: result.x, y: result.y, button: 'left', clickCount: 1 });
+            await until(`document.querySelector('.statement-menu')`);
+            await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+            await until(`!document.querySelector('.statement-menu')`);
+        }
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('text boxes soft-wrap, grow to five rows and retain wrapped lines in SVG exports', { timeout: 60000 }, async () => {
+    const values = ['short', 'Enter an expression using each of them once, or an empty line to finish reading the input.',
+        '日本語の長い文章'.repeat(40), 'one\ntwo\nthree\nfour\nfive', 'one\ntwo\nthree\nfour\nfive\nsix\nseven'];
+    const reply = { source: '', root: { kind: 'block', start: 0, end: 0, line: 1, column: 1, fields: { items: [] } } };
+    for (const value of values) {
+        const start = reply.source.length;
+        reply.source += JSON.stringify(value);
+        reply.root.fields.items.push({ kind: 'string', start, end: reply.source.length, line: 1, column: 1 });
+        reply.source += '\n';
+    }
+    reply.root.end = reply.source.length;
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelectorAll('textarea.literal-input').length===5 && !document.querySelector('.svg-export>button').disabled`);
+        const geometry = () => evaluate(`(()=>${JSON.stringify(values)}.map(value=>{
+            const e=[...document.querySelectorAll('textarea.literal-input')].find(e=>e.value===value), s=getComputedStyle(e);
+            return {width:e.closest('.box').getBoundingClientRect().width,height:e.closest('.box').getBoundingClientRect().height,
+                rows:Math.floor((e.clientHeight-parseFloat(s.paddingTop)-parseFloat(s.paddingBottom))/parseFloat(s.lineHeight)),
+                horizontal:e.scrollWidth>e.clientWidth,vertical:e.scrollHeight>e.clientHeight,
+                id:e.closest('.react-flow__node').dataset.id};
+        }))()`);
+        const initial = await geometry();
+        assert(initial[1].height > initial[0].height, 'long single-line text grows vertically');
+        assert.equal(initial[1].vertical, false, 'moderately long text fits without scrolling');
+        assert(initial.every(box => !box.horizontal), 'soft wraps remove horizontal overflow');
+        for (const index of [2, 3, 4]) assert.equal(initial[index].rows, 5);
+        assert.equal(initial[2].width, initial[1].width, 'the width remains clamped');
+        assert(initial[2].vertical && initial[4].vertical, 'content beyond five rows scrolls vertically');
+        assert.equal(initial[3].vertical, false, 'five explicit lines fit');
+        await evaluate(`document.querySelector('.svg-export>button').click()`);
+        await until(`document.querySelector('.svg-export-menu>button')`);
+        await evaluate(`document.querySelector('.svg-export-menu>button').click()`);
+        await until(`window.exports.length===1`);
+        const exported = await evaluate(`(()=>{
+            const doc=new DOMParser().parseFromString(window.exports[0].svg,'image/svg+xml');
+            const node=doc.querySelector('[data-node-id="${initial[1].id}"]');
+            const label=document.querySelector('[data-id="${initial[1].id}"] .literal-type-label').textContent;
+            return [...node.querySelectorAll('text')].filter(e=>![label,'“','”'].includes(e.textContent))
+                .map(e=>({text:e.textContent,y:e.getAttribute('y')}));
+        })()`);
+        assert.equal(exported.map(line => line.text).join(''), values[1], 'export keeps the entire wrapped value');
+        assert(new Set(exported.map(line => line.y)).size > 1, 'SVG text uses multiple visual lines');
+        await evaluate(`(()=>{for(let i=0;i<4;i++)document.querySelector('button[title^="Larger text"]').click()})()`);
+        await until(`document.querySelector('#flow').style.getPropertyValue('--lhat-scale')==='${16 / 12}' && !document.querySelector('.svg-export>button').disabled`);
+        const enlarged = await geometry();
+        assert(enlarged.every(box => !box.horizontal));
+        for (const index of [2, 3, 4]) assert.equal(enlarged[index].rows, 5);
+        assert.equal(enlarged[1].vertical, false);
+        const scrollTop = await evaluate(`(()=>{const e=[...document.querySelectorAll('textarea')].find(e=>e.value===${JSON.stringify(values[2])});e.scrollTop=e.scrollHeight;return e.scrollTop})()`);
+        assert(scrollTop > 0, 'overflow remains readable by scrolling');
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
 test('editable SVG snapshots preserve the live graph across folding, scrolling, editing and drill-down', { timeout: 60000 }, async () => {
     await browser(routes, async ({ evaluate, until, call, errors }) => {
         await until(`document.querySelectorAll('.react-flow__edge-path').length>2 && !document.querySelector('.svg-export > button')?.disabled`);
@@ -253,7 +562,8 @@ test('conditional frames render real expression nodes, expose bilingual titles a
         assert(japanese.includes('条件分岐') && japanese.includes('条件選択'));
         assert.equal(japanese.filter(t => t === '条件').length, 2);
         const callCount = await evaluate(`document.querySelectorAll('.call-node').length`);
-        assert.equal(callCount, 4, 'comparison, nested call, body call and selection comparison all render');
+        assert.equal(callCount, 2, 'only the nested call and body call use call cards');
+        assert.equal(await evaluate(`document.querySelectorAll('.operator-expression').length`), 2);
         const visible = await evaluate(`(()=>{
             const frame=document.querySelector('.condition-node'), r=frame.getBoundingClientRect();
             const card=[...document.querySelectorAll('.call-node')].find(n=>{
@@ -265,7 +575,7 @@ test('conditional frames render real expression nodes, expose bilingual titles a
         assert(visible, 'the opaque condition frame does not cover its expression children');
         await evaluate(`document.querySelector('.condition-node > .foldbtn').click()`);
         await until(`document.querySelector('.condition-node.folded') && !document.querySelector('.svg-export>button').disabled`);
-        assert.equal(await evaluate(`document.querySelectorAll('.call-node').length`), 2, 'only this condition subtree is hidden');
+        assert.equal(await evaluate(`document.querySelectorAll('.call-node').length`), 1, 'only this condition subtree is hidden');
         const preview = await evaluate(`(()=>{
             const box=document.querySelector('.condition-node.folded'), title=box.querySelector('.boxlabel'), summary=box.querySelector('.fold-summary');
             const a=title.getBoundingClientRect(), b=summary.getBoundingClientRect(), r=box.getBoundingClientRect();
@@ -278,7 +588,7 @@ test('conditional frames render real expression nodes, expose bilingual titles a
         const exportedText = await evaluate(`new DOMParser().parseFromString(window.exports.at(-1).svg,'image/svg+xml').documentElement.textContent`);
         assert(exportedText.includes('check(value) = 1'), 'SVG contains the collapsed source preview');
         await evaluate(`document.querySelector('.condition-node.folded > .foldbtn').click()`);
-        await until(`document.querySelectorAll('.call-node').length===4 && !document.querySelector('.svg-export>button').disabled`);
+        await until(`document.querySelectorAll('.call-node').length===2 && !document.querySelector('.svg-export>button').disabled`);
         await evaluate(`window.postMessage({type:'localization',language:'en'},'*')`);
         await until(`[...document.querySelectorAll('.boxlabel')].some(n=>n.textContent==='Conditional Selection') && !document.querySelector('.svg-export>button').disabled`);
         const english = await titles();
@@ -379,11 +689,11 @@ test('pattern frames show expression trees in horizontal statement arms and vert
             assert(expression ? second.y >= first.y + first.h : second.x >= first.x + first.w,
                 'candidate ordering follows the requested orientation');
             assert.equal(initial.calls.filter(c => c.x > first.x && c.x + c.w < first.x + first.w &&
-                c.y > first.y && c.y + c.h < first.y + first.h).length, 2, 'the first pattern contains its operator and nested call');
+                c.y > first.y && c.y + c.h < first.y + first.h).length, 1, 'the first pattern contains one nested call');
             await evaluate(`document.querySelector('.condition-node > .foldbtn').click()`);
             await until(`document.querySelector('.condition-node.folded') && !document.querySelector('.svg-export>button').disabled`);
             const folded = await geometry();
-            assert.equal(folded.calls.length, initial.calls.length - 2);
+            assert.equal(folded.calls.length, initial.calls.length - 1);
             assert.equal(await evaluate(`document.querySelector('.condition-node.folded .fold-summary').textContent`), 'threshold(1) + 2');
             assert.equal(await evaluate(`document.querySelector('.condition-node.folded .boxlabel').textContent`), 'パターン');
             await evaluate(`document.querySelector('.condition-node.folded > .foldbtn').click()`);

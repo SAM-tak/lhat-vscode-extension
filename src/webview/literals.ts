@@ -1,4 +1,24 @@
 import type { AstNode } from "../protocol";
+import { labelColumns } from "./labels";
+
+/** Reserve up to five visual rows, including soft wraps at word boundaries. */
+export function textLiteralRows(value: string, columns: number): number {
+    let rows = 0;
+    for (const line of value.split(/\r\n?|\n/)) {
+        rows++;
+        let used = 0;
+        for (const word of line.match(/\s+|\S+/gu) ?? []) {
+            const width = labelColumns(word.replace(/\t/g, "    "));
+            // Pre-wrap lets trailing spaces hang past the line's end.
+            if (/^\s+$/u.test(word)) { used += width; continue; }
+            if (used > 0 && used + width > columns) { rows++; used = 0; }
+            rows += Math.max(0, Math.ceil(width / columns) - 1);
+            used = width > columns ? (width - 1) % columns + 1 : used + width;
+            if (rows >= 5) return 5;
+        }
+    }
+    return Math.min(5, rows);
+}
 
 /** An editable display value, not a serializer or an AST mutation. */
 export interface LiteralValue {

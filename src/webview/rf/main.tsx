@@ -115,6 +115,10 @@ interface SlideData {
 
 interface BoxData extends Record<string, unknown>, SlideData {
     label: string;
+    commentOwner?: string;
+    operatorExpression?: boolean;
+    operandInput?: boolean;
+    operandOutputY?: number;
     labelParts?: LabelPart[];
     literal?: LiteralValue;
     literalTypeLabel?: string;
@@ -134,7 +138,7 @@ interface BoxData extends Record<string, unknown>, SlideData {
     branchOffset?: number;
     definitionBranchOffset?: number;
     definitionRole?: "declaration" | "value";
-    ioGroup?: "input" | "output";
+    ioGroup?: "input" | "output" | "self";
     isCall: boolean;
     definitionHandleY?: number;
     collapsed: boolean;
@@ -190,6 +194,9 @@ const ACTIVE_SCROLL_Z = EXECUTION_Z * 2;
 // Above internal edges (up to 7000 with selection).
 // Conditions have no execution handles, so this lift cannot lift an edge too.
 const CONDITION_Z = EXECUTION_Z * 5;
+// Comments stay above graph controls, including their selection lift.
+// They have no handles, so raising them cannot raise connected edges.
+const COMMENT_Z = CONDITION_Z + EXECUTION_Z;
 
 const executionEdge = {
     type: "smoothstep",
@@ -336,11 +343,11 @@ function toFlow(
                 else x = aligned;
             }
             let baseShift = 0;
-            if (topLevel && c.lhat?.callTree && !detachedValue && usable > 0 && w <= usable) {
+            if (topLevel && (c.lhat?.callTree || c.lhat?.expressionTree) && !detachedValue && usable > 0 && w <= usable) {
                 // Centre the complete statement, not only its execution card.
                 baseShift = baseAbs + (usable - w) / 2 - parentX - x;
                 x += baseShift;
-            } else if (topLevel && (!layoutOnly || c.lhat?.callTree) && !detachedValue && usable > 0 &&
+            } else if (topLevel && (!layoutOnly || c.lhat?.callTree || c.lhat?.expressionTree) && !detachedValue && usable > 0 &&
                 (w > usable || parentX + x + w > baseAbs + usable)) {
                 // Use the placed right edge, not width alone: an expression
                 // can fit the viewport but overflow from the execution column.
@@ -352,7 +359,7 @@ function toFlow(
             // containers still move as a whole. Deeper boxes never acquire
             // another offset; gestures there are routed to the same owner.
             const canSlide = ownsHorizontalSlide(
-                detachedValue, topLevel, layoutOnly && !c.lhat?.callTree, isContainer, usable, w,
+                detachedValue, topLevel, layoutOnly && !c.lhat?.callTree && !c.lhat?.expressionTree, isContainer, usable, w,
                 parentX + x - baseAbs);
             const key = canSlide && c.lhat !== undefined ? slideKeyOf(c.lhat) : undefined;
             // Normal boxes stop at the viewport's side margins; a lowered
@@ -381,10 +388,11 @@ function toFlow(
                 type: "box",
                 position: { x, y },
                 parentId,
-                // Lift only scroll owners and individual condition boxes,
+                // Lift comments, scroll owners and individual condition boxes,
                 // never a condition's whole arm. Disabled code stays behind
                 // the execution line that skips it.
-                zIndex: disabled ? undefined : isCondition ? CONDITION_Z
+                zIndex: c.lhat?.commentOwner !== undefined ? COMMENT_Z
+                    : disabled ? undefined : isCondition ? CONDITION_Z
                     : key !== undefined ? ACTIVE_SCROLL_Z : undefined,
                 // As first-class fields, not style: the minimap decides
                 // whether a node exists to draw by nodeHasDimensions(), which
@@ -412,6 +420,10 @@ function toFlow(
                     ...slide,
                     slideMotion,
                     label: c.labels?.[0]?.text ?? "",
+                    commentOwner: c.lhat?.commentOwner,
+                    operatorExpression: c.lhat?.operatorExpression,
+                    operandInput: c.lhat?.operandInput,
+                    operandOutputY: c.lhat?.operandOutputY,
                     labelParts: c.lhat?.labelParts,
                     depth,
                     isContainer,
@@ -431,7 +443,7 @@ function toFlow(
                     branchOffset: c.lhat?.branchOffset,
                     definitionBranchOffset: c.lhat?.definitionBranchOffset,
                     layoutOnly,
-                    scrollSurface: topLevel && c.lhat?.callTree === true,
+                    scrollSurface: topLevel && (c.lhat?.callTree === true || c.lhat?.expressionTree === true),
                     slideOwner: key !== undefined,
                     definitionRole: c.lhat?.definitionRole === "row"
                         ? undefined : c.lhat?.definitionRole,
@@ -459,8 +471,8 @@ function toFlow(
                     onDocumentSlide,
                     onDocumentRelease,
                     onDocumentSpring,
-                    reorder: !layoutOnly && !isStart && !isReturn && !isAdd ? reorder : undefined,
-                    statement: synthetic ? undefined : statement,
+                    reorder: !layoutOnly && !isStart && !isReturn && !isAdd && !c.lhat?.commentOwner ? reorder : undefined,
+                    statement: synthetic || c.lhat?.commentOwner ? undefined : statement,
                     insertion: c.lhat?.definitionRole === "row" && !c.lhat?.insertionAxis ? undefined : c.lhat?.insertion,
                     appendInsertion: c.lhat?.appendInsertion,
                     insertionAxis: c.lhat?.insertionAxis,
@@ -495,6 +507,12 @@ function toFlow(
                 selectable: false,
                 focusable: false,
             });
+        }
+        for (const link of parent.lhat?.operandLinks ?? []) {
+            if (!endpoints.has(link.source) || !endpoints.has(link.target)) continue;
+            definitions.push({ ...definitionEdge, id: `o__${parent.id}__${link.target}`, type: "operand-definition",
+                source: link.source, target: link.target, sourceHandle: "operand-out", targetHandle: "operand-in",
+                data: { laneOffset: link.laneOffset, rise: link.rise }, selectable: false, focusable: false });
         }
         for (const link of parent.lhat?.definitionLinks ?? []) {
             if (!endpoints.has(link.source) || !endpoints.has(link.target)) continue;
@@ -554,6 +572,18 @@ function toFlow(
     };
 
     walk(laid, undefined, 1, { slideDx: 0 }, 0);
+    // Comment siblings follow the owner's display-only centring and slide.
+    const rendered = new Map(nodes.map(node => [node.id, node]));
+    for (const node of nodes) {
+        const anchor = endpoints.get(node.id)?.lhat?.commentAnchor;
+        const owner = anchor && rendered.get(anchor.id);
+        if (!owner || !anchor) continue;
+        node.position = { x: owner.position.x + ((owner.width ?? 0) - (node.width ?? 0)) / 2,
+            y: owner.position.y + anchor.dy };
+        for (const key of ["slideKey", "slideDx", "slideMin", "slideMax"] as const) {
+            Object.assign(node.data, { [key]: owner.data[key] });
+        }
+    }
     return { nodes, exec, definitions };
 }
 
@@ -871,12 +901,35 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         data.onReveal(data);
     };
 
+    // The same fold control also serves comments, without starting a slide.
+    const foldButton = data.foldable && <button
+        type="button"
+        className="foldbtn"
+        title={data.collapsed ? l10n.t("Unfold this node") : l10n.t("Fold this node")}
+        aria-expanded={!data.collapsed}
+        onMouseDown={keepFocusOff}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+            event.stopPropagation();
+            data.onFold(data);
+        }}
+    >{data.collapsed ? "▸" : "▾"}</button>;
+
+    if (data.commentOwner !== undefined) return <div className="box comment-box"
+        title={data.commentOwner} data-source-start={data.start} data-source-end={data.sourceEnd}
+        data-vscode-context={statements.context(undefined, data)}
+        onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onAuxClick={onAuxClick}
+    ><span className="comment-text">{data.label}</span>{foldButton}</div>;
+
     // Match arms share their FOR's box. The invisible grouping still owns
     // the branch junction, unlike a declaration row with no handles at all.
     if (data.layoutOnly && !data.scrollSurface && !data.insertion && data.definitionRole === undefined &&
-        data.branchOffset === undefined && data.definitionBranchOffset === undefined) return null;
+        data.branchOffset === undefined && data.definitionBranchOffset === undefined && data.operandOutputY === undefined) return null;
 
     const classes = ["box"];
+    if (data.operatorExpression) classes.push("operator-expression");
+    if (data.operandInput) classes.push("operand-slot");
     if (data.foldedSummary !== undefined) classes.push("has-fold-summary");
     if (data.ioGroup) classes.push("io-group", `io-${data.ioGroup}`);
     if (data.isCall) classes.push("call-node");
@@ -948,25 +1001,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
             >
                 {data.reorder !== undefined && <ReorderHandle site={data.reorder} label={data.label}
                     onDrop={data.onReorder} />}
-                {data.foldable && (
-                    // Its own gestures, kept off the box's: a press here must
-                    // not start a slide, and the click must not be read as
-                    // going into the definition.
-                    <button
-                        type="button"
-                        className="foldbtn"
-                        title={data.collapsed
-                            ? l10n.t("Unfold this node")
-                            : l10n.t("Fold this node")}
-                        aria-expanded={!data.collapsed}
-                        onMouseDown={keepFocusOff}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={(event) => {
-                            event.stopPropagation();
-                            data.onFold(data);
-                        }}
-                    >{data.collapsed ? "▸" : "▾"}</button>
-                )}
+                {foldButton}
                 {data.isStart ? (
                     <svg className="start-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M 6.5 8 L 17.5 8 L 12 17 Z" />
@@ -980,7 +1015,9 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                     <svg className="add-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M 12 6 V 18 M 6 12 H 18" />
                     </svg>
-                ) : data.operator ? <div className="operator-cell"><span>{l10n.t("Operator")}</span><span>{data.operator.text}</span></div>
+                ) : data.operator ? <div className="operator-cell">{data.labelParts?.map((part, i) =>
+                    <span key={i} className={part.role ? "semantic-label" : undefined} data-role={part.role}
+                        data-category={part.category} title={part.source}>{part.text}</span>) ?? data.label}</div>
                 : data.ioGroup ? <fieldset className="io-frame"><legend>{data.label}</legend></fieldset>
                 : data.inline && data.isContainer ? null : data.literal !== undefined ? <>
                     <div className="literal-type-label"><TypeLabel label={data.literalTypeLabel ?? "?"} /></div>
@@ -1032,11 +1069,15 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                         className="definitionhandle" isConnectable={false}
                         style={{ top: data.definitionHandleY }} />
             )}
-            {(data.definitionRole === "value" || data.definitionBranchOffset !== undefined) && (
+            {(data.definitionRole === "value" || data.definitionBranchOffset !== undefined || data.operatorExpression) && (
                 <Handle type="source" position={Position.Left} id="definition-out"
                         className="definitionhandle" isConnectable={false}
                         style={{ top: data.definitionHandleY }} />
             )}
+            {data.operandInput && <Handle type="target" position={Position.Bottom} id="operand-in"
+                className="definitionhandle" isConnectable={false} />}
+            {data.operandOutputY !== undefined && <Handle type="source" position={Position.Left} id="operand-out"
+                className="definitionhandle" isConnectable={false} style={{ top: data.operandOutputY }} />}
         </>
     );
 }
@@ -1102,7 +1143,16 @@ function CallDefinitionEdge({ id, sourceX, sourceY, targetX, targetY, style, mar
     return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
 }
 
-const edgeTypes: EdgeTypes = { execution: ExecutionEdge, "execution-bypass": ExecutionBypassEdge, branch: BranchEdge, "definition-branch": DefinitionBranchEdge, "call-definition": CallDefinitionEdge };
+function OperandDefinitionEdge({ id, sourceX, sourceY, targetX, targetY, style, markerEnd, data }: EdgeProps) {
+    // Each extracted operand has a reserved lane left of the value column,
+    // then returns through the empty band below the expression row.
+    const lane = sourceX - (typeof data?.laneOffset === "number" ? data.laneOffset : 24);
+    const bend = targetY + (typeof data?.rise === "number" ? data.rise : 18);
+    const path = `M ${sourceX} ${sourceY} H ${lane} V ${bend} H ${targetX} V ${targetY}`;
+    return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
+}
+
+const edgeTypes: EdgeTypes = { execution: ExecutionEdge, "execution-bypass": ExecutionBypassEdge, branch: BranchEdge, "definition-branch": DefinitionBranchEdge, "call-definition": CallDefinitionEdge, "operand-definition": OperandDefinitionEdge };
 
 // ---------------------------------------------------------------------------
 // The app
@@ -1494,7 +1544,7 @@ function App() {
     // left button, which is what leaves it free for sliding and connecting.
     const onEnter = useCallback((data: BoxData) => {
         if (reply === undefined || data.start === undefined) return;
-        if (!data.collapsed) return;
+        if (data.commentOwner !== undefined || !data.collapsed) return;
         const start = data.start;
         if (nodeAt(reply.root, start) !== undefined) {
             setTrail((t) => [...t, start]);

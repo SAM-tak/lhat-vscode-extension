@@ -452,7 +452,7 @@ button.type-label:disabled { cursor: default; }
 .type-menu-status [role="alert"] { color: var(--vscode-errorForeground, #f48771); }
 .type-menu-status button { margin-top: 8px; padding: 4px 10px; border: 0; color: var(--vscode-button-foreground, #fff); background: var(--vscode-button-background, #0e639c); }
 
-.leaf .boxlabel {
+.leaf:not(.has-fold-summary) .boxlabel {
     display: flex;
     align-items: center;
     height: 100%;
@@ -502,6 +502,12 @@ button.type-label:disabled { cursor: default; }
 .literal-input[aria-invalid="true"] {
     box-shadow: inset 0 -2px var(--vscode-inputValidation-errorBorder, #f48771);
 }
+textarea.literal-input {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    overflow-x: hidden;
+    tab-size: 4;
+}
 .vscode-dark .literal-input,
 .vscode-high-contrast .literal-input { color-scheme: dark; }
 .vscode-light .literal-input,
@@ -522,7 +528,7 @@ button.type-label:disabled { cursor: default; }
     border: none;
     background: transparent;
 }
-.io-input { --lhat-io-color: var(--vscode-lhat-graph-input, #e8a15b); }
+.io-input, .io-self { --lhat-io-color: var(--vscode-lhat-graph-input, #e8a15b); }
 .io-output { --lhat-io-color: var(--vscode-lhat-graph-output, #df91b8); }
 /* A native legend interrupts the top border without an opaque label patch,
    so the frame works over both folded and expanded container backgrounds. */
@@ -626,8 +632,24 @@ button.type-label:disabled { cursor: default; }
 }
 .box.add-node:has(.append-statement) { border: none; }
 .statement-menu .type-menu-option { align-items: flex-start; flex-direction: column; }
-.operator-cell { display: flex; flex-direction: column; align-items: center; padding: calc(3px * var(--lhat-scale)); }
-.operator-cell > :first-child { font-size: calc(10px * var(--lhat-scale)); font-style: italic; color: var(--vscode-descriptionForeground); }
+.operator-cell { display: flex; align-items: center; justify-content: center; height: 100%; white-space: nowrap; }
 .operator-box { cursor: context-menu; }
 .box.decoration { background: transparent; border-color: transparent; display: flex; align-items: center; justify-content: center; }
 .box.decoration .boxlabel { padding: 0; }
+.box.comment-box {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100%;
+    padding: calc(8px * var(--lhat-scale)) calc(26px * var(--lhat-scale))
+        calc(8px * var(--lhat-scale)) calc(10px * var(--lhat-scale));
+    white-space: pre;
+    font-family: monospace;
+    font-size: calc(12px * var(--lhat-scale));
+    line-height: calc(18px * var(--lhat-scale));
+    color: var(--vscode-descriptionForeground);
+    background: color-mix(in srgb, var(--vscode-editor-background) 80%, transparent);
+    border: 1px dashed var(--vscode-descriptionForeground);
+    border-radius: calc(4px * var(--lhat-scale));
+}
+.box.operand-slot .boxlabel { justify-content: center; padding: 0; }
+.box.operand-slot { border-radius: calc(15px * var(--lhat-scale)); }
