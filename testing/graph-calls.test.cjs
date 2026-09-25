@@ -197,7 +197,7 @@ test('grouped operands and calls sit below compact operator rows with reserved d
         const graph = stackWideDefinitions(await new ELK().layout(toElk(reply, { scale })), 1000);
         const all = flatten(graph), tree = all.find(node => node.lhat?.expressionTree);
         const [row, column] = tree.children;
-        assert.deepEqual(row.children.map(cell => cell.labels[0].text), ['•', '*', '3', '+', '•', '+', '•']);
+        assert.deepEqual(row.children.map(cell => cell.labels[0].text), ['', '*', '3', '+', '', '+', '']);
         assert.equal(all.filter(node => node.lhat?.invocation).length, 1);
         assert.equal(all.filter(node => node.lhat?.operatorExpression).length, 3);
         assert.equal(column.children.length, 3);
@@ -206,10 +206,12 @@ test('grouped operands and calls sit below compact operator rows with reserved d
             assert.equal(value.x, column.children[0].x);
             if (i) assert(value.y > column.children[i - 1].y + column.children[i - 1].height);
             const link = tree.lhat.operandLinks[i];
-            assert.equal(link.source, value.id);
+            assert.equal(link.source, value.lhat.definitionOutputs?.[0] ?? value.id);
             assert(value.lhat.operandOutputY !== undefined);
             const slot = row.children.find(cell => cell.id === link.target);
             assert(slot.lhat.operandInput);
+            assert.equal(slot.lhat.labelParts[0].typeLabel, 'Number');
+            assert.equal(slot.lhat.labelParts[0].source, 'number^');
             assert(link.laneOffset > 0 && link.laneOffset <= value.x);
             assert(slot.y + slot.height + link.rise < column.y + value.y);
         }
@@ -219,6 +221,30 @@ test('grouped operands and calls sit below compact operator rows with reserved d
         assert(!folded.some(node => node.lhat?.operandLinks));
     }
     assert.equal(JSON.stringify(reply), before);
+});
+
+test('an extracted operand without an inferred type keeps its neutral hole', () => {
+    const reply = require('./operator-fixture.cjs').operatorExpression();
+    const call = reply.root.fields.left.fields.right;
+    delete call.inferredType;
+    call.callable.outputs = [];
+    const graph = toElk(reply);
+    const slots = flatten(graph).filter(node => node.lhat?.operandInput);
+    assert(slots.some(slot => slot.labels[0].text === '•' && !slot.lhat.labelParts));
+    assert(slots.some(slot => slot.lhat.labelParts?.[0].typeLabel === 'Number'));
+});
+
+test('a call operand uses its sole resolved output type when inferredType is absent', () => {
+    const reply = require('./operator-fixture.cjs').operatorExpression();
+    const call = reply.root.fields.left.fields.right;
+    delete call.inferredType;
+    const slotForCall = () => {
+        const graph = toElk(reply);
+        return flatten(graph).find(node => node.lhat?.operandInput && node.lhat.start === call.start && node.lhat.end === call.end);
+    };
+    assert.equal(slotForCall().lhat.labelParts[0].typeLabel, 'Number');
+    call.callable.outputs = ['number^', 'string^'];
+    assert.equal(slotForCall().labels[0].text, '•', 'multiple results do not identify one operand type');
 });
 
 test('binding additions insert a discard and nil together, preserving Unicode comments and trailing commas', () => {
@@ -454,7 +480,8 @@ test('call arguments retain inline operators and extract grouped expressions bel
         assert.deepEqual(layout.children.map(column => column.children.length), [1, 2]);
         const expression = all.find(node => node.lhat?.expressionTree);
         const [row, external] = expression.children;
-        assert.deepEqual(row.children.map(cell => cell.labels[0].text), ['a', '+', '•']);
+        assert.deepEqual(row.children.map(cell => cell.labels[0].text), ['a', '+', '']);
+        assert.equal(row.children[2].lhat.labelParts[0].typeLabel, 'Number');
         assert(external.y > row.y + row.height);
         assert.deepEqual(external.children[0].children.map(cell => cell.labels[0].text), ['b', '*', 'c']);
         assert.equal(expression.lhat.operandLinks.length, 1);
@@ -528,7 +555,8 @@ test('index expressions retain their own internal call scope outside the consumi
     const scope = all.find(node => node.lhat?.expressionTree);
     assert(flatten(scope).includes(trees[1]), 'index keeps its own expression boundary');
     assert.equal(trees[0].children[1].children[0].id, scope.id);
-    assert.deepEqual(value.children.map(cell => cell.labels[0].text), ['items', '[', '•', ']']);
+    assert.deepEqual(value.children.map(cell => cell.labels[0].text), ['items', '[', '', ']']);
+    assert.equal(value.children[2].lhat.labelParts[0].typeLabel, 'Number');
     assert.equal(value.lhat.definitionHandleY, value.height / 2);
     assert.equal(trees[0].lhat.definitionLinks[0].source, value.id);
 });
@@ -540,7 +568,7 @@ test('index targets and subscripts embed only simple values and keep each comple
         for (const scale of [0.7, 1, 2]) {
             const graph = stackWideDefinitions(await new ELK().layout(toElk(reply, { scale })), 1200);
             const all = flatten(graph), row = all.find(node => node.lhat?.kind === 'index');
-            const expected = [options.targetCall ? '•' : 'dense', options.optional ? '?[' : '[', options.simple ? 'i' : '•',
+            const expected = [options.targetCall ? '' : 'dense', options.optional ? '?[' : '[', options.simple ? 'i' : '',
                 ...options.multi ? [',', '2'] : [], ']'];
             assert.deepEqual(row.children.map(cell => cell.labels[0].text), expected);
             for (let i = 1; i < row.children.length; i++) {
@@ -557,7 +585,7 @@ test('index targets and subscripts embed only simple values and keep each comple
                 assert.equal(header.id, row.id);
                 assert(column.y >= header.y + header.height);
                 for (const [i, child] of column.children.entries()) {
-                    assert.equal(scope.lhat.operandLinks[i].source, child.id);
+                    assert.equal(scope.lhat.operandLinks[i].source, child.lhat.definitionOutputs?.[0] ?? child.id);
                     assert.equal(scope.lhat.operandLinks[i].target, holes[i].id);
                 }
             }

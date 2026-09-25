@@ -510,8 +510,10 @@ function toFlow(
         }
         for (const link of parent.lhat?.operandLinks ?? []) {
             if (!endpoints.has(link.source) || !endpoints.has(link.target)) continue;
+            const source = endpoints.get(link.source)!;
             definitions.push({ ...definitionEdge, id: `o__${parent.id}__${link.target}`, type: "operand-definition",
-                source: link.source, target: link.target, sourceHandle: "operand-out", targetHandle: "operand-in",
+                source: link.source, target: link.target,
+                sourceHandle: source.lhat?.definitionRole === "value" ? "definition-out" : "operand-out", targetHandle: "operand-in",
                 data: { laneOffset: link.laneOffset, rise: link.rise }, selectable: false, focusable: false });
         }
         for (const link of parent.lhat?.definitionLinks ?? []) {

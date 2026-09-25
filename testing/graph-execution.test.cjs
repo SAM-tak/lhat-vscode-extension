@@ -121,6 +121,41 @@ test('catch handlers occupy separate columns and are never entered by normal exe
     assert(scope.edges.every(e => !e.drawn), 'lane ordering is not execution');
 });
 
+test('unfolding a handled block after Fold All retains folded catch bodies and their execution paths', async () => {
+    const reply = catchFlow();
+    const handled = reply.root.fields.items[0];
+    const key = `${handled.kind}:${handled.start}:${handled.end}`;
+    const { graph, flow } = await draw(reply, { collapseAll: true, folds: { [key]: false } });
+    const scope = flatten(graph).find(n => n.lhat?.catchScope);
+    assert(scope);
+    for (const lane of scope.children.slice(1)) {
+        const header = flatten(lane).find(n => n.lhat?.kind === 'catch');
+        const folded = flatten(lane).find(n => n.lhat?.collapsed && n.lhat?.kind === 'call-stmt');
+        assert(header && folded, 'each handler still contains its folded statement');
+        assert(flow.exec.some(e => e.source === header.id && e.target === folded.id), 'catch enters its folded statement');
+        assert(flow.exec.some(e => e.source === folded.id), 'folded statement continues along the handler path');
+        assert(scope.lhat.executionBranchExits.some(id => flatten(lane).some(n => n.id === id)),
+            'the handler rejoins the scope');
+    }
+    assert.equal(scope.lhat.executionBranchExits.length, 3);
+});
+
+test('unfolding if and el clauses after Fold All retains their folded statements', async () => {
+    const reply = branchFlow({ otherwise: true });
+    const branch = reply.root.fields.items[0];
+    const key = node => `${node.kind}:${node.start}:${node.end}`;
+    const folds = Object.fromEntries([branch, ...branch.fields.items].map(node => [key(node), false]));
+    const { graph, flow } = await draw(reply, { collapseAll: true, folds });
+    const clauses = flatten(graph).filter(n => n.lhat?.kind === 'if-clause');
+    assert.equal(clauses.length, 2);
+    for (const clause of clauses) {
+        const folded = flatten(clause).find(n => n.lhat?.collapsed && n.lhat?.kind === 'call-stmt');
+        assert(folded, 'each opened clause retains its folded statement');
+        assert(flow.exec.some(e => e.target === folded.id), 'the clause enters its statement');
+        assert(flow.exec.some(e => e.source === folded.id), 'the statement continues to the branch merge');
+    }
+});
+
 test('catch fall-through remains reachable after a terminal main path and terminal handlers do not merge', async () => {
     for (const callable of [false, true]) {
         const reply = catchFlow({ mainTerminal: true, handlerTerminal: true, callable });
@@ -184,6 +219,43 @@ test('wide call trees scroll as one group while execution and routed definitions
     for (const node of flow.nodes.filter(n => n.data.slideKey === owner.data.slideKey && n.id !== owner.id)) {
         assert.deepEqual(shifted.nodes.find(n => n.id === node.id).position, node.position, 'children retain their positions relative to the scrolling owner');
     }
+});
+
+test('a function literal is an external call target and operator calls connect from their result boxes', async () => {
+    const source = 'f^n:number^{n}(10) + f(1)';
+    const n = (kind, text, fields, from = 0, extra = {}) => {
+        const start = source.indexOf(text, from);
+        assert(start >= 0);
+        return { kind, start, end: start + text.length, line: 1, column: start + 1, fields, ...extra };
+    };
+    const fn = n('func', 'f^n:number^{n}', {
+        params: [n('param', 'n:number^', { name: n('ident', 'n'), type: n('type-name', 'number^') })],
+        return_type: n('type-name', 'number^'),
+        body: n('block', '{n}', { items: [n('ident', 'n', undefined, source.indexOf('{'))] }),
+    });
+    const first = n('call', 'f^n:number^{n}(10)', { target: fn, argument: [n('int', '10')] }, 0,
+        { callable: { inputs: [{ type: 'number^' }], outputs: ['number^'] } });
+    const second = n('call', 'f(1)', { target: n('ident', 'f', undefined, source.indexOf(' + ')),
+        argument: [n('int', '1')] }, source.indexOf(' + '),
+        { callable: { inputs: [{ type: 'number^' }], outputs: ['number^'] } });
+    const reply = { source, root: n('binary', source, { left: first, right: second }) };
+    const { graph, flow } = await draw(reply);
+    const all = flatten(graph), tree = all.find(node => node.lhat?.expressionTree);
+    const targetTree = all.find(node => node.lhat?.callTree && node.lhat.start === first.start);
+    const card = all.find(node => node.lhat?.invocation && node.lhat.start === first.start);
+    const outside = all.find(node => node.lhat?.kind === 'func' && node.id !== card?.id);
+    assert(outside && targetTree && card);
+    assert.equal(outside.lhat.inlineable, false);
+    assert(!flatten(card).includes(outside), 'the function is not inside the call card');
+    const target = card.lhat.callTarget;
+    assert(flow.definitions.some(edge => edge.source === outside.id && edge.target === target.input &&
+        edge.sourceHandle === 'definition-out' && edge.targetHandle === 'definition-in'));
+    const output = all.find(node => node.id === targetTree.lhat.definitionOutputs[0]);
+    assert(output && output.lhat.kind === 'output-slot');
+    assert(tree.lhat.operandLinks.some(link => link.source === output.id));
+    assert(flow.definitions.some(edge => edge.source === output.id && edge.type === 'operand-definition' &&
+        edge.sourceHandle === 'definition-out'));
+    assert.equal(all.find(node => node.lhat?.kind === 'ident' && node.lhat.start === second.fields.target.start)?.lhat.inlineable, true);
 });
 test('fitting expressions are centred as a whole; oversized expressions start left and scroll', () => {
     const card = { id: 'card', x: 0, y: 0, width: 120, height: 100,

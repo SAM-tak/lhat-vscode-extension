@@ -1,4 +1,5 @@
 import type { ElkNode, ElkEdge } from "./map";
+import { definitionSource } from "./definitionSource";
 
 /** Compact call cards and a shared column for each argument depth. An index,
  * table or function remains a separate expression/scope, with its own layout.
@@ -60,6 +61,17 @@ export function arrangeCallTrees(root: ElkNode, scale: number): ElkNode {
         const arguments_: { owner: string; value: string; input: string }[] = [];
         const collect = (card: ElkNode, depth: number): void => {
             (columns[depth] ??= []).push(card);
+            const target = card.lhat?.callTarget;
+            if (target) {
+                const index = card.children?.findIndex(child => child.id === target.value) ?? -1;
+                if (index >= 0) {
+                    const value = card.children!.splice(index, 1)[0];
+                    const source = definitionSource(value);
+                    if (source) links.push({ source, target: target.input, column: depth });
+                    arguments_.push({ owner: card.id, value: value.id, input: target.input });
+                    (columns[depth + 1] ??= []).push(visit(value));
+                }
+            }
             if (card.children?.[0]) card.children[0] = visit(card.children[0]);
             const groups = card.children?.find(child => child.lhat?.kind === "call-groups");
             // A method stacks Self above Input; both can own external values.
@@ -73,8 +85,8 @@ export function arrangeCallTrees(root: ElkNode, scale: number): ElkNode {
                     if (!slot || !value) continue;
                     slots.push(slot);
                     arguments_.push({ owner: card.id, value: value.id, input: slot.id });
-                    const output = value.lhat?.definitionOutputs;
-                    if (!output || output.length) links.push({ source: output?.[0] ?? value.id, target: slot.id, column: depth });
+                    const source = definitionSource(value);
+                    if (source) links.push({ source, target: slot.id, column: depth });
                     if (value.lhat?.invocation) collect(value, depth + 1);
                     else (columns[depth + 1] ??= []).push(visit(value));
                 }
