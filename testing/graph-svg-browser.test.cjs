@@ -469,7 +469,7 @@ test('call depth columns, right-aligned inputs and bent definition lines survive
     });
 });
 
-test('a fitting expression is centred as a whole and scrolls from a left-aligned frame in a narrower viewport', { timeout: 60000 }, async () => {
+function precededCalls() {
     const reply = branchedCalls();
     const name = 'a_very_wide_preceding_procedure_with_a_long_display_name', prefix = name + '()\n';
     const shift = node => {
@@ -483,6 +483,78 @@ test('a fitting expression is centred as a whole and scrolls from a left-aligned
     reply.root.fields.items.unshift({ ...callNode, kind: 'call-stmt', fields: { value: callNode }, callable: undefined });
     reply.root.start = 0;
     reply.source = prefix + reply.source;
+    return reply;
+}
+
+test('left and right arrows share Shift-wheel scrolling of the hovered owner, not the focused node', { timeout: 60000 }, async () => {
+    const reply = precededCalls();
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, call, errors }) => {
+        await call('Emulation.setDeviceMetricsOverride', { width: 320, height: 1600, deviceScaleFactor: 1, mobile: false });
+        await until(`document.querySelectorAll('.call-tree-surface').length===3 && !document.querySelector('.svg-export>button').disabled`);
+        const frame = () => evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+        const geometry = () => evaluate(`(()=>{
+            const m=new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);
+            return {x:[...document.querySelectorAll('.call-tree-surface')].map(n=>n.getBoundingClientRect().x),viewport:{x:m.e,y:m.f}};
+        })()`);
+        const hover = async index => {
+            const point = await evaluate(`(()=>{const r=document.querySelectorAll('.call-tree-surface')[${index}].getBoundingClientRect();
+                return {x:Math.max(10,Math.min(innerWidth-10,r.x+r.width/2)),y:r.y+2}})()`);
+            await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+            return point;
+        };
+        const press = async key => {
+            const code = key === 'ArrowRight' ? 39 : 37;
+            for (const type of ['keyDown', 'keyUp']) await call('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: code });
+            await frame();
+        };
+        await evaluate(`document.querySelectorAll('.call-node')[4].closest('.react-flow__node').focus({preventScroll:true})`);
+        await frame();
+        const initial = await geometry();
+        await hover(1);
+        await press('ArrowRight');
+        const right = await geometry();
+        assert.deepEqual(right.x, [initial.x[0], initial.x[1]-24, initial.x[2]]);
+        assert.deepEqual(right.viewport, initial.viewport);
+        await press('ArrowLeft');
+        assert.deepEqual(await geometry(), initial);
+        const point = await hover(1);
+        await call('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: 0, deltaY: 100, modifiers: 8 });
+        await frame();
+        assert.deepEqual(await geometry(), right, 'one key press equals one Shift-wheel step');
+        await hover(0);
+        await press('ArrowRight');
+        const switched = await geometry();
+        assert.deepEqual(switched.x, [initial.x[0]-24, right.x[1], initial.x[2]]);
+        await hover(2);
+        await press('ArrowRight');
+        assert.deepEqual(await geometry(), switched, 'a fitting hovered node does not scroll');
+        await call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 10, y: 10 });
+        await press('ArrowRight');
+        assert.deepEqual(await geometry(), switched, 'leaving the graph forgets the previous hover target');
+        await hover(1);
+        await evaluate(`document.querySelector('textarea.literal-input').focus({preventScroll:true})`);
+        await press('ArrowLeft');
+        assert.deepEqual(await geometry(), switched, 'focused editors retain caret navigation');
+        await evaluate(`document.activeElement.blur()`);
+        const label = await evaluate(`(()=>{const n=[...document.querySelectorAll('.type-label')].find(n=>{
+            const r=n.getBoundingClientRect();return r.x>0 && r.right<innerWidth && r.y>0 && r.bottom<innerHeight});
+            const r=n.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
+        await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...label });
+        await press('ArrowRight');
+        assert.deepEqual(await geometry(), switched, 'hovered type labels use the wheel exclusion too');
+        for (let i=0;i<30;i++) { await hover(0); await press('ArrowRight'); }
+        const limit = await geometry();
+        await hover(0); await press('ArrowRight');
+        assert.deepEqual(await geometry(), limit, 'horizontal bounds do not accumulate excess key input');
+        await hover(0); await press('ArrowLeft');
+        assert.equal((await geometry()).x[0], limit.x[0]+24, 'reversing from the limit moves immediately');
+        assert.deepEqual((await geometry()).viewport, initial.viewport);
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('a fitting expression is centred as a whole and scrolls from a left-aligned frame in a narrower viewport', { timeout: 60000 }, async () => {
+    const reply = precededCalls();
     await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, call, errors }) => {
         await until(`document.querySelectorAll('.call-tree-surface').length===3 && !document.querySelector('.svg-export>button').disabled`);
         const geometry = () => evaluate(`(()=>{
@@ -706,7 +778,7 @@ test('pattern frames show expression trees in horizontal statement arms and vert
     }
 });
 
-test('PageUp and PageDown page vertically, clamp at document ends and leave editors and menus alone', { timeout: 60000 }, async () => {
+test('ArrowUp and ArrowDown scroll by line, PageUp and PageDown by page, preserving editor and menu keys', { timeout: 60000 }, async () => {
     const lines = Array.from({ length: 12 }, (_, i) => `print("row ${i}")`), source = lines.join('\n');
     let offset = 0;
     const items = lines.map((text, i) => {
@@ -722,12 +794,23 @@ test('PageUp and PageDown page vertically, clamp at document ends and leave edit
         await until(`document.querySelectorAll('.call-node').length===12 && !document.querySelector('.svg-export>button').disabled`);
         const position = () => evaluate(`(()=>{const m=new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);return {x:m.e,y:m.f}})()`);
         const page = async key => {
-            const code = key === 'PageDown' ? 34 : 33;
+            const code = { PageDown: 34, PageUp: 33, ArrowDown: 40, ArrowUp: 38 }[key];
             await call('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: code });
             await call('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: code });
             await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
         };
         const initial = await position(), height = await evaluate(`document.getElementById('flow').clientHeight`);
+        await page('ArrowUp');
+        assert.deepEqual(await position(), initial, 'ArrowUp stays at the top');
+        await page('ArrowDown');
+        assert.deepEqual(await position(), { x: initial.x, y: initial.y - 16 });
+        await page('ArrowUp');
+        assert.deepEqual(await position(), initial);
+        const nodePosition = await evaluate(`(()=>{const n=document.querySelector('.call-node').closest('.react-flow__node');n.focus({preventScroll:true});return n.style.transform})()`);
+        await page('ArrowDown');
+        assert.deepEqual(await position(), { x: initial.x, y: initial.y - 16 }, 'arrows also scroll when a graph node has focus');
+        assert.equal(await evaluate(`document.querySelector('.call-node').closest('.react-flow__node').style.transform`), nodePosition);
+        await page('ArrowUp');
         await page('PageDown');
         const down = await position();
         assert.equal(down.x, initial.x);
@@ -740,16 +823,27 @@ test('PageUp and PageDown page vertically, clamp at document ends and leave edit
         const bottom = await position();
         await page('PageDown');
         assert.deepEqual(await position(), bottom, 'PageDown stays at the bottom');
+        await page('ArrowDown');
+        assert.deepEqual(await position(), bottom, 'ArrowDown stays at the bottom');
         for (let i = 0; i < 12; i++) await page('PageUp');
         assert.deepEqual(await position(), initial);
         await evaluate(`document.querySelector('.literal-editor textarea').focus({preventScroll:true})`);
         await page('PageDown');
+        await page('ArrowDown');
         assert.deepEqual(await position(), initial, 'literal editing keeps its keyboard behavior');
         await evaluate(`document.activeElement.blur();document.querySelector('.svg-export>button').click()`);
         await until(`!!document.querySelector('.svg-export-menu')`);
         await evaluate(`document.querySelector('.svg-export-menu>button').focus({preventScroll:true})`);
         await page('PageDown');
+        await page('ArrowDown');
         assert.deepEqual(await position(), initial, 'menu navigation does not scroll the graph');
+        await evaluate(`document.activeElement.blur();document.querySelector('.svg-export>button').click();[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='A+').click()`);
+        await until(`document.querySelector('#flow').style.getPropertyValue('--lhat-scale')!=='1' && !document.querySelector('.svg-export>button').disabled`);
+        const enlarged = await position(), scale = await evaluate(`Number(document.querySelector('#flow').style.getPropertyValue('--lhat-scale'))`);
+        await page('ArrowDown');
+        const scrolled = await position();
+        assert.equal(scrolled.x, enlarged.x);
+        assert(Math.abs(scrolled.y - (enlarged.y - 16 * scale)) < 0.01, 'line scrolling follows the text size');
         assert.equal(errors.length, 0, JSON.stringify(errors));
     });
 });

@@ -1635,6 +1635,15 @@ function App() {
     const slidablesRef = useRef(slidables);
     slidablesRef.current = slidables;
 
+    // Wheel and keyboard share the same owner lookup, exclusions and step.
+    const scrollHorizontally = useCallback((target: Element | null, delta: number) => {
+        if (!target || !delta || !flowRef.current?.contains(target) ||
+            target.closest(".literal-editor, .name-input, .type-label")) return;
+        const over = target.closest("[data-id]")?.getAttribute("data-id");
+        const key = over == null ? undefined : slidablesRef.current.get(over);
+        if (key !== undefined) onSlideRef.current(key, delta > 0 ? -24 : 24);
+    }, []);
+
     // 8.6: how far the document may scroll -- the rubber band's home range.
     // Top of the document at the top margin down to its bottom at the
     // bottom edge; a document shorter than the view just sits at the top.
@@ -1646,12 +1655,13 @@ function App() {
         };
     }, [laid, viewHeight]);
 
-    // Page through the document with a little overlap. One view-level listener
-    // also works when the canvas background (rather than a node) has focus.
+    // Up/down move one text line; left/right slide the hovered node like Shift+wheel.
+    // Page keys retain a little overlap.
+    // Capture before React Flow can use arrows to move a focused node.
     useEffect(() => {
-        const page = (event: KeyboardEvent) => {
+        const scrollKey = (event: KeyboardEvent) => {
             if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey ||
-                (event.key !== "PageUp" && event.key !== "PageDown")) return;
+                !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown"].includes(event.key)) return;
             const target = event.target instanceof Element ? event.target : document.activeElement;
             if (target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="menu"], [role="listbox"], .nokey')) return;
             const height = flowRef.current?.clientHeight ?? 0;
@@ -1659,11 +1669,22 @@ function App() {
             event.preventDefault();
             event.stopPropagation();
             onDocumentStart();
-            onDocumentSlide((event.key === "PageUp" ? 1 : -1) * height * 0.9);
+            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                stopSlide();
+                // Query live hover state: layout/scrolling may have changed
+                // the node under a stationary pointer since its last movement.
+                const hovered = flowRef.current?.querySelector(".react-flow__node:hover");
+                const hit = hovered?.querySelector(".literal-editor:hover, .name-input:hover, .type-label:hover") ?? hovered ?? null;
+                scrollHorizontally(hit, event.key === "ArrowRight" ? 1 : -1);
+                return;
+            }
+            const up = event.key === "ArrowUp" || event.key === "PageUp";
+            const distance = event.key.startsWith("Arrow") ? 16 * scale : height * 0.9;
+            onDocumentSlide((up ? 1 : -1) * distance);
         };
-        document.addEventListener("keydown", page);
-        return () => document.removeEventListener("keydown", page);
-    }, [onDocumentStart, onDocumentSlide]);
+        document.addEventListener("keydown", scrollKey, true);
+        return () => document.removeEventListener("keydown", scrollKey, true);
+    }, [onDocumentStart, onDocumentSlide, scale, stopSlide, scrollHorizontally]);
 
     // 8.6: dragging the background scrolls the document -- vertically only,
     // like everything global here -- and keeps its momentum when let go.
@@ -1749,19 +1770,14 @@ function App() {
             if (!event.shiftKey) return;
             event.preventDefault();
             event.stopPropagation();
-            const over = (event.target as Element)
-                .closest?.("[data-id]")?.getAttribute("data-id");
-            const key = over != null
-                ? slidablesRef.current.get(over) : undefined;
-            if (key === undefined) return;
             const delta = event.deltaY !== 0 ? event.deltaY : event.deltaX;
-            if (delta !== 0) onSlideRef.current(key, delta > 0 ? -24 : 24);
+            scrollHorizontally(event.target instanceof Element ? event.target : null, delta);
         };
         el.addEventListener("wheel", onWheel,
             { capture: true, passive: false });
         return () => el.removeEventListener("wheel", onWheel,
             { capture: true });
-    }, [stopSlide]);
+    }, [stopSlide, scrollHorizontally]);
 
     // The map is mounted one render after the pane it belongs to.
     //
