@@ -8,3 +8,4 @@ bin/
 # driver registers, so it goes stale the moment the host's registrations
 # change -- generate it rather than track it.
 lhat-host.json
+testing.code-workspace
