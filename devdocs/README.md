@@ -269,6 +269,12 @@ React Flow は見せる側に徹する。この半分だけ esbuild が束ねる
 として今も残る。両者は VSCode の「TextMate が下地、セマンティックトークンが
 上書き」という標準の2層構造で共存する。
 
+解析はワーカースレッドで非同期に行うため、編集直後のトークン要求には
+前回の解析結果が返る場合がある。初回解析および再解析が完了したら、
+`workspace.semanticTokens.refreshSupport` を宣言したクライアントへ
+`workspace/semanticTokens/refresh` リクエストを送り、再取得を促す。
+これにより、追加のキー入力がなくても古い行・桁位置での色付けが更新される。
+
 ## ホスト API を教える — lhat-host.json
 
 ホストが `lhat_register_func` 等で C から登録する API（このリポジトリなら
