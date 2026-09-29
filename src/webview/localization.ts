@@ -27,6 +27,7 @@ export function graphVocabulary(): Vocabulary {
         input: l10n.t("Input"), output: l10n.t("Output"),
         call: l10n.t("Call"),
         methodCall: l10n.t("Method Call"),
+        format: l10n.t("Format"),
         condition: l10n.t("Condition"),
         conditionalBranch: l10n.t("Conditional Branch"),
         conditionalSelection: l10n.t("Conditional Selection"),

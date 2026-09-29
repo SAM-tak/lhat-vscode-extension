@@ -207,7 +207,8 @@ test('grouped operands and calls sit below compact operator rows with reserved d
             if (i) assert(value.y > column.children[i - 1].y + column.children[i - 1].height);
             const link = tree.lhat.operandLinks[i];
             assert.equal(link.source, value.lhat.definitionOutputs?.[0] ?? value.id);
-            assert(value.lhat.operandOutputY !== undefined);
+            const output = all.find(node => node.id === link.source);
+            assert(output.lhat.operandOutputY !== undefined || output.lhat.definitionRole === 'value');
             const slot = row.children.find(cell => cell.id === link.target);
             assert(slot.lhat.operandInput);
             assert.equal(slot.lhat.labelParts[0].typeLabel, 'Number');

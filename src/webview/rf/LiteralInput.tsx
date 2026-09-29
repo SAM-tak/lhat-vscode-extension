@@ -35,6 +35,18 @@ export function LiteralEditStatus() {
     </span>;
 }
 
+export function LiteralFrame({ kind, modified, children }: {
+    kind: LiteralValue["kind"]; modified: boolean; children: React.ReactNode;
+}) {
+    return <div className={`literal-editor ${kind}`} data-modified={modified}
+        onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
+        onClick={event => event.stopPropagation()}>
+        {kind === "string" && <span className="literal-quote" aria-hidden="true">“</span>}
+        {children}
+        {kind === "string" && <span className="literal-quote" aria-hidden="true">”</span>}
+    </div>;
+}
+
 export function LiteralInput({ literal }: { literal: LiteralValue }) {
     const { sourceKey, values, change, commit } = useContext(LiteralEdits);
     const value = values[literal.key] ?? literal.value;
@@ -75,13 +87,8 @@ export function LiteralInput({ literal }: { literal: LiteralValue }) {
         },
         onKeyUp: (event: React.KeyboardEvent) => event.stopPropagation(),
     };
-    return <div className={`literal-editor ${literal.kind}`} data-modified={value !== literal.value}
-        onPointerDown={(event) => event.stopPropagation()}
-        onPointerUp={(event) => event.stopPropagation()}
-        onClick={(event) => event.stopPropagation()}>
-        {literal.kind === "string" && <span className="literal-quote" aria-hidden="true">“</span>}
+    return <LiteralFrame kind={literal.kind} modified={value !== literal.value}>
         {literal.kind === "number" ? <input {...props} type="text" inputMode="decimal" />
             : <textarea {...props} rows={1} wrap="soft" />}
-        {literal.kind === "string" && <span className="literal-quote" aria-hidden="true">”</span>}
-    </div>;
+    </LiteralFrame>;
 }

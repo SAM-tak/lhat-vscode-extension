@@ -23,6 +23,8 @@ import { arrangeCallTrees, alignCallPorts } from "./callLayout";
 import { definitionSource } from "./definitionSource";
 import { analyzeExecution } from "./execution";
 import { assignmentOperator } from "../graphAssignments";
+import { syntaxTokens } from "../graphSyntax";
+import { interpolationFields, interpolationParts, type InterpolationField } from "../graphInterpolation";
 import { expressionCells, isInlineValue } from "./operatorExpression";
 
 const CH = 7.2; // mono advance at 12px
@@ -106,6 +108,7 @@ export interface ElkNode {
     /** Not ELK's: what this node was made from, for clicks and folding. */
     lhat?: {
         kind: string; start: number; end: number;
+        drillTarget?: DrillTarget;
         /** Exact AST owner of a separately displayed comment. */
         commentOwner?: string;
         commentAnchor?: { id: string; dy: number };
@@ -120,6 +123,8 @@ export interface ElkNode {
         operandLinks?: { source: string; target: string; laneOffset: number; rise: number }[];
         /** Whole literal leaves expose an editable display value. */
         literal?: LiteralValue;
+        interpolation?: InterpolationField;
+        interpolationFormat?: InterpolationField;
         /** Localized semantic runs, kept separate from source labels/spans. */
         labelParts?: LabelPart[];
         literalTypeLabel?: string;
@@ -139,16 +144,20 @@ export interface ElkNode {
         /** Sequential groups pass their execution lines through to these children. */
         executionEntry?: string;
         executionExit?: string;
-        /** A parser-generated branch group with no additional visible box. */
+        /** A layout group with no additional visible box. */
         layoutOnly?: boolean;
         /** A source-backed condition/pattern box, not an execution step. */
-        condition?: { entry?: string; inset: number; axis?: "horizontal" };
+        condition?: { entry?: string; inset: number; axis?: "horizontal"; exitLane?: boolean };
         /** A statement branch enters these statements from its top handle. */
         executionBranches?: string[];
         /** Arm exits merge at the bottom of a statement branch. */
         executionBranchExits?: string[];
         executionBypass?: boolean;
         executionLaneInset?: number;
+        executionLaneSide?: "left";
+        executionHandleX?: number;
+        /** Normal iteration completion returns to pre or the condition test. */
+        executionLoop?: { entry: string; exit: string; inset: number; clearance: number };
         /** Only statement-list additions are execution endpoints. */
         executionAppend?: boolean;
         executionTerminal?: boolean;
@@ -320,12 +329,20 @@ export function isDrillTarget(node: AstNode): boolean {
     return true;
 }
 
-/** The node a view is rooted at, found by the position it starts at. */
-export function nodeAt(root: AstNode, start: number): AstNode | undefined {
-    if (root.start === start) return root;
+export interface DrillTarget {
+    kind: string; start: number; end: number;
+    role?: "condition" | "pattern";
+    mode?: "while" | "until";
+}
+
+/** Exact identities distinguish nested expressions and clauses sharing a start. */
+export function nodeAt(root: AstNode, target: number | DrillTarget): AstNode | undefined {
+    const start = typeof target === "number" ? target : target.start;
+    if (root.start === start && (typeof target === "number" ||
+        (root.end === target.end && root.kind === target.kind))) return root;
     for (const { node: c } of allChildren(root)) {
         if (start < c.start || start >= c.end) continue;
-        const found = nodeAt(c, start);
+        const found = nodeAt(c, target);
         if (found !== undefined) return found;
     }
     return undefined;
@@ -348,10 +365,9 @@ export interface MapOptions {
     /** V15: fold definitions when the view opens. */
     collapse?: boolean;
     /**
-     * What the reader has folded or unfolded by hand, keyed by start
-     * position. An entry decides that one node; everything without one
-     * follows `collapse`. Positions rather than nodes, for the reason 8.2's
-     * trail uses them: the tree is replaced whole on every edit.
+     * What the reader has folded or unfolded by hand, keyed by kind and span.
+     * An entry decides that one node; everything without one follows `collapse`.
+     * Source identities survive replacement of the AST objects on refresh.
      */
     folds?: Record<string, boolean>;
     /** Explicit toolbar Fold All, distinct from the initial definition folds. */
@@ -361,6 +377,7 @@ export interface MapOptions {
      * view *is* that definition -- so what shows is the body alone.
      */
     root?: AstNode;
+    rootTarget?: DrillTarget;
     /**
      * 8.6: the font factor, 1 at the default size. Zoom is not a transform
      * of the picture but a re-layout at another type size, so every metric
@@ -422,6 +439,70 @@ export function graphViewportX(laid: ElkNode, width: number): number {
  */
 export function stackWideDefinitions(laid: ElkNode, usableWidth: number): ElkNode {
     alignCallPorts(laid);
+    const alignFlowRows = (node: ElkNode): number => {
+        const originalHeight = node.height ?? 0;
+        for (const child of node.children ?? []) {
+            const bottom = (child.y ?? 0) + (child.height ?? 0);
+            const right = (child.x ?? 0) + (child.width ?? 0);
+            const originalWidth = child.width ?? 0;
+            const growth = alignFlowRows(child);
+            const widthGrowth = (child.width ?? 0) - originalWidth;
+            if (widthGrowth > 0) {
+                for (const sibling of node.children ?? []) {
+                    if (sibling !== child && (sibling.x ?? 0) >= right) sibling.x = (sibling.x ?? 0) + widthGrowth;
+                }
+                node.width = (node.width ?? 0) + widthGrowth;
+            }
+            if (growth > 0) {
+                for (const sibling of node.children ?? []) {
+                    if (sibling !== child && (sibling.y ?? 0) >= bottom) sibling.y = (sibling.y ?? 0) + growth;
+                }
+                node.height = (node.height ?? 0) + growth;
+            }
+        }
+        if (node.lhat?.kind === "loop-test") {
+            const predicate = node.children?.find(child => child.lhat?.condition);
+            const iteration = node.children?.find(child => child.lhat?.kind === "loop-main");
+            const first = iteration?.children?.find(child => child.lhat?.kind === "loop-first");
+            if (predicate?.lhat?.condition?.exitLane && iteration) {
+                // Until succeeds on the exit branch. Reserve a left-hand
+                // lane wide enough for its measured condition box.
+                const inset = predicate.lhat.condition.inset;
+                const extra = Math.max(0, (predicate.width ?? 0) + 2 * inset - (iteration.x ?? 0));
+                iteration.x = (iteration.x ?? 0) + extra;
+                node.width = (node.width ?? 0) + extra;
+                node.lhat.executionLaneInset = inset + (predicate.width ?? 0) / 2;
+            } else if (predicate && iteration && first) {
+                // The first-only branch has a left-hand execution axis.
+                // Reserve room for the measured condition on both sides of
+                // that axis, including long/localized or expanded conditions.
+                const axis = (iteration.x ?? 0) + (first.x ?? 0) + (first.lhat?.executionHandleX ?? 0);
+                const extra = Math.max(0, (predicate.width ?? 0) / 2 + predicate.lhat!.condition!.inset - axis);
+                iteration.x = (iteration.x ?? 0) + extra;
+                node.width = (node.width ?? 0) + extra;
+            }
+        }
+        if (node.lhat?.kind === "loop-range" && node.children?.length === 3) {
+            const [binding, arrow, bound] = node.children;
+            const valueAxis = (child: ElkNode, top: number): number | undefined => {
+                top += child.y ?? 0;
+                if (child.lhat?.definitionRole === "value") return top + (child.height ?? 0) / 2;
+                for (const nested of child.children ?? []) {
+                    const axis = valueAxis(nested, top);
+                    if (axis !== undefined) return axis;
+                }
+                return undefined;
+            };
+            const initial = valueAxis(binding, 0) ?? (binding.y ?? 0) + (binding.height ?? 0) / 2;
+            const axis = Math.max(initial, (arrow.height ?? 0) / 2, (bound.height ?? 0) / 2);
+            binding.y = (binding.y ?? 0) + axis - initial;
+            arrow.y = axis - (arrow.height ?? 0) / 2;
+            bound.y = axis - (bound.height ?? 0) / 2;
+            node.height = Math.max(originalHeight, ...node.children.map(child => (child.y ?? 0) + (child.height ?? 0)));
+        }
+        return (node.height ?? 0) - originalHeight;
+    };
+    alignFlowRows(laid);
     // ELK routes against the containing value box. The visible definition
     // starts at its first Output slot, so align the binding card to that slot.
     const alignSlots = (node: ElkNode): void => {
@@ -518,6 +599,9 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     const statementClauses = new Set<AstNode>();
     const catchClauses = new Set<AstNode>();
     const hoistedBodies = new Set<AstNode>();
+    const loopBodies = new Set<AstNode>();
+    const loopOwners = new Map<AstNode, AstNode>();
+    const loopConditions = new Map<AstNode, { predicate: AstNode; mode: "while" | "until" }>();
     const expressionClauses = new Set<AstNode>();
     const matchStatements = new Set<AstNode>();
     const matchExpressions = new Set<AstNode>();
@@ -547,6 +631,18 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             if (body && !Array.isArray(body) && body.kind === "block") hoistedBodies.add(body);
         }
         const body = node.fields?.body;
+        if ((node.kind === "repeat" || node.kind === "for") &&
+            body !== undefined && !Array.isArray(body) && body.kind === "block") {
+            loopBodies.add(body);
+            loopOwners.set(body, node);
+            const bound = node.fields?.bound;
+            if (bound && !Array.isArray(bound)) {
+                const token = syntaxTokens(source, node.start, bound.start).slice(-1)[0]?.text;
+                if (token === "while^" || token === "until^") {
+                    loopConditions.set(node, { predicate: bound, mode: token === "while^" ? "while" : "until" });
+                }
+            }
+        }
         if (node.kind === "func" && body !== undefined && !Array.isArray(body)) {
             entryScopes.add(body);
         }
@@ -599,6 +695,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         extra: { collapsed?: boolean; foldable?: boolean } = {},
     ) => ({
         kind: node.kind, start: node.start, end: node.end,
+        drillTarget: { kind: node.kind, start: node.start, end: node.end },
         inlineable: isInlineValue(node, source),
         executionTerminal: execution.stops(node),
         unreachable: execution.unreachable.has(node),
@@ -610,7 +707,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         ...extra,
     });
 
-    const leaf = (node: AstNode, label: DisplayLabel | string): ElkNode => {
+    const leaf = (node: AstNode, label: DisplayLabel | string, literalOverride?: LiteralValue): ElkNode => {
         if (["define", "table-entry", "member-decl"].includes(node.kind)) {
             // Only the declaration's span belongs here; the RHS remains its own box.
             const end = typeof label === "string" ? node.end : declarationLabelEnd.get(node) ?? node.end;
@@ -621,7 +718,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             label = { ...label, parts: [{ text: labelText(label), symbol: { start: node.start, end: node.end },
                 typeLabel: displayType(node.inferredType, vocabulary, true) }] };
         }
-        const literal = literalOf(node, source);
+        const literal = literalOverride ?? literalOf(node, source);
         const literalText = literal === undefined ? "" : options.literalValues?.[literal.key] ?? literal.value;
         const lines = literalText.split(/\r\n?|\n/);
         const longest = lines.reduce((length, line) => Math.max(length, labelColumns(line.replace(/\t/g, "    "))), 0);
@@ -1070,6 +1167,71 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         return built;
     }
 
+    function interpolation(node: AstNode, unfold: boolean, avail: number): ElkNode {
+        const fields = interpolationFields(node, source);
+        const find = (part: AstNode, field: InterpolationField["site"]["field"]) => fields.find(item =>
+            item.site.field === field && item.site.part?.start === part.start && item.site.part.end === part.end);
+        const editor = (part: AstNode, field: InterpolationField, kind: string): ElkNode => {
+            const box = leaf({ ...part, kind }, "");
+            box.lhat = { ...box.lhat!, interpolation: field, noExecutionHandles: true };
+            box.width = Math.max(px(120), Math.min(px(260), widthFor(field.value || "None")));
+            box.height = px(field.site.field === "text" ? 44 : field.site.field === "format" ? 30 : 36);
+            return box;
+        };
+        const cells: ElkNode[] = [], values: ElkNode[] = [], slots: ElkNode[] = [];
+        for (const part of interpolationParts(node)) {
+            if (part.kind === "interp-text") {
+                const field = find(part, "text");
+                const box = leaf(part, labelFor(part, []), field ? {
+                    key: `interp-text:${part.start}:${part.end}`, kind: "string", value: field.value,
+                } : undefined);
+                box.lhat!.interpolation = field;
+                cells.push(box);
+                continue;
+            }
+            if (part.kind !== "interp-hole") continue;
+            const expression = part.fields?.value;
+            if (!expression || Array.isArray(expression)) continue;
+            const format = find(part, "format");
+            const simple = isInlineValue(expression, source);
+            const value = simple ? leaf(expression, labelFor(expression, []))
+                : build(expression, "expr", unfold, avail);
+            memberHandles(value);
+            const withFormat = (cell: ElkNode) => {
+                if (format) {
+                    cell.lhat!.interpolationFormat = format;
+                    cell.width = Math.max(cell.width ?? 0, px(120));
+                }
+                cells.push(cell);
+            };
+            if (simple) {
+                withFormat(value);
+                continue;
+            }
+            const outputs = expression.kind === "call" ? callInfo(expression)?.outputs : undefined;
+            const type = expression.inferredType ?? (outputs?.length === 1 ? outputs[0] : "?");
+            const slot = typeSlot(expression, "operand-slot", type);
+            slot.width = Math.max(px(120), slot.width ?? 0);
+            slot.height = px(44);
+            slot.lhat!.operandInput = true;
+            withFormat(slot);
+            values.push(value); slots.push(slot);
+        }
+        const add = fields.find(field => field.site.field === "append");
+        if (add) {
+            const button = editor(node, add, "interpolation-add");
+            button.width = px(28); button.height = px(28);
+            cells.push(button);
+        }
+        const title = vocabulary.format ?? "Format";
+        const row = expressionRow(node, cells, values, slots);
+        memberHandles(row);
+        const built = container(nextId("interp"), { text: title, parts: [{ text: title, category: "value" }] },
+            "RIGHT", [row], [], node);
+        built.lhat = { ...built.lhat!, definitionRole: "value", definitionHandleY: px(HEAD_H / 2), noExecutionHandles: true };
+        return built;
+    }
+
     function operatorExpression(node: AstNode, unfold: boolean, avail: number): ElkNode {
         const parts = expressionCells(node, source);
         if (!parts.length) return leaf(node, labelFor(node, []));
@@ -1103,8 +1265,6 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             if (part.inline) return indexCell(part.operand, leaf(part.operand, labelFor(part.operand, [])));
             const value = build(part.operand, "expr", unfold, avail);
             memberHandles(value);
-            value.lhat!.operandOutputY = value.lhat?.operatorExpression ? (value.height ?? px(LEAF_H)) / 2
-                : value.lhat?.expressionTree ? (value.children?.[0]?.height ?? px(LEAF_H)) / 2 : px(LEAF_H / 2);
             // A call can have a resolved signature even when its expression
             // node has no inferredType. Only one result identifies the type
             // of this operand; multiple outputs cannot name a single hole.
@@ -1125,18 +1285,38 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             if (indexCells.length) indexCells[indexCells.length - 1].lhat!.appendInsertion = listSite(indexList);
             else cells.splice(cells.length - 1, 0, listAdd(indexList));
         }
-        const height = Math.max(...cells.map(cell => cell.height ?? px(LEAF_H)));
+        return expressionRow(node, cells, values, slots, indexList ? LAYER_GAP : 6);
+    }
+
+    /** Shared expression cells, row geometry and extracted operand wiring. */
+    function expressionRow(node: AstNode, cells: ElkNode[], values: ElkNode[], slots: ElkNode[], spacing = 6): ElkNode {
+        const headerHeight = cells.some(cell => cell.lhat?.interpolationFormat) ? px(24) : 0;
+        const height = Math.max(px(LEAF_H), ...cells.map(cell => cell.height ?? px(LEAF_H)));
         cells.forEach(cell => { if (!cell.lhat?.synthetic) cell.height = height; });
         const row = inlineBox(node, cells);
-        const spacing = indexList ? LAYER_GAP : 6; // Keep list insertion buttons clear of brackets and commas.
         row.width = cells.reduce((sum, cell) => sum + (cell.width ?? 0), 0) + px(spacing) * (cells.length - 1) + px(12 + FOLD_BTN);
-        row.height = height + px(12);
-        row.layoutOptions!["elk.padding"] = `[top=${px(6)},left=${px(6)},bottom=${px(6)},right=${px(6 + FOLD_BTN)}]`;
+        row.height = height + px(12) + headerHeight;
+        row.layoutOptions!["elk.padding"] = `[top=${px(6) + headerHeight},left=${px(6)},bottom=${px(6)},right=${px(6 + FOLD_BTN)}]`;
         row.layoutOptions!["elk.layered.spacing.nodeNodeBetweenLayers"] = `${px(spacing)}`;
         row.lhat = { ...row.lhat!, operatorExpression: true, definitionOutputs: [row.id],
             definitionHandleY: row.height / 2, foldable: true, foldKey: `${node.kind}:${node.start}:${node.end}` };
         row.labels = [{ text: labelFor(node, []).text }];
         if (!values.length) return row;
+
+        // A compound operand may be an invisible tree whose output belongs to
+        // its visible expression row. Put the handle on that exact source,
+        // rather than on the wrapper which the definition edge never targets.
+        for (const value of values) {
+            const output = definitionSource(value);
+            const attach = (node: ElkNode): void => {
+                if (node.id === output && node.lhat && node.lhat.definitionRole !== "value") {
+                    node.lhat.operandOutputY = node.lhat.operatorExpression
+                        ? (node.height ?? px(LEAF_H)) / 2 : px(LEAF_H / 2);
+                }
+                node.children?.forEach(attach);
+            };
+            attach(value);
+        }
 
         const gutter = px(12 * (values.length + 1));
         const column = container(nextId("operand-values"), "", "DOWN", values, [], node, false);
@@ -1233,10 +1413,10 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         // Catch and statement-clause lanes hoist their immediate body's
         // children. Fold those statements, not the block whose children are
         // being hoisted (which would otherwise make the lane appear empty).
-        const transparent = entryScopes.has(node) || hoistedBodies.has(node) || node.kind === "call-stmt" || node.kind === "disabled" || node.kind === "type" ||
+        const transparent = entryScopes.has(node) || hoistedBodies.has(node) || loopBodies.has(node) || node.kind === "call-stmt" || node.kind === "disabled" || node.kind === "type" ||
             node.kind === "define" || node.kind === "return" ||
             (node.kind === "table-entry" && node.fields?.key === undefined);
-        const entered = options.root !== undefined && node.start === viewRoot.start && node.end === viewRoot.end;
+        const entered = options.root !== undefined && node === viewRoot;
         const fold = (): ElkNode => {
             const label = labelFor(node, drawnChildren(node));
             const built = leaf(node, label);
@@ -1249,6 +1429,14 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         if (!transparent && !entered && !COLLAPSIBLE.has(node.kind) && options.folds?.[key] === true) return fold();
         const built = buildNode(node, voice, unfold, avail);
         const meta = built.lhat;
+        // The loop already supplies the visible scope. Keep the body's
+        // execution and insertion metadata, but omit its frame and header.
+        if (loopBodies.has(node) && meta) {
+            meta.layoutOnly = true;
+            if (built.layoutOptions && !meta.catchScope && !meta.executionLoop) {
+                built.layoutOptions["elk.padding"] = "[top=0,left=0,bottom=0,right=0]";
+            }
+        }
         if (meta?.expressionTree) {
             if (!transparent && !entered && options.collapseAll && options.folds?.[key] !== false) return fold();
             return built; // The visible operator row owns the fold button.
@@ -1383,6 +1571,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             if (value) return operatorExpression(node, unfold, avail);
         }
         if (node.kind === "call") return invocation(node, unfold, avail);
+        if (node.kind === "interp") return interpolation(node, unfold, avail);
         if (["tuple", "type-tuple"].includes(node.kind)) {
             const list = commaList(node, "items");
             if (list) {
@@ -1575,12 +1764,14 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     }
 
     /** Conditions and patterns own expression graphs, never execution steps. */
-    function conditionBox(clause: AstNode, predicate: AstNode, unfold: boolean, avail: number): ElkNode {
-        const role = matchClauses.has(clause) ? "pattern" : "condition";
-        const text = vocabulary[role] ?? ENGLISH_VOCABULARY[role]!;
+    function conditionBox(clause: AstNode, predicate: AstNode, unfold: boolean, avail: number, mode?: "while" | "until"): ElkNode {
+        const entered = options.root !== undefined && predicate === viewRoot && options.rootTarget?.role !== undefined;
+        const role = entered ? options.rootTarget!.role! : matchClauses.has(clause) ? "pattern" : "condition";
+        const text = mode ? vocabulary.hats?.[mode] ?? ENGLISH_VOCABULARY.hats![mode]
+            : vocabulary[role] ?? ENGLISH_VOCABULARY[role]!;
         const label: DisplayLabel = { text, parts: [{ text, role, category: "control" }] };
         const key = `${role}:${predicate.start}:${predicate.end}`;
-        const collapsed = options.folds?.[key] ?? (options.collapse === true || options.collapseAll === true);
+        const collapsed = !entered && (options.folds?.[key] ?? (options.collapse === true || options.collapseAll === true));
         let built: ElkNode;
         if (collapsed) {
             const summary = labelFor(predicate, []).text;
@@ -1599,6 +1790,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             built.layoutOptions!["elk.nodeSize.minimum"] = `(${widthFor(label) + px(FOLD_BTN)}, 0)`;
         }
         built.lhat = { ...built.lhat!, kind: role, noExecutionHandles: true,
+            drillTarget: { kind: predicate.kind, start: predicate.start, end: predicate.end, role, mode },
             foldable: true, foldKey: key, collapsed };
         return built;
     }
@@ -1766,8 +1958,35 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         if (entryScopes.has(node)) inner.push(markerNode(node, "start"));
         let appended = false;
         const consumedLists = new Set<string>();
+        const rangeBound = kind === "for" ? kids.find(child => child.field === "bound")?.node : undefined;
+        const rangeTokens = rangeBound ? syntaxTokens(source, node.start, rangeBound.start) : [];
+        const rangeTo = rangeTokens.slice(-1)[0];
+        const rangeFocus = rangeTo?.text === "to^" && rangeTokens.some(token => token.text === "from^")
+            ? kids.filter(child => child.field === "focus") : [];
+        let rangeDrawn = false;
         const lastStatementEnd = kids.filter(child => child.field === "items").slice(-1)[0]?.node.end ?? node.start;
         for (const { field, node: c } of kids) {
+            if (kind === "for" && field === "advance" && kids.some(child => child.field === "body" && loopBodies.has(child.node))) continue;
+            if (rangeBound && rangeTo && rangeFocus.length && (field === "focus" || field === "bound")) {
+                if (!rangeDrawn) {
+                    const list = commaList(node, "focus");
+                    const focus = list ? [listContent(list, childUnfold, inner_avail)]
+                        : rangeFocus.map(child => build(child.node, "expr", childUnfold, inner_avail));
+                    const arrow = leaf({ ...node, kind: "range-arrow", start: rangeTo.start, end: rangeTo.end }, "");
+                    arrow.lhat = { ...arrow.lhat!, noExecutionHandles: true };
+                    arrow.width = px(40);
+                    const children = [...focus, arrow, build(rangeBound, "expr", childUnfold, inner_avail)];
+                    children.forEach(memberHandles);
+                    const rowId = nextId("loop-range");
+                    const row = container(rowId, "", "RIGHT", children, chain(rowId, children), node, false);
+                    row.lhat = { kind: "loop-range", start: rangeFocus[0].node.start, end: rangeBound.end,
+                        layoutOnly: true, noExecutionHandles: true };
+                    inner.push(row);
+                    rangeDrawn = true;
+                }
+                continue;
+            }
+            if (field === "bound" && loopConditions.has(node)) continue;
             const list = commaList(node, field);
             if (list && node.kind === "for") {
                 if (!consumedLists.has(field)) { inner.push(listContent(list, childUnfold, inner_avail)); consumedLists.add(field); }
@@ -1798,6 +2017,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         // Expressions, branch alternatives, and member lists stay unlinked.
         const match = matchStatements.has(node);
         const sequential = voice === "stmt" && (STATEMENT_LIST.has(kind) || kind === "with" || match);
+        if (loopBodies.has(node)) return loopBody(node, inner, kids, childUnfold, avail);
         const built = container(id, label, dir, inner,
             sequential ? flow(id, inner) : chain(id, inner), node);
         if (matchExpressions.has(node)) {
@@ -1831,12 +2051,104 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         return built;
     }
 
+    // 02 §9: pre runs before every test; first and last are conditional,
+    // one-time side paths. Only successful tests enter main. These groups
+    // are layout/flow junctions, not additional source-language boxes.
+    function loopBody(node: AstNode, inner: ElkNode[], kids: Child[], unfold: boolean, avail: number): ElkNode {
+        const owner = loopOwners.get(node)!;
+        const clauses = new Map<string, ElkNode>();
+        for (const child of kids.filter(child => child.field === "extra")) {
+            const name = syntaxTokens(source, child.node.start, child.node.end)[0]?.text.replace(/\^$/, "");
+            const box = inner.find(box => box.lhat?.start === child.node.start && box.lhat?.end === child.node.end);
+            if (name && box) clauses.set(name, box);
+        }
+        const extras = new Set(clauses.values());
+        const main = inner.filter(child => !extras.has(child));
+        const group = (name: string, children: ElkNode[]): ElkNode => {
+            const id = nextId(name);
+            const built = container(id, "", "DOWN", children, flow(id, children), node, false);
+            built.lhat = { kind: name, start: node.start, end: node.end, layoutOnly: true,
+                executionEntry: children[0]?.id, executionExit: children[children.length - 1]?.id };
+            if (!children.length) {
+                // A sectioned loop may omit main entirely. Retain a flow
+                // junction without inventing an editable statement slot.
+                built.width = px(MARKER_SIZE);
+                built.height = 1;
+                built.lhat.branchOffset = 0;
+            }
+            return built;
+        };
+        const optional = (name: string, child: ElkNode): ElkNode => {
+            const built = group(name, [child]);
+            built.lhat = { kind: name, start: node.start, end: node.end, layoutOnly: true,
+                executionBranches: [child.id], executionBranchExits: lastStatement(child) ? [child.id] : [],
+                executionBypass: true, executionLaneSide: "left", executionLaneInset: px(8),
+                executionHandleX: px(20), branchOffset: px(12) };
+            built.layoutOptions!["elk.padding"] = `[top=${px(24)},left=${px(48)},bottom=${px(24)},right=${px(8)}]`;
+            return built;
+        };
+        const first = clauses.get("first"), last = clauses.get("last");
+        const firstLane = first ? optional("loop-first", first) : undefined;
+        const advances = owner.kind === "for" ? allChildren(owner).filter(child => child.field === "advance").map(child => child.node) : [];
+        let next: ElkNode | undefined;
+        if (advances.length) {
+            const keyword = syntaxTokens(source, owner.start, advances[0].start).reverse().find(token => token.text === "next^");
+            // The header's advance list is displayed as a source-backed
+            // clause, using the same frame/folding policy as pre and first.
+            next = build({ ...owner, kind: "loop-clause", start: keyword?.start ?? advances[0].start,
+                end: advances[advances.length - 1].end, comments: undefined,
+                fields: { body: advances } }, "stmt", unfold, avail);
+            const title = `${vocabulary.hats?.next ?? ENGLISH_VOCABULARY.hats!.next}:`;
+            next.labels = [{ text: title }];
+            next.lhat!.labelParts = [{ text: title, role: "next", category: "control" }];
+            const minimum = widthFor(title) + px(FOLD_BTN);
+            if (next.width !== undefined) next.width = Math.max(next.width, minimum);
+            if (next.layoutOptions) {
+                next.layoutOptions["elk.nodeSize.constraints"] = "MINIMUM_SIZE";
+                next.layoutOptions["elk.nodeSize.minimum"] = `(${minimum}, 0)`;
+            }
+            if (execution.stopsMain(node)) next.lhat!.unreachable = true;
+        }
+        const iteration = group("loop-main", [...firstLane ? [firstLane] : [], ...main, ...next ? [next] : []]);
+        const conditional = loopConditions.get(owner);
+        const predicate = conditional ? conditionBox(owner, conditional.predicate, unfold, avail, conditional.mode) : undefined;
+        const gate = group("loop-test", [...predicate ? [predicate] : [], iteration]);
+        gate.edges = chain(gate.id, gate.children!);
+        gate.lhat = { kind: "loop-test", start: node.start, end: node.end, layoutOnly: true,
+            executionBranches: [iteration.id], executionBranchExits: [],
+            executionBypass: !!owner.fields?.bound || !!owner.fields?.count,
+            executionLaneSide: "left", executionLaneInset: px(8), branchOffset: px(12) };
+        // Separate the forward exit lane from the return lane below main.
+        gate.layoutOptions!["elk.padding"] = `[top=${px(24)},left=${px(28)},bottom=${px(40)},right=0]`;
+        if (predicate) predicate.lhat!.condition = {
+            entry: firstLane?.id ?? main.map(firstStatement).find(child => child !== undefined)?.id ?? iteration.id,
+            inset: px(PAD),
+            exitLane: conditional?.mode === "until",
+        };
+        const prolog = clauses.get("prolog"), pre = clauses.get("pre") ?? clauses.get("premain");
+        const tail = [...last ? [optional("loop-last", last)] : [],
+            ...[...clauses].filter(([name]) => !["prolog", "pre", "premain", "first", "last"].includes(name)).map(([, box]) => box)];
+        const children = [...prolog ? [prolog] : [], ...pre ? [pre] : [], gate, ...tail];
+        const built = group("block", children);
+        built.lhat = { ...built.lhat!, ...from(node), layoutOnly: true };
+        // Main's normal exit repeats instead of falling through to last.
+        // Break/return/next paths are terminal and keep their existing policy.
+        const exit = execution.stopsMain(node) ? undefined : next ? lastStatement(next) : main.length
+            ? [...main].reverse().map(lastStatement).find(child => child !== undefined) : lastStatement(iteration);
+        if (exit) built.lhat!.executionLoop = {
+            entry: pre?.id ?? gate.id, exit: exit.id, inset: px(8), clearance: px(10),
+        };
+        built.layoutOptions!["elk.padding"] = `[top=${px(12)},left=0,bottom=${px(12)},right=${px(24)}]`;
+        return built;
+    }
+
     const width = options.width ?? Number.POSITIVE_INFINITY;
-    const root = arrangeCallTrees(build(viewRoot, "stmt",
-                       options.root !== undefined, width - 2 * px(PAD)), S);
+    const root = arrangeCallTrees(options.rootTarget?.role
+        ? conditionBox(viewRoot, viewRoot, true, width - 2 * px(PAD), options.rootTarget.mode)
+        : build(viewRoot, "stmt", options.root !== undefined, width - 2 * px(PAD)), S);
     // A leaf needs a wrapper. A branch view retains its outer box: its top
     // handle is the branch origin and must not disappear with the view root.
-    if (!root.children?.length || root.lhat?.bindingGroup || root.lhat?.callTree || root.lhat?.operatorExpression || root.lhat?.expressionTree || ["func", "type-func"].includes(viewRoot.kind) || root.lhat?.executionBranches !== undefined ||
+    if (options.rootTarget?.role || !root.children?.length || root.lhat?.bindingGroup || root.lhat?.callTree || root.lhat?.operatorExpression || root.lhat?.expressionTree || ["func", "type-func", "interp"].includes(viewRoot.kind) || root.lhat?.executionBranches !== undefined ||
         root.lhat?.definitionBranches !== undefined) {
         return {
             id: "view",

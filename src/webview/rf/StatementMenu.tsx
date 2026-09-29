@@ -4,16 +4,19 @@ import * as l10n from "@vscode/l10n";
 import type { AstReply, FromWebview, ToWebview } from "../../protocol";
 import { statementTemplates, type StatementInsertion, type StatementSite, type StatementTemplate } from "../../graphStatements";
 import { isListInsertion, listTemplates, groupedOperatorSites, type InsertionSite, type OperatorSite } from "../../graphLists";
+import type { InterpolationSite } from "../../graphInterpolation";
 
 type Host = { tree?: AstReply; uri: string; version?: number; post: (message: FromWebview) => void };
 type FoldContext = { foldable: boolean; foldKey?: string };
 type Picker = { id: string; site?: InsertionSite; operator?: OperatorSite; anchor: HTMLElement; version: number;
+    interpolation?: InterpolationSite;
     choices: StatementTemplate[]; saving?: boolean; error?: string };
 const Statements = createContext({
     version: undefined as number | undefined,
     context: (_site?: StatementSite, _fold?: FoldContext): string | undefined => undefined,
     open: (_site: InsertionSite, _anchor: HTMLElement) => {},
     operator: (_site: OperatorSite, _anchor: HTMLElement) => {},
+    interpolation: (_site: InterpolationSite, _anchor: HTMLElement) => {},
 });
 let sequence = 0;
 export const useStatementActions = () => useContext(Statements);
@@ -54,13 +57,22 @@ export function StatementProvider({ value, children }: { value: Host; children: 
         if (!current || current.saving || host.current.version !== current.version) return;
         setPicker({ ...current, saving: true, error: undefined });
         const common = { id: current.id, version: current.version };
-        if (current.operator) host.current.post({ ...common, type: "replaceOperator",
+        if (current.interpolation) host.current.post({ ...common, type: "editInterpolation", site: current.interpolation, value: template });
+        else if (current.operator) host.current.post({ ...common, type: "replaceOperator",
             start: current.operator.start, end: current.operator.end, operator: template });
         else if (current.site) host.current.post(isListInsertion(current.site)
             ? { ...common, type: "insertElement", site: current.site, template }
             : { ...common, type: "insertStatement", site: current.site, template });
     };
-    return <Statements.Provider value={{ version: value.version, open, operator,
+    const interpolation = (site: InterpolationSite, anchor: HTMLElement) => {
+        const { version } = host.current;
+        if (version === undefined) return;
+        setPicker({ id: `interpolation-add-${++sequence}`, interpolation: site, anchor, version, choices: [
+            { id: "text", label: "Text fragment", text: "text" },
+            { id: "expression", label: "Interpolation expression", text: "{nil^}" },
+        ] });
+    };
+    return <Statements.Provider value={{ version: value.version, open, operator, interpolation,
         context: (site, fold) => JSON.stringify({ webviewSection: "statement", lhatStatement: !!site && value.version !== undefined,
             lhatGraphUri: value.uri, lhatGraphVersion: value.version, lhatStatementStart: site?.start, lhatStatementEnd: site?.end,
             lhatFoldable: !!fold?.foldable && !!fold.foldKey && value.version !== undefined, lhatFoldKey: fold?.foldKey }) }}>
@@ -75,13 +87,22 @@ export function StatementButton({ site, append = false, floating = false, axis =
     const actions = useStatementActions();
     const title = isListInsertion(site) ? append ? l10n.t("Add element") : l10n.t("Insert element here")
         : append ? l10n.t("Add statement") : l10n.t("Insert statement here");
+    return <InsertionButton title={title} append={append} floating={floating} axis={axis} style={style}
+        plus={append || isListInsertion(site)} disabled={actions.version === undefined}
+        onOpen={anchor => actions.open(site, anchor)} />;
+}
+
+export function InsertionButton({ title, append = true, floating = false, axis = "horizontal", style, plus = true, disabled, onOpen }: {
+    title: string; append?: boolean; floating?: boolean; axis?: "horizontal" | "vertical"; style?: React.CSSProperties;
+    plus?: boolean; disabled?: boolean; onOpen: (anchor: HTMLElement) => void;
+}) {
     return <button type="button" className={`statement-button nodrag nopan nowheel nokey ${append ? "append-statement" : "insert-statement"} ${floating ? "floating-add" : ""} insertion-${axis}`}
         data-vscode-context={JSON.stringify({ lhatStatement: false, lhatFoldable: false })} style={style}
-        title={title} aria-label={title} aria-haspopup="dialog" disabled={actions.version === undefined}
+        title={title} aria-label={title} aria-haspopup="dialog" disabled={disabled}
         onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
         onDoubleClick={event => event.stopPropagation()}
-        onClick={event => { event.stopPropagation(); actions.open(site, event.currentTarget); }}>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d={append || isListInsertion(site) ? "M 12 6 V 18 M 6 12 H 18"
+        onClick={event => { event.stopPropagation(); onOpen(event.currentTarget); }}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d={plus ? "M 12 6 V 18 M 6 12 H 18"
             : axis === "horizontal" ? "M 6 9 L 12 15 L 18 9" : "M 9 6 L 15 12 L 9 18"} /></svg>
     </button>;
 }
@@ -90,7 +111,7 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
     const menu = useRef<HTMLDivElement>(null), input = useRef<HTMLInputElement>(null);
     const [query, setQuery] = useState(""), [index, setIndex] = useState(0);
     const [position, setPosition] = useState({ left: 0, top: 0 });
-    const title = picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
+    const title = picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
         ? l10n.t("Choose an element template") : l10n.t("Choose a statement template");
     const words = query.toLocaleLowerCase().trim().split(/\s+/);
     const filtered = picker.choices.filter(choice => words.every(word =>

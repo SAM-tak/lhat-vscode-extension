@@ -29,7 +29,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import "./rf.css";
 import type { AstNode, AstReply, FromWebview, ToWebview } from "../../protocol";
-import { graphViewportX, nodeAt, titleOf, type ElkNode } from "../map";
+import { graphViewportX, nodeAt, titleOf, type ElkNode, type DrillTarget } from "../map";
 import type { LiteralValue } from "../literals";
 import { LiteralEditProvider, LiteralEditStatus, LiteralInput } from "./LiteralInput";
 import { NameInput, RenameProvider } from "./NameInput";
@@ -41,6 +41,9 @@ import { ReferenceLine } from "./ReferenceLine";
 import { DEFAULT_MINIMAP_SIZE, fitMinimapSize } from "../minimap";
 import { MinimapResizeHandles } from "./MinimapResizeHandles";
 import { SvgExport } from "./SvgExport";
+import { loopDirectionArrows } from "./loopDirection";
+import { InterpolationInput, InterpolationProvider } from "./InterpolationInput";
+import type { InterpolationField } from "../../graphInterpolation";
 import { changedHandles } from "./handleUpdates";
 import { LayoutClient } from "./layoutClient";
 import { createLayoutEngine } from "./layoutEngine";
@@ -114,6 +117,10 @@ interface SlideData {
 }
 
 interface BoxData extends Record<string, unknown>, SlideData {
+    drillTarget?: DrillTarget;
+    interpolation?: InterpolationField;
+    interpolationFormat?: InterpolationField;
+    isRangeArrow: boolean;
     label: string;
     commentOwner?: string;
     operatorExpression?: boolean;
@@ -328,7 +335,7 @@ function toFlow(
                 const horizontal = condition.axis === "horizontal";
                 let target = entry === undefined ? undefined : horizontal ? entry : executionEnd(entry, "Entry");
                 let axis = horizontal ? target?.lhat?.definitionHandleY ?? (target?.height ?? 0) / 2
-                    : (target?.width ?? 0) / 2;
+                    : target?.lhat?.executionHandleX ?? (target?.width ?? 0) / 2;
                 while (target !== undefined && target !== parent) {
                     axis += (horizontal ? target.y : target.x) ?? 0;
                     target = parents.get(target.id);
@@ -336,6 +343,7 @@ function toFlow(
                 const size = horizontal ? h : w;
                 const extent = (horizontal ? parent.height : parent.width) ?? size;
                 if (target === undefined) axis = extent / 2;
+                if (condition.exitLane) axis = parent.lhat?.executionLaneInset ?? axis;
                 const min = condition.inset;
                 const max = Math.max(min, extent - size - condition.inset);
                 const aligned = Math.max(min, Math.min(max, axis - size / 2));
@@ -421,6 +429,7 @@ function toFlow(
                     slideMotion,
                     label: c.labels?.[0]?.text ?? "",
                     commentOwner: c.lhat?.commentOwner,
+                    drillTarget: c.lhat?.drillTarget,
                     operatorExpression: c.lhat?.operatorExpression,
                     operandInput: c.lhat?.operandInput,
                     operandOutputY: c.lhat?.operandOutputY,
@@ -439,7 +448,10 @@ function toFlow(
                     literalTypeLabel: c.lhat?.literalTypeLabel,
                     inline: c.lhat?.inline,
                     operator: c.lhat?.operator,
-                    decoration: ["signature-title", "signature-arrow", "delimiter", "binding-keyword"].includes(c.lhat?.kind ?? ""),
+                    decoration: ["signature-title", "signature-arrow", "range-arrow", "delimiter", "binding-keyword", "interpolation-add"].includes(c.lhat?.kind ?? ""),
+                    interpolation: c.lhat?.interpolation,
+                    interpolationFormat: c.lhat?.interpolationFormat,
+                    isRangeArrow: c.lhat?.kind === "range-arrow",
                     branchOffset: c.lhat?.branchOffset,
                     definitionBranchOffset: c.lhat?.definitionBranchOffset,
                     layoutOnly,
@@ -462,7 +474,7 @@ function toFlow(
                     foldedSummary: c.lhat?.foldedSummary,
                     // Counter the base-left landing and horizontal slide,
                     // clamping to the frame if it moves past the line's axis.
-                    flowHandleX: baseShift !== 0 || ownDx !== 0
+                    flowHandleX: c.lhat?.executionHandleX !== undefined ? c.lhat.executionHandleX : baseShift !== 0 || ownDx !== 0
                         ? Math.min(Math.max(w / 2 - baseShift - ownDx, 6), w - 6)
                         : undefined,
                     onSlide,
@@ -525,6 +537,16 @@ function toFlow(
                 selectable: false, focusable: false });
         }
         if (parentId !== undefined && !parent.lhat?.disabled && !unreachable) {
+            const loop = parent.lhat?.executionLoop;
+            if (loop) {
+                const entry = endpoints.get(loop.entry), exit = endpoints.get(loop.exit);
+                if (entry && exit) exec.push({ ...routedExecutionEdge, type: "execution-loop",
+                    id: `x__${parent.id}__loop`,
+                    source: executionEnd(exit, "Exit").id, target: executionEnd(entry, "Entry").id,
+                    sourceHandle: "flow-out", targetHandle: "flow-in",
+                    data: { owner: parent.id, inset: loop.inset, clearance: loop.clearance },
+                    selectable: false, focusable: false });
+            }
             for (const entry of parent.lhat?.executionBranches ?? []) {
                 const target = endpoints.get(entry);
                 if (target === undefined) continue;
@@ -540,7 +562,8 @@ function toFlow(
             for (const exit of parent.lhat?.executionBranchExits ?? []) {
                 const source = endpoints.get(exit);
                 if (!source) continue;
-                exec.push({ ...routedExecutionEdge, markerEnd: undefined,
+                exec.push({ ...routedExecutionEdge,
+                    markerEnd: parent.lhat?.layoutOnly ? routedExecutionEdge.markerEnd : undefined,
                     id: `x__${parent.id}__merge__${exit}`,
                     source: executionEnd(source, "Exit").id, target: parent.id,
                     sourceHandle: "flow-out", targetHandle: "flow-merge",
@@ -549,12 +572,16 @@ function toFlow(
             if (parent.lhat?.executionBypass) {
                 const rendered = nodes.find(node => node.id === parent.id);
                 const width = parent.width ?? 0;
-                exec.push({ ...routedExecutionEdge, type: "execution-bypass", markerEnd: undefined,
+                exec.push({ ...routedExecutionEdge, type: "execution-bypass",
+                    // Invisible junctions have no box boundary to indicate
+                    // the exit. Keep an arrow at their merge point.
+                    markerEnd: parent.lhat.layoutOnly ? routedExecutionEdge.markerEnd : undefined,
                     id: `x__${parent.id}__bypass`, source: parent.id, target: parent.id,
                     sourceHandle: "flow-branch", targetHandle: "flow-merge",
                     data: { branchOffset: parent.lhat.branchOffset,
                         laneInset: parent.lhat.executionLaneInset,
-                        laneOffset: width - (parent.lhat.executionLaneInset ?? 12) - (rendered?.data.flowHandleX ?? width / 2) },
+                        laneOffset: (parent.lhat.executionLaneSide === "left" ? parent.lhat.executionLaneInset ?? 12
+                            : width - (parent.lhat.executionLaneInset ?? 12)) - (rendered?.data.flowHandleX ?? width / 2) },
                     selectable: false, focusable: false });
             }
         }
@@ -585,6 +612,13 @@ function toFlow(
         for (const key of ["slideKey", "slideDx", "slideMin", "slideMax"] as const) {
             Object.assign(node.data, { [key]: owner.data[key] });
         }
+    }
+    const absoluteX = (node: BoxNodeType): number => node.position.x +
+        (node.parentId && rendered.has(node.parentId) ? absoluteX(rendered.get(node.parentId)!) : 0);
+    for (const edge of exec) if (edge.type === "execution-loop") {
+        const owner = rendered.get(edge.data!.owner as string), source = rendered.get(edge.source);
+        if (owner && source) edge.data!.laneOffset = absoluteX(owner) + (owner.width ?? 0) -
+            (edge.data!.inset as number) - absoluteX(source) - (source.data.flowHandleX ?? (source.width ?? 0) / 2);
     }
     return { nodes, exec, definitions };
 }
@@ -930,6 +964,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         data.branchOffset === undefined && data.definitionBranchOffset === undefined && data.operandOutputY === undefined) return null;
 
     const classes = ["box"];
+    if (data.interpolation && !data.literal) classes.push("interpolation-box");
     if (data.operatorExpression) classes.push("operator-expression");
     if (data.operandInput) classes.push("operand-slot");
     if (data.foldedSummary !== undefined) classes.push("has-fold-summary");
@@ -1004,7 +1039,11 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                 {data.reorder !== undefined && <ReorderHandle site={data.reorder} label={data.label}
                     onDrop={data.onReorder} />}
                 {foldButton}
-                {data.isStart ? (
+                {data.isRangeArrow ? (
+                    <svg className="range-arrow-icon" viewBox="0 0 40 30" aria-label="Range" role="img">
+                        <path d="M 5 15 H 34 M 27 9 L 34 15 L 27 21" />
+                    </svg>
+                ) : data.isStart ? (
                     <svg className="start-icon" viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M 6.5 8 L 17.5 8 L 12 17 Z" />
                     </svg>
@@ -1021,7 +1060,10 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                     <span key={i} className={part.role ? "semantic-label" : undefined} data-role={part.role}
                         data-category={part.category} title={part.source}>{part.text}</span>) ?? data.label}</div>
                 : data.ioGroup ? <fieldset className="io-frame"><legend>{data.label}</legend></fieldset>
-                : data.inline && data.isContainer ? null : data.literal !== undefined ? <>
+                : data.inline && data.isContainer ? null : data.interpolation ? <>
+                    {data.literalTypeLabel && <div className="literal-type-label"><TypeLabel label={data.literalTypeLabel} /></div>}
+                    <InterpolationInput field={data.interpolation} />
+                </> : data.literal !== undefined ? <>
                     <div className="literal-type-label"><TypeLabel label={data.literalTypeLabel ?? "?"} /></div>
                     <LiteralInput key={data.literal.key} literal={data.literal} />
                 </> : <div className="boxlabel"><span>{data.labelParts?.map((part, i) => part.typeSite !== undefined || part.typeLabel !== undefined
@@ -1037,6 +1079,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                         title={part.source}>{part.text}</span>) ?? data.label}</span></div>}
                 {data.foldedSummary !== undefined && <div className="fold-summary">{data.foldedSummary}</div>}
             </div>}
+            {data.interpolationFormat && <div className="interpolation-format-header"><InterpolationInput field={data.interpolationFormat} /></div>}
             {/* Execution ports counter the box's horizontal slide, keeping
                 the outer execution chain on the document's axis. */}
             {(!data.isAdd || data.executionAppend) && !data.isCondition && !data.noExecutionHandles && data.definitionRole !== "value" &&
@@ -1100,17 +1143,38 @@ function ExecutionEdge({ id, sourceX, sourceY, targetX, targetY, style, markerEn
     return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
 }
 
-function ExecutionBypassEdge({ id, sourceX, sourceY, targetX, targetY, style, data }: EdgeProps) {
+function ExecutionLoopEdge({ id, sourceX, sourceY, targetX, targetY, style, markerEnd, data }: EdgeProps) {
+    const clearance = typeof data?.clearance === "number" ? data.clearance : 10;
+    const bottom = sourceY + clearance, top = targetY - clearance;
+    const lane = Math.max(sourceX, targetX) + clearance;
+    const right = Math.max(lane, sourceX + (typeof data?.laneOffset === "number" ? data.laneOffset : clearance));
+    const radius = Math.min(6, clearance / 2);
+    const path = `M ${sourceX} ${sourceY} V ${bottom - radius} Q ${sourceX} ${bottom} ${sourceX + radius} ${bottom}` +
+        ` H ${right - radius} Q ${right} ${bottom} ${right} ${bottom - radius}` +
+        ` V ${top + radius} Q ${right} ${top} ${right - radius} ${top}` +
+        ` H ${targetX + radius} Q ${targetX} ${top} ${targetX} ${top + radius} V ${targetY}`;
+    const arrows = loopDirectionArrows([
+        [sourceX, sourceY], [sourceX, bottom], [right, bottom],
+        [right, top], [targetX, top], [targetX, targetY],
+    ], clearance / 10);
+    return <>
+        <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />
+        {arrows && <path className="react-flow__edge-path loop-direction-arrows" d={arrows} />}
+    </>;
+}
+
+function ExecutionBypassEdge({ id, sourceX, sourceY, targetX, targetY, style, markerEnd, data }: EdgeProps) {
     const inset = typeof data?.laneInset === "number" ? data.laneInset : 12;
     const top = sourceY + (typeof data?.branchOffset === "number" ? data.branchOffset : 18);
     const bottom = targetY - inset;
     const lane = sourceX + (typeof data?.laneOffset === "number" ? data.laneOffset : inset);
-    const radius = Math.max(0, Math.min(6, (bottom - top) / 2, (lane - sourceX) / 2, (lane - targetX) / 2));
-    const path = `M ${sourceX} ${sourceY} V ${top - radius} Q ${sourceX} ${top} ${sourceX + radius} ${top}` +
-        ` H ${lane - radius} Q ${lane} ${top} ${lane} ${top + radius}` +
-        ` V ${bottom - radius} Q ${lane} ${bottom} ${lane - radius} ${bottom}` +
-        ` H ${targetX + radius} Q ${targetX} ${bottom} ${targetX} ${bottom + radius} V ${targetY}`;
-    return <BaseEdge id={id} path={path} style={style} />;
+    const side = lane < sourceX ? -1 : 1;
+    const radius = Math.max(0, Math.min(6, (bottom - top) / 2, Math.abs(lane - sourceX) / 2, Math.abs(lane - targetX) / 2));
+    const path = `M ${sourceX} ${sourceY} V ${top - radius} Q ${sourceX} ${top} ${sourceX + side * radius} ${top}` +
+        ` H ${lane - side * radius} Q ${lane} ${top} ${lane} ${top + radius}` +
+        ` V ${bottom - radius} Q ${lane} ${bottom} ${lane - side * radius} ${bottom}` +
+        ` H ${targetX + side * radius} Q ${targetX} ${bottom} ${targetX} ${bottom + radius} V ${targetY}`;
+    return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
 }
 
 // The branch output shares its top input position, but heads down into
@@ -1154,7 +1218,7 @@ function OperandDefinitionEdge({ id, sourceX, sourceY, targetX, targetY, style, 
     return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
 }
 
-const edgeTypes: EdgeTypes = { execution: ExecutionEdge, "execution-bypass": ExecutionBypassEdge, branch: BranchEdge, "definition-branch": DefinitionBranchEdge, "call-definition": CallDefinitionEdge, "operand-definition": OperandDefinitionEdge };
+const edgeTypes: EdgeTypes = { execution: ExecutionEdge, "execution-loop": ExecutionLoopEdge, "execution-bypass": ExecutionBypassEdge, branch: BranchEdge, "definition-branch": DefinitionBranchEdge, "call-definition": CallDefinitionEdge, "operand-definition": OperandDefinitionEdge };
 
 // ---------------------------------------------------------------------------
 // The app
@@ -1226,7 +1290,7 @@ function App() {
     // What the reader folded or unfolded one at a time, over that default.
     const [folds, setFolds] = useState<Record<string, boolean>>({});
     const [collapseAll, setCollapseAll] = useState(false);
-    const [trail, setTrail] = useState<number[]>([]);
+    const [trail, setTrail] = useState<DrillTarget[]>([]);
     const [slides, setSlides] = useState<Slides>({});
     const slidesRef = useRef(slides);
     slidesRef.current = slides;
@@ -1310,8 +1374,8 @@ function App() {
         return () => window.removeEventListener("message", onMessage);
     }, []);
 
-    // 8.2: the trail, resolved against the current tree -- positions rather
-    // than nodes, so it survives the tree being replaced after an edit.
+    // Resolve source identities against the current tree, not old node objects.
+    // Start offsets alone confuse clauses, calls and expressions at the same position.
     const view = useMemo(() => {
         if (reply === undefined) return undefined;
         const path: AstNode[] = [];
@@ -1338,6 +1402,7 @@ function App() {
             collapseAll,
             folds,
             root: view.path.length > 0 ? view.root : undefined,
+            rootTarget: view.path.length > 0 ? trail[view.path.length - 1] : undefined,
             scale,
             width: viewWidth - 16,
         });
@@ -1547,9 +1612,9 @@ function App() {
     const onEnter = useCallback((data: BoxData) => {
         if (reply === undefined || data.start === undefined) return;
         if (data.commentOwner !== undefined || !data.collapsed) return;
-        const start = data.start;
-        if (nodeAt(reply.root, start) !== undefined) {
-            setTrail((t) => [...t, start]);
+        const target = data.drillTarget;
+        if (target && nodeAt(reply.root, target) !== undefined) {
+            setTrail((t) => [...t, target]);
         }
     }, [reply]);
 
@@ -1793,7 +1858,7 @@ function App() {
     // A render behind the pane, panZoom is already there and both effects run
     // on the map's own first pass. Keyed to flowKey so a remount of the pane
     // (see the ReactFlow key below) puts the map a render behind again.
-    const flowKey = trail.join(",");
+    const flowKey = JSON.stringify(trail);
     const [readyKey, setReadyKey] = useState<string>();
     useEffect(() => {
         setReadyKey(flowKey);
@@ -1855,6 +1920,7 @@ function App() {
         <LiteralEditProvider sourceKey={sourceKey} onCommit={commitLiteral}>
         <TypeProvider value={{ version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <StatementProvider value={{ tree: reply, uri, version: laidSourceKey === sourceKey ? version : undefined, post }}>
+        <InterpolationProvider value={{ sourceKey, version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <div id="app">
             <div id="bar">
                 <button
@@ -2012,6 +2078,7 @@ function App() {
                     version={laidSourceKey === sourceKey ? version : undefined} post={post} />
             </div>
         </div>
+        </InterpolationProvider>
         </StatementProvider>
         </TypeProvider>
         </LiteralEditProvider>

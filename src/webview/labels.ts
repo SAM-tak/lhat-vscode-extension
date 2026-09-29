@@ -11,6 +11,7 @@ export type Vocabulary = Record<LabelRole, string> & {
     condition?: string; conditionalBranch?: string; conditionalSelection?: string;
     pattern?: string; patternBranch?: string; patternSelection?: string;
     assignments?: Record<string, string>; nilCheckedAssignment?: string;
+    format?: string;
 };
 export const ENGLISH_VOCABULARY: Vocabulary = {
     variableDefinition: "Variable Definition", mutableVariableDefinition: "Mutable Variable Definition",
@@ -24,6 +25,7 @@ export const ENGLISH_VOCABULARY: Vocabulary = {
     condition: "Condition", conditionalBranch: "Conditional Branch", conditionalSelection: "Conditional Selection",
     pattern: "Pattern", patternBranch: "Pattern Matching Branch", patternSelection: "Pattern Matching Selection",
     assignments: ASSIGNMENT_LABELS, nilCheckedAssignment: "{0} (nil-checked)",
+    format: "Format",
 };
 export interface RenameTarget { start: number; end: number; value: string }
 export const renameTargetKey = (name: RenameTarget): string => `${name.start}:${name.end}`;

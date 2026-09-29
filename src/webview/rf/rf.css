@@ -598,6 +598,49 @@ textarea.literal-input {
     stroke-width: calc(2.1px * var(--lhat-scale, 1));
 }
 
+.react-flow__edge.exec path.loop-direction-arrows {
+    fill: var(--lhat-exec);
+    stroke: none;
+}
+
+.range-arrow-icon {
+    display: block;
+    width: 100%;
+    height: 100%;
+    fill: none;
+    stroke: var(--vscode-editor-foreground);
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.interpolation-box { padding: calc(5px * var(--lhat-scale, 1)); }
+.interpolation-field { min-width: 0; width: 100%; }
+.interpolation-field-title { display: block; color: var(--vscode-descriptionForeground); font-size: 0.85em; }
+.interpolation-field.format { display: flex; align-items: center; gap: 4px; }
+.interpolation-field.format .interpolation-field-title { flex-shrink: 0; }
+.interpolation-field.format .interpolation-input { min-width: 0; }
+.interpolation-format-header {
+    position: absolute; left: 0; right: 0; top: calc(-24px * var(--lhat-scale, 1));
+    height: calc(20px * var(--lhat-scale, 1));
+    box-sizing: border-box;
+    display: flex; align-items: center;
+    padding: 0 calc(5px * var(--lhat-scale, 1));
+    border: 1px solid var(--vscode-panel-border, #8888);
+    border-radius: 4px;
+    background: var(--vscode-editor-background);
+}
+.interpolation-format-header:focus-within {
+    border-color: var(--vscode-focusBorder);
+}
+.interpolation-input:not(.literal-input) {
+    display: block; box-sizing: border-box; width: 100%; resize: none;
+    font: inherit; color: inherit; background: transparent; border: none;
+    padding: 0; outline-color: var(--vscode-focusBorder);
+}
+.interpolation-input[aria-invalid="true"] { outline: 1px solid var(--vscode-errorForeground); }
+.interpolation-error { color: var(--vscode-errorForeground); font-size: 0.8em; }
+
 .react-flow__edge-path {
     stroke: var(--vscode-charts-blue, #58a);
     stroke-width: 1.5;

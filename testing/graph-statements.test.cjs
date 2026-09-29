@@ -120,7 +120,10 @@ test('a loop main-body append stays after main statements and before its followi
     const site = api.statementInsertions(tree).find(s => s.start === body.start && s.before === undefined);
     assert.equal(api.insertStatementEdit(tree, site, 'let').start, last.start);
     const scope = flat(toElk(tree)).find(n => n.lhat?.kind === 'block' && n.lhat.start === body.start);
-    assert.deepEqual(scope.children.map(n => n.lhat.kind), ['loop-clause', 'call-stmt', 'add', 'loop-clause']);
+    assert.deepEqual(scope.children.map(n => n.lhat.kind), ['loop-clause', 'loop-test', 'loop-last']);
+    const main = flat(scope).find(n => n.lhat?.kind === 'loop-main');
+    assert.deepEqual(main.children.map(n => n.lhat.kind), ['call-stmt', 'add']);
+    assert.equal(main.children[1].lhat.insertion.start, body.start);
 });
 
 function host(options = {}) {

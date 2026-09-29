@@ -20,7 +20,7 @@ import { editStatementFromGraph } from "./graphStatementEditor";
 import { graphTreeForDocument } from "./graphSource";
 import { saveGraphSvg } from "./graphSvg";
 
-type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" }>;
+type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" | "editInterpolation" }>;
 
 export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider {
     public static readonly viewType = "lhat.graph";
@@ -249,6 +249,7 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
                 case "insertStatement":
                 case "insertElement":
                 case "replaceOperator":
+                case "editInterpolation":
                 case "toggleStatement":
                     editStatement(message);
                     break;

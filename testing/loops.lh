@@ -1,0 +1,87 @@
+# Infinity loop
+repeat^ {
+    print("infinity loop")
+    break^
+}
+
+repeat^ {
+    print("infinity loop")
+    if^"aaaaa" = "aaaaa" {
+        break^
+    }
+}
+
+let^n = 4
+
+# Fixed time loop
+repeat^n+1 {
+pre^:
+first^:
+main^:
+    print("fixed time loop")
+last^:
+epilog^:
+}
+
+var^ii = 5
+repeat^ii { # 繰り返し数は開始時で固定
+    print($"fixed time loop {ii}")
+    ii += 1
+}
+
+var^m = 0
+
+# While loop (without loop variable)
+repeat^while^m < 5 {
+    print($"repeat^while^ loop : {m}")
+    m += 1
+}
+
+m := 0
+# Until loop (without loop variable)
+repeat^until^m > 4 {
+    print($"repeat^until^ loop : {m}")
+    m += 1
+}
+
+# While loop 
+for^m := 0 while^m < 5 {
+    print($"for^while^ loop : {m}")
+    m += 1
+}
+for^m := 0 while^m < 5 next^m += 1 {
+    print($"for^while^next^ loop : {m}")
+}
+
+# While loop 
+for^var^l = 0 while^l < 5 next^l += 1{
+pre^:
+    print($"for^var^while^next^ pre : {l}")
+first^:
+    print($"for^var^while^next^ first : {l}")
+main^:
+    print($"for^var^while^next^ main : {l}")
+last^:
+    print($"for^var^while^next^ last : {l}")
+epilog^:
+    print($"for^var^while^next^ epilog : {l}")
+}
+
+# Number Range Loop
+for^i from^0 to^5 {
+    print("for^from^to^ loop")
+}
+
+# Number Range Loop
+for^i from^0 to^5.4 { # これ許されるんだ…いや、利便性のためには妥当か。
+pre^:
+    print($"Number Range Loop pre : {i}")
+first^:
+    print($"Number Range Loop first : {i}")
+main^:
+    print($"Number Range Loop main {i}")
+last^:
+    print($"Number Range Loop last : {i}")
+epilog^:
+    print($"Number Range Loop epilog : {i}")
+}

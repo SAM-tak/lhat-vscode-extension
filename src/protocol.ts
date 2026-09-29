@@ -7,6 +7,7 @@
 
 import type { StatementInsertion } from "./graphStatements";
 import type { ListInsertion } from "./graphLists";
+import type { InterpolationSite } from "./graphInterpolation";
 
 /** One node of the syntax tree, as lhat/ast writes it (06 の 4.1). */
 export interface AstNode {
@@ -110,6 +111,7 @@ export type FromWebview =
     | { type: "insertStatement"; id: string; site: StatementInsertion; template: string; version: number }
     | { type: "insertElement"; id: string; site: ListInsertion; template: string; version: number }
     | { type: "replaceOperator"; id: string; start: number; end: number; operator: string; version: number }
+    | { type: "editInterpolation"; id: string; site: InterpolationSite; value: string; version: number }
     | { type: "toggleStatement"; id: string; start: number; end: number; version: number }
     | { type: "reorder"; id: string; sourceStart: number; sourceEnd: number; targetStart: number; targetEnd: number; before: boolean; version: number }
     | { type: "reference"; id: string; start: number; end: number; text: string; version: number }

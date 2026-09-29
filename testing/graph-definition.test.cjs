@@ -13,12 +13,31 @@ mapping._compile(buildSync({
     entryPoints: [mappingPath],
     bundle: true, platform: 'node', format: 'cjs', write: false,
 }).outputFiles[0].text, mapping.id);
-const { toElk, graphViewportX, stackWideDefinitions, titleOf } = mapping.exports;
+const { toElk, graphViewportX, stackWideDefinitions, titleOf, nodeAt } = mapping.exports;
 const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
 const rows = graph => flatten(graph).filter(n => n.lhat?.definitionRole === 'row' && n.lhat.kind !== 'argument-row');
 const statements = graph => graph.children.filter(n => n.lhat?.synthetic !== 'start');
 const elements = graph => graph.children.filter(n => n.lhat?.synthetic !== 'add');
 const pairLabels = row => row.children.map(n => n.labels[0].text);
+
+test('drill identities resolve conditions and nested calls instead of same-start ancestors', () => {
+    const reply = require('./condition-fixture.cjs').conditionalExpressions();
+    const folded = flatten(toElk(reply, { collapse: true }));
+    const condition = folded.find(n => n.lhat?.kind === 'condition');
+    const target = condition.lhat.drillTarget;
+    const predicate = nodeAt(reply.root, target);
+    assert.equal(predicate.kind, 'binary');
+    assert.equal(nodeAt(reply.root, target.start).kind, 'if-clause', 'old start-only lookup selected the clause');
+    const entered = flatten(toElk(reply, { root: predicate, rootTarget: target, collapse: true, collapseAll: true,
+        folds: { [condition.lhat.foldKey]: true, [`binary:${predicate.start}:${predicate.end}`]: true } }));
+    assert.equal(entered.find(n => n.lhat?.kind === 'condition').lhat.collapsed, false);
+    assert(entered.some(n => n.lhat?.operatorExpression && !n.lhat.collapsed));
+    assert(entered.some(n => n.lhat?.literal?.value === '1'), 'literal remains an editor');
+    assert(!entered.some(n => n.lhat?.kind === 'if-clause'));
+    const call = predicate.fields.left;
+    assert.equal(nodeAt(reply.root, { kind: call.kind, start: call.start, end: call.end }), call);
+    assert.equal(nodeAt(reply.root, { kind: 'missing', start: call.start, end: call.end }), undefined);
+});
 
 function assertDefinition(row, source, expected) {
     assert.equal(row.lhat.definitionRole, 'row');

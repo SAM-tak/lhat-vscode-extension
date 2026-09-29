@@ -57,7 +57,7 @@ with^regex = try^std.regex.new("(a)(b)") {
         panic^"missing captures"
     }
     let^replaced = regex.gsub("abxab", f^match, at, caps {
-        return^ (caps[0] ?? "?") .. ":" .. (caps[1] ?? "?") .. ":" .. at.tostring()
+        return^ $"{(caps[0] ?? "?")}:{(caps[1] ?? "?")}:{at}"
     })
     expect(replaced = "ab:a:0xab:a:3", "replacement capture numbers and ordinals")
     let^starts:t^{number^[]} = {}

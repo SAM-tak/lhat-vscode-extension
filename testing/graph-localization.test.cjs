@@ -28,6 +28,7 @@ const japanese = {
     table: ja.Table,
     input: ja.Input, output: ja.Output, noOutput: ja['No output'], missingInput: ja['Missing input'],
     call: ja.Call, methodCall: ja['Method Call'],
+    format: ja.Format,
     condition: ja.Condition, conditionalBranch: ja['Conditional Branch'], conditionalSelection: ja['Conditional Selection'],
     pattern: ja.Pattern, patternBranch: ja['Pattern Matching Branch'], patternSelection: ja['Pattern Matching Selection'],
     assignments: Object.fromEntries(Object.entries(ENGLISH_VOCABULARY.assignments).map(([operator, label]) => [operator, ja[label]])),

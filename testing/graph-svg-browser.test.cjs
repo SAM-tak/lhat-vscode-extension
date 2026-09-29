@@ -12,6 +12,7 @@ const { catchFlow } = require('./catch-fixture.cjs');
 const { operatorExpression } = require('./operator-fixture.cjs');
 const { methodCall, boundSlice } = require('./method-fixture.cjs');
 const { indexExpression } = require('./index-fixture.cjs');
+const { interpolation, nestedInterpolation } = require('./interpolation-fixture.cjs');
 
 const source = 'let^route = f^req:string^ { return^ 1, req }\nlet^a, b = route("Hello & <SVG>")\nlet^nested = {2, 3}\nlet^last = "日本語 & <text>"';
 const n = (kind, text, fields, from = 0, extra = {}) => {
@@ -40,7 +41,8 @@ const html = reply => `<!doctype html><meta charset="utf-8"><meta http-equiv="Co
 --vscode-editorWidget-background:#222;--vscode-editorWidget-border:#333;--vscode-input-background:#151718;
 --vscode-input-foreground:#ddd;--vscode-focusBorder:#58a;--vscode-descriptionForeground:#999;
 }</style><link rel="stylesheet" href="/graph.css"><link rel="stylesheet" href="/bundle.css"><div id="root" data-layout-worker="/layout-worker.js"></div><script nonce="test">
-window.exports=[];window.acquireVsCodeApi=()=>({getState(){},setState(){},postMessage(m){
+window.exports=[];window.edits=[];window.acquireVsCodeApi=()=>({getState(){},setState(){},postMessage(m){
+if(m.type==='editInterpolation'){window.edits.push(m);window.postMessage({type:'statementResult',id:m.id},'*');}
 if(m.type==='saveSvg'){window.exports.push(m);window.postMessage({type:'svgResult',id:m.id},'*');}
 if(m.type==='ready'){window.postMessage({type:'localization',language:'ja',bundle:${JSON.stringify(ja)}},'*');window.postMessage({type:'tree',reply:${JSON.stringify(reply)},uri:'file:///svg-example.lh',version:1},'*');}
 }});</script><script nonce="test" src="/bundle.js"></script>`;
@@ -48,6 +50,207 @@ const routes = { '/': { type: 'text/html', body: html({source,root}) } };
 for (const [url, file, type] of [['/graph.css', 'media/graph.css', 'text/css'], ['/bundle.css', 'media/rf/bundle.css', 'text/css'], ['/bundle.js', 'media/rf/bundle.js', 'text/javascript'], ['/layout-worker.js', 'media/rf/layout-worker.js', 'text/javascript']]) {
     routes[url] = { type, body: fs.readFileSync(path.resolve(__dirname, '..', file)) };
 }
+test('drilling a condition preserves its expression editors instead of opening the same-start clause', { timeout: 60000 }, async () => {
+    const source = 'if^"aaaaa" = "aaaaa" { break^ }';
+    const n = (kind, start, end, fields) => ({ kind, start, end, line: 1, column: start + 1, fields });
+    const right = source.indexOf('"aaaaa"', 4);
+    const predicate = n('binary', 3, right + 7, { left: n('string', 3, 10), right: n('string', right, right + 7) });
+    const clause = n('if-clause', 3, source.length, { condition: predicate,
+        body: n('block', source.indexOf('{'), source.length, { items: [n('break', source.indexOf('break^'), source.indexOf('break^') + 6)] }) });
+    const reply = { source, root: n('block', 0, source.length, { items: [n('if-stmt', 0, source.length, { items: [clause] })] }) };
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, call, errors }) => {
+        await until(`document.querySelector('[data-id^="condition-"] .foldbtn') && !document.querySelector('.svg-export>button').disabled`);
+        await evaluate(`document.querySelector('[data-id^="condition-"] .foldbtn').click()`);
+        await until(`document.querySelectorAll('textarea.literal-input').length===2 && !document.querySelector('.svg-export>button').disabled`);
+        const before = await evaluate(`[...document.querySelectorAll('textarea.literal-input')].map(e=>e.value)`);
+        await evaluate(`document.querySelector('[data-id^="condition-"] .foldbtn').click()`);
+        await until(`document.querySelectorAll('textarea.literal-input').length===0 && !document.querySelector('.svg-export>button').disabled`);
+        const point = await evaluate(`(()=>{const r=document.querySelector('[data-id^="condition-"] .box').getBoundingClientRect();return {x:r.left+15,y:r.top+35}})()`);
+        await call('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point });
+        await call('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point });
+        await until(`document.querySelectorAll('textarea.literal-input').length===2 && !document.querySelector('.svg-export>button').disabled`);
+        assert.deepEqual(await evaluate(`[...document.querySelectorAll('textarea.literal-input')].map(e=>e.value)`), before);
+        assert.equal(await evaluate(`document.querySelectorAll('[data-id^="condition-"]').length`), 1);
+        assert.equal(await evaluate(`document.querySelectorAll('.react-flow__edge-execution').length`), 0);
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('nested interpolation expressions connect all visible output rows back to their holes', { timeout: 60000 }, async () => {
+    await browser({ ...routes, '/': { type: 'text/html', body: html(nestedInterpolation()) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelectorAll('.react-flow__edge-operand-definition .react-flow__edge-path').length===4 && !document.querySelector('.svg-export>button').disabled`);
+        const wires = await evaluate(`[...document.querySelectorAll('.react-flow__edge-operand-definition .react-flow__edge-path')].map(e=>e.getAttribute('d'))`);
+        assert(wires.every(d => d && !d.includes('NaN')));
+        assert.equal(new Set(wires).size, 4);
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('interpolation renders editable text/format/value columns and sends source edits', { timeout: 60000 }, async () => {
+    await browser({ ...routes, '/': { type: 'text/html', body: html(interpolation()) } }, async ({ evaluate, until, call, errors }) => {
+        await call('Emulation.setFocusEmulationEnabled', { enabled: true });
+        await until(`document.querySelectorAll('.interpolation-input').length===4 && !document.querySelector('.svg-export>button').disabled`);
+        const view = await evaluate(`(()=>{
+            const elements=[...document.querySelectorAll('.interpolation-input')];
+            return {texts:elements.map(e=>e.value),formats:document.querySelectorAll('.interpolation-field.format').length,
+                wires:document.querySelectorAll('.react-flow__edge-operand-definition .react-flow__edge-path').length,
+                title:[...document.querySelectorAll('.boxlabel')].some(n=>n.textContent==='フォーマット'),
+                add:!!document.querySelector('[data-id^="interpolation-add-"] .statement-button svg'),
+                headers:[...document.querySelectorAll('.interpolation-format-header')].map(e=>e.getBoundingClientRect().top),
+                values:[...document.querySelectorAll('[data-id^="interp-text-"] .box,[data-id^="operand-slot-"] .box')].map(e=>e.getBoundingClientRect().top),
+                quotes:document.querySelectorAll('[data-id^="interp-text-"] .literal-quote').length,
+                row:!!document.querySelector('[data-id^="interp-"] .operator-expression'),
+                inline:[...document.querySelectorAll('.box')].some(e=>e.textContent.includes('v2') && e.textContent.includes('数値') && !e.classList.contains('container'))};
+        })()`);
+        assert(view.title); assert(view.add); assert(view.inline); assert.equal(view.formats, 2); assert.equal(view.wires, 1);
+        assert(view.row); assert.equal(view.quotes, 4);
+        assert.equal(view.headers.length, 2); assert.equal(view.values.length, 3);
+        assert(Math.max(...view.headers) - Math.min(...view.headers) < 1, 'column headings align');
+        assert(Math.max(...view.values) - Math.min(...view.values) < 1, 'text and type boxes align');
+        assert(Math.max(...view.headers) < Math.min(...view.values), 'format fields sit above the shared expression row');
+        assert(view.texts.includes('text1')); assert(view.texts.includes('text2'));
+        const addSize = await evaluate(`(()=>{const r=document.querySelector('[data-id^="interpolation-add-"] .statement-button').getBoundingClientRect();return {width:r.width,height:r.height}})()`);
+        assert(Math.abs(addSize.width - addSize.height) < 0.1, 'small add button is circular');
+        assert(Math.abs(addSize.width - 15.4) < 0.2, 'uses the standard small add button size');
+        const edit = async (selector, value, cancel = false) => {
+            await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);
+            await evaluate(`(()=>{
+                const input=document.querySelector(${JSON.stringify(selector)});
+                Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,${JSON.stringify(value)});
+                input.dispatchEvent(new Event('input',{bubbles:true}));
+            })()`);
+            await evaluate(`(()=>{
+                const input=document.querySelector(${JSON.stringify(selector)});
+                ${cancel ? "input.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));" : 'input.blur();'}
+            })()`);
+        };
+        await edit('.interpolation-field.text textarea', 'changed {x}');
+        await until('window.edits.length===1');
+        assert.deepEqual(await evaluate('({field:window.edits[0].site.field,value:window.edits[0].value})'), { field: 'text', value: 'changed {x}' });
+        await edit('.interpolation-field.format textarea', '%04d');
+        await until('window.edits.length===2');
+        assert.equal(await evaluate('window.edits[1].site.field'), 'format');
+        await edit('.interpolation-field.text textarea', 'cancelled', true);
+        assert.equal(await evaluate('window.edits.length'), 2);
+        await evaluate(`document.querySelector('[data-id^="interpolation-add-"] .statement-button').click()`);
+        await until(`document.querySelectorAll('.statement-menu [role="option"]').length===2`);
+        await evaluate(`document.querySelectorAll('.statement-menu [role="option"]')[1].click()`);
+        await until('window.edits.length===3');
+        assert.equal(await evaluate('window.edits[2].site.field'), 'append');
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('loop clauses render side branches, a condition box and an outer return without missing handles', { timeout: 60000 }, async () => {
+    const source = 'for^i := 0 while^true^ next^i += 1 { pre^: before() first^: once() main^: work() last^: last() epilog^: after() }';
+    const n = (kind, text, fields) => ({ kind, start: source.indexOf(text), end: source.indexOf(text) + text.length, line: 1, column: 1, fields });
+    const call = name => {
+        const value = n('call', `${name}()`, { target: n('ident', name), args: [] });
+        value.callable = { inputs: [], outputs: [] };
+        return n('call-stmt', `${name}()`, { value });
+    };
+    const body = n('block', source.slice(source.indexOf('{')), { items: [call('work')], extra:
+        [['pre', 'before'], ['first', 'once'], ['last', 'last'], ['epilog', 'after']]
+            .map(([clause, name]) => n('loop-clause', `${clause}^: ${name}()`, { body: [call(name)] })) });
+    const loop = n('for', source, { focus: [n('reassign', 'i := 0')], bound: n('hat-ident', 'true^'), advance: [n('reassign', 'i += 1')], body });
+    await browser({ ...routes, '/': { type: 'text/html', body: html({ source, root: n('block', source, { items: [loop] }) }) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelector('.react-flow__edge-execution-loop .react-flow__edge-path') && !document.querySelector('.svg-export>button').disabled`);
+        const result = await evaluate(`(()=>{
+            const path=document.querySelector('.react-flow__edge-execution-loop .react-flow__edge-path');
+            const first=document.querySelector('.react-flow__node[data-id^="loop-first-"]');
+            const header=first.querySelector('[data-handleid="flow-branch"]').getBoundingClientRect();
+            const condition=document.querySelector('.react-flow__node[data-id^="condition-"]').getBoundingClientRect();
+            const clause=document.querySelector('.box[data-source-start="${source.indexOf('first^')}"]').getBoundingClientRect();
+            const next=document.querySelector('.box[data-source-start="${source.indexOf('next^')}"]');
+            const main=document.querySelector('.box[data-source-start="${source.indexOf('work()')}"]').getBoundingClientRect();
+            return {path:path.getAttribute('d'), marker:path.getAttribute('marker-end'),
+                nextAfterMain:next.getBoundingClientRect().top>=main.bottom,
+                nextTitle:next.querySelector('.boxlabel').textContent,
+                bypasses:document.querySelectorAll('.react-flow__edge-execution-bypass .react-flow__edge-path').length,
+                bypassArrows:[...document.querySelectorAll('.react-flow__edge-execution-bypass .react-flow__edge-path')]
+                    .map(n=>{const ref=n.getAttribute('marker-end');
+                        return [...document.querySelectorAll('marker')].some(marker=>
+                            ref?.includes('#'+marker.id) && !!marker.querySelector('polyline, path'));}),
+                condition:[...document.querySelectorAll('.boxlabel')].some(n=>n.textContent.includes('条件付き繰り返し')),
+                side:clause.left>header.right,
+                conditionAxis:condition.left+condition.width/2,
+                entryAxis:header.left+header.width/2,
+                arrows:document.querySelector('.react-flow__edge-execution-loop .loop-direction-arrows')?.getAttribute('d'),
+                otherArrows:document.querySelectorAll('.react-flow__edge:not(.react-flow__edge-execution-loop) .loop-direction-arrows').length};
+        })()`);
+        assert(result.path && !/NaN|undefined/.test(result.path));
+        assert(result.marker);
+        assert.equal(result.bypasses, 3);
+        assert.deepEqual(result.bypassArrows, [true, true, true], 'every invisible loop merge has a rendered arrowhead');
+        assert(result.condition);
+        assert(result.side);
+        assert(result.nextAfterMain);
+        assert.equal(result.nextTitle, '次の繰り返し:');
+        assert(Math.abs(result.conditionAxis - result.entryAxis) < 1,
+            `condition must cover the execution line entering first: ${JSON.stringify(result)}`);
+        assert(result.arrows && result.arrows.split('M ').length > 3, 'return route has repeated direction marks');
+        assert.equal(result.otherArrows, 0, 'forward routes retain their original appearance');
+        await evaluate(`document.querySelector('.svg-export>button').click()`);
+        await until(`document.querySelector('.svg-export-menu>button')`);
+        await evaluate(`document.querySelector('.svg-export-menu>button').click()`);
+        await until('window.exports.length===1');
+        const exportedArrows = await evaluate(`(()=>{
+            const doc=new DOMParser().parseFromString(window.exports[0].svg,'image/svg+xml');
+            return [...doc.querySelectorAll('path')].some(path=>path.getAttribute('d')===${JSON.stringify(result.arrows)});
+        })()`);
+        assert(exportedArrows, 'SVG exports retain the direction marks');
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('until conditions sit on the exit lane with and without first clauses', { timeout: 60000 }, async () => {
+    for (const sectioned of [false, true]) {
+        const source = `repeat^until^done { ${sectioned ? 'pre^: before() first^: once() main^: ' : ''}work() }`;
+        const n = (kind, text, fields) => ({ kind, start: source.indexOf(text), end: source.indexOf(text) + text.length, line: 1, column: 1, fields });
+        const body = n('block', source.slice(source.indexOf('{')), { items: [n('call-stmt', 'work()')],
+            extra: sectioned ? [n('loop-clause', 'pre^: before()', { body: [n('call-stmt', 'before()')] }),
+                n('loop-clause', 'first^: once()', { body: [n('call-stmt', 'once()')] })] : [] });
+        const loop = n('repeat', source, { bound: n('ident', 'done'), body });
+        await browser({ ...routes, '/': { type: 'text/html', body: html({ source, root: n('block', source, { items: [loop] }) }) } }, async ({ evaluate, until, errors }) => {
+            await until(`document.querySelector('.react-flow__edge-execution-bypass .react-flow__edge-path') && !document.querySelector('.svg-export>button').disabled`);
+            const result = await evaluate(`(()=>{
+                const gate=document.querySelector('.react-flow__node[data-id^="loop-test-"]');
+                const edge=[...document.querySelectorAll('.react-flow__edge-execution-bypass')].find(edge=>edge.getAttribute('data-id').includes(gate.getAttribute('data-id')));
+                const line=edge.querySelector('.react-flow__edge-path').getBoundingClientRect();
+                const condition=document.querySelector('.react-flow__node[data-id^="condition-"]').getBoundingClientRect();
+                const main=document.querySelector('.react-flow__node[data-id^="loop-main-"]').getBoundingClientRect();
+                return {axis:condition.left+condition.width/2,lane:line.left,
+                    onVertical:line.top<condition.top && line.bottom>condition.bottom,
+                    separate:condition.right<=main.left};
+            })()`);
+            assert(Math.abs(result.axis - result.lane) < 1, JSON.stringify(result));
+            assert(result.onVertical);
+            assert(result.separate);
+            assert.equal(errors.length, 0, JSON.stringify(errors));
+        });
+    }
+});
+
+test('numeric range arrows are SVG shapes aligned with both value boxes', { timeout: 60000 }, async () => {
+    const source = 'for^i from^0 to^5 {}';
+    const n = (kind, text, fields) => ({ kind, start: source.indexOf(text), end: source.indexOf(text) + text.length, line: 1, column: 1, fields });
+    const focus = n('define', 'i from^0', { targets: [n('ident', 'i')], values: [n('int', '0')] });
+    const loop = n('for', source, { focus: [focus], bound: n('int', '5'), body: n('block', '{}', { items: [] }) });
+    await browser({ ...routes, '/': { type: 'text/html', body: html({ source, root: n('block', source, { items: [loop] }) }) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelector('.range-arrow-icon path') && !document.querySelector('.svg-export>button').disabled`);
+        const result = await evaluate(`(()=>{
+            const center=element=>{const rect=element.getBoundingClientRect();return rect.top+rect.height/2;};
+            const value=text=>[...document.querySelectorAll('.literal-number input')].find(input=>input.value===text).closest('.box');
+            const arrow=document.querySelector('.range-arrow-icon');
+            return {start:center(value('0')),end:center(value('5')),arrow:center(arrow),text:arrow.textContent};
+        })()`);
+        assert(Math.abs(result.start - result.end) < 1, JSON.stringify(result));
+        assert(Math.abs(result.start - result.arrow) < 1, JSON.stringify(result));
+        assert.equal(result.text, '');
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
 test('index brackets contain inline values or holes, with complex targets and subscripts below', { timeout: 60000 }, async () => {
     for (const options of [{}, { simple: true }, { targetCall: true, indexCall: true }, { optional: true, simple: true }]) {
         const reply = indexExpression(options);

@@ -23,6 +23,10 @@ gesture._compile(buildSync({
     entryPoints: [gesturePath], bundle: true, platform: 'node', format: 'cjs', write: false,
 }).outputFiles[0].text, gesture.id);
 const { ownsHorizontalSlide } = gesture.exports;
+const directionPath = path.resolve(__dirname, '../src/webview/rf/loopDirection.ts');
+const direction = new Module(directionPath);
+direction._compile(buildSync({ entryPoints: [directionPath], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, direction.id);
+const { loopDirectionArrows } = direction.exports;
 // Exercise the renderer's actual endpoint resolution as well as the mapping.
 const renderer = fs.readFileSync(path.resolve(__dirname, '../src/webview/rf/main.tsx'), 'utf8').replace(/\r\n/g, '\n');
 const first = renderer.indexOf('type Slides =');
@@ -40,6 +44,21 @@ const draw = async (reply, options = {}) => {
     const graph = await new ELK().layout(toElk(reply, options));
     return { graph, flow: toFlow(graph, {}, 947, undefined, noop, noop, noop, noop, { current: null }, noop) };
 };
+
+test('loop direction marks follow right/up/left at regular spacing and scale with the graph', () => {
+    const points = [[0, 300], [0, 310], [200, 310], [200, 10], [0, 10], [0, 20]];
+    const arrows = loopDirectionArrows(points, 1).split('M ').filter(Boolean).map(part => part.match(/-?\d+(?:\.\d+)?/g).map(Number));
+    const directions = arrows.map(([x1, y1, x, y, x2, y2]) => [x - (x1 + x2) / 2, y - (y1 + y2) / 2]);
+    assert(directions.some(([x, y]) => x > 0 && y === 0));
+    assert(directions.some(([x, y]) => x === 0 && y < 0));
+    assert(directions.some(([x, y]) => x < 0 && y === 0));
+    const upward = arrows.filter((_, i) => directions[i][1] < 0);
+    for (let i = 1; i < upward.length; i++) assert.equal(upward[i - 1][3] - upward[i][3], 96);
+    const enlarged = loopDirectionArrows(points.map(([x, y]) => [2 * x, 2 * y]), 2)
+        .split('M ').filter(Boolean).map(part => part.match(/-?\d+(?:\.\d+)?/g).map(Number));
+    assert.deepEqual(enlarged, arrows.map(arrow => arrow.map(value => value * 2)));
+    assert.equal(loopDirectionArrows([[0, 0], [0, 0], [0, 5]], 1), '');
+});
 
 test('break and continue stop their path without hiding the other branch or the code after the loop', async () => {
     for (const kind of ['break', 'next', 'continue', 'skip']) {
@@ -68,6 +87,8 @@ test('break and continue stop their path without hiding the other branch or the 
             const loop = n('repeat', loopText, { count: n('int', '3'), body });
             const reply = { source, root: n('block', source, { items: [loop, call('after')] }) };
             const { graph, flow } = await draw(reply);
+            assert.equal(flow.exec.filter(edge => edge.type === 'execution-loop').length, conditional ? 1 : 0,
+                'only normal main completion loops back; unconditional transfers do not');
             const transfer = flatten(graph).find(node => node.lhat?.kind === kind);
             assert(transfer.lhat.executionTerminal);
             assert(flow.exec.some(edge => edge.target === transfer.id));
@@ -88,6 +109,192 @@ test('break and continue stop their path without hiding the other branch or the 
             assert(flow.exec.some(edge => edge.target === after.id), 'termination does not escape the loop scope');
         }
     }
+});
+
+test('loop bodies have no visible frame and retain their statements even with a saved body fold', async () => {
+    for (const kind of ['repeat', 'for']) {
+        const source = `${kind}^ {\n{\nbreak^\n}\n}`;
+        const node = (kind, start, end, fields) => ({ kind, start, end, line: 1, column: 1, fields });
+        const jump = node('break', source.indexOf('break^'), source.indexOf('break^') + 6);
+        const nested = node('block', source.indexOf('{', source.indexOf('{') + 1), source.indexOf('}') + 1, { items: [jump] });
+        const body = node('block', source.indexOf('{'), source.length, { items: [nested] });
+        const loop = node(kind, 0, source.length, { body });
+        const reply = { source, root: node('block', 0, source.length, { items: [loop] }) };
+        const { graph, flow } = await draw(reply, { folds: { [`block:${body.start}:${body.end}`]: true } });
+        const bodyBox = flatten(graph).find(n => n.lhat?.kind === 'block' && n.lhat.start === body.start);
+        assert(bodyBox.lhat.layoutOnly);
+        assert(!bodyBox.lhat.foldable);
+        assert(!bodyBox.lhat.collapsed);
+        assert.equal(bodyBox.layoutOptions['elk.padding'], '[top=0,left=0,bottom=0,right=0]');
+        const rendered = flow.nodes.find(n => n.id === bodyBox.id);
+        assert(rendered.data.layoutOnly);
+        assert(!rendered.selectable);
+        const nestedBox = flatten(graph).find(n => n.lhat?.kind === 'block' && n.lhat.start === nested.start);
+        assert(!nestedBox.lhat.layoutOnly, 'explicit nested scopes still have a frame');
+        assert(flatten(graph).some(n => n.lhat?.kind === 'break'));
+    }
+});
+
+test('loops return to pre or the test, with conditional first/main/last paths', async () => {
+    for (const header of ['repeat^', 'repeat^3', 'repeat^while^true^', 'repeat^until^false^',
+        'for^i := 0 while^i < 3', 'for^i := 0 while^i < 3 next^i += 1', 'for^i from^0 to^3']) {
+        for (const sectioned of [false, true]) {
+            const source = `${header} {\n${sectioned ? 'pre^: before()\nfirst^: first()\nmain^:\n' : ''}work()\n${sectioned ? 'last^: last()\nepilog^: after()\n' : ''}}`;
+            const n = (kind, text, fields) => {
+                const start = source.indexOf(text);
+                return { kind, start, end: start + text.length, line: 1, column: 1, fields };
+            };
+            const call = name => {
+                const value = n('call', `${name}()`, { target: n('ident', name), argument: [] });
+                value.callable = { inputs: [], outputs: [] };
+                return { ...value, kind: 'call-stmt', fields: { value }, callable: undefined };
+            };
+            const extra = sectioned ? [['pre', 'before'], ['first', 'first'], ['last', 'last'], ['epilog', 'after']]
+                .map(([clause, name]) => n('loop-clause', `${clause}^: ${name}()`, { body: [call(name)] })) : [];
+            const body = n('block', source.slice(source.indexOf('{')), { items: [call('work')], extra });
+            const condition = header.includes('while^') ? header.startsWith('repeat') ? 'true^' : 'i < 3'
+                : header.includes('until^') ? 'false^' : header.includes('3') ? '3' : undefined;
+            const bound = condition ? n(condition.endsWith('^') ? 'hat-ident' : condition === '3' ? 'int' : 'binary', condition) : undefined;
+            const loop = n(header.startsWith('repeat') ? 'repeat' : 'for', source, { body, ...bound ? { bound } : {} });
+            const reply = { source, root: n('block', source, { items: [loop] }) };
+            const { graph, flow } = await draw(reply);
+            const edges = flow.exec.filter(edge => edge.type === 'execution-loop');
+            assert.equal(edges.length, 1, header);
+            const edge = edges[0];
+            const entry = flow.nodes.find(node => node.id === edge.target);
+            const exit = flow.nodes.find(node => node.id === edge.source);
+            const gate = flatten(graph).find(node => node.lhat?.kind === 'loop-test');
+            if (sectioned) assert.equal(entry.data.start, source.indexOf('before()'));
+            else assert.equal(entry.id, gate.id, 'without pre, re-evaluate the condition');
+            assert(exit.data.isAdd, 'return leaves the main append point, before last and epilog');
+            assert(edge.markerEnd, 'the return points at the iteration entry');
+            assert(Number.isFinite(edge.data.laneOffset));
+            assert(edge.data.laneOffset > 0);
+            const scope = flatten(graph).find(node => node.lhat?.executionLoop);
+            assert(scope.lhat.layoutOnly);
+            assert.equal(gate.lhat.executionBypass, !!bound);
+            if (bound) assert(flow.exec.find(edge => edge.source === gate.id && edge.type === 'execution-bypass').markerEnd,
+                'the invisible loop exit retains its arrowhead');
+            assert(!gate.lhat.executionBranchExits.length, 'normal main completion repeats instead of merging into loop exit');
+            for (const kind of ['loop-first', 'loop-last']) {
+                const side = flatten(graph).find(node => node.lhat?.kind === kind);
+                assert.equal(!!side, sectioned);
+                if (side) {
+                    assert(side.lhat.executionBypass);
+                    assert(flow.exec.some(edge => edge.source === side.id && edge.type === 'execution-bypass'));
+                    assert(flow.exec.filter(edge => edge.target === side.id).every(edge => edge.markerEnd),
+                        'both the one-time path and bypass indicate their invisible merge');
+                    assert(side.children[0].x > side.lhat.executionHandleX, 'one-time clause sits beside the main axis');
+                }
+            }
+            const predicate = flatten(graph).find(node => node.lhat?.kind === 'condition');
+            assert.equal(!!predicate, /while\^|until\^/.test(header));
+            if (predicate) {
+                assert.equal(predicate.labels[0].text, header.includes('until^') ? 'Until' : 'While');
+                assert.equal(predicate.lhat.start, bound.start);
+                assert(!flow.exec.some(edge => edge.source === predicate.id || edge.target === predicate.id));
+                assert(gate.children.includes(predicate), 'condition appears at the main branch, not in the loop header');
+            }
+            const folded = await draw(reply, { folds: { [`${loop.kind}:${loop.start}:${loop.end}`]: true } });
+            assert(!folded.flow.exec.some(edge => edge.type === 'execution-loop'));
+        }
+    }
+});
+
+test('empty nested loops each retain their own return route and main insertion point', async () => {
+    const source = 'repeat^ { repeat^ {} }';
+    const n = (kind, start, end, fields) => ({ kind, start, end, line: 1, column: 1, fields });
+    const innerBody = n('block', source.indexOf('{}'), source.indexOf('{}') + 2, { items: [] });
+    const inner = n('repeat', source.lastIndexOf('repeat^'), innerBody.end, { body: innerBody });
+    const outerBody = n('block', source.indexOf('{'), source.length, { items: [inner] });
+    const outer = n('repeat', 0, source.length, { body: outerBody });
+    const { graph, flow } = await draw({ source, root: n('block', 0, source.length, { items: [outer] }) });
+    const routes = flow.exec.filter(edge => edge.type === 'execution-loop');
+    assert.equal(routes.length, 2);
+    assert(routes.every(edge => flow.nodes.find(node => node.id === edge.source).data.isAdd));
+    assert(routes.every(edge => flatten(graph).find(node => node.id === edge.target).lhat.kind === 'loop-test'));
+    assert.equal(new Set(routes.map(edge => edge.data.owner)).size, 2);
+    assert.equal(flatten(graph).filter(node => node.lhat?.executionLoop).length, 2);
+});
+
+test('numeric for headers place the initial binding, range arrow and bound in one row', async () => {
+    const source = 'for^i from^0 to^5.4 {}';
+    const n = (kind, text, fields) => ({ kind, start: source.indexOf(text), end: source.indexOf(text) + text.length, line: 1, column: 1, fields });
+    const focus = n('define', 'i from^0', { targets: [n('ident', 'i')], values: [n('int', '0')] });
+    const bound = n('float', '5.4');
+    const loop = n('for', source, { focus: [focus], bound, body: n('block', '{}', { items: [] }) });
+    const { graph, flow } = await draw({ source, root: n('block', source, { items: [loop] }) });
+    stackWideDefinitions(graph, 947);
+    const row = flatten(graph).find(node => node.lhat?.kind === 'loop-range');
+    assert(row?.lhat.layoutOnly);
+    assert.equal(row.children.length, 3);
+    const [binding, arrow, end] = row.children;
+    assert(binding.x + binding.width <= arrow.x);
+    assert(arrow.x + arrow.width <= end.x);
+    assert(Math.abs(arrow.y + arrow.height / 2 - end.y - end.height / 2) < 1);
+    assert.equal(arrow.labels[0].text, '');
+    const valueAxis = (node, y = 0) => {
+        y += node.y ?? 0;
+        if (node.lhat?.definitionRole === 'value') return y + node.height / 2;
+        return (node.children ?? []).map(child => valueAxis(child, y)).find(axis => axis !== undefined);
+    };
+    assert(Math.abs(valueAxis(binding) - end.y - end.height / 2) < 1);
+    assert(flow.nodes.find(node => node.id === arrow.id).data.decoration);
+    assert.equal(end.lhat.start, bound.start);
+    assert.equal(flatten(graph).filter(node => node.lhat?.start === bound.start && node.lhat?.kind === 'float').length, 1);
+    const ids = new Set(flatten(row).map(node => node.id));
+    assert(!flow.exec.some(edge => ids.has(edge.source) || ids.has(edge.target)));
+});
+
+test('for advance headers render as a next clause after main and before the return route', async () => {
+    for (const terminal of [false, true]) {
+        const source = `for^m := 0 while^m < 5 next^m += 1 { ${terminal ? 'break^' : 'work()'} }`;
+        const n = (kind, text, fields) => ({ kind, start: source.indexOf(text), end: source.indexOf(text) + text.length, line: 1, column: 1, fields });
+        const advance = n('reassign', 'm += 1');
+        const main = n(terminal ? 'break' : 'call-stmt', terminal ? 'break^' : 'work()');
+        const body = n('block', source.slice(source.indexOf('{')), { items: [main] });
+        const loop = n('for', source, { focus: [n('reassign', 'm := 0')], bound: n('binary', 'm < 5'), advance: [advance], body });
+        const reply = { source, root: n('block', source, { items: [loop] }) };
+        const { graph, flow } = await draw(reply);
+        const iteration = flatten(graph).find(node => node.lhat?.kind === 'loop-main');
+        const next = iteration.children.at(-1);
+        assert.equal(next.lhat.kind, 'loop-clause');
+        assert.equal(next.lhat.start, source.indexOf('next^'));
+        assert.match(next.labels[0].text, /Next iteration/);
+        assert.equal(flatten(graph).filter(node => node.lhat?.kind === 'reassign' && node.lhat.start === advance.start).length, 1);
+        const step = flatten(next).find(node => node.lhat?.start === advance.start);
+        assert(step);
+        const returnEdge = flow.exec.find(edge => edge.type === 'execution-loop');
+        if (terminal) {
+            assert(next.lhat.unreachable);
+            assert(!returnEdge);
+            assert(!flow.exec.some(edge => edge.source === step.id || edge.target === step.id));
+        } else {
+            assert(next.y >= iteration.children[0].y + iteration.children[0].height);
+            assert(flow.exec.some(edge => edge.target === step.id));
+            assert.equal(returnEdge.source, step.id);
+            const folded = await draw(reply, { folds: { [`loop-clause:${next.lhat.start}:${next.lhat.end}`]: true } });
+            const foldedNext = flatten(folded.graph).find(node => node.lhat?.kind === 'loop-clause' && node.lhat.start === next.lhat.start);
+            assert(foldedNext.lhat.collapsed);
+            assert.equal(folded.flow.exec.find(edge => edge.type === 'execution-loop').source, foldedNext.id);
+        }
+    }
+});
+
+test('a pre-only loop still tests and repeats without inventing a main insertion site', async () => {
+    const source = 'repeat^while^ready { pre^: poll() }';
+    const n = (kind, text, fields) => ({ kind, start: source.indexOf(text), end: source.indexOf(text) + text.length, line: 1, column: 1, fields });
+    const pre = n('loop-clause', 'pre^: poll()', { body: [n('call-stmt', 'poll()')] });
+    const body = n('block', '{ pre^: poll() }', { items: [], extra: [pre] });
+    const loop = n('repeat', source, { bound: n('ident', 'ready'), body });
+    const { graph, flow } = await draw({ source, root: n('block', source, { items: [loop] }) });
+    const route = flow.exec.find(edge => edge.type === 'execution-loop');
+    assert(route);
+    assert.equal(flow.nodes.find(node => node.id === route.target).data.start, source.indexOf('poll()'));
+    const main = flatten(graph).find(node => node.lhat?.kind === 'loop-main');
+    assert.equal(route.source, main.id);
+    assert.equal(main.children.length, 0);
+    assert(!main.lhat.insertion);
 });
 
 test('catch handlers occupy separate columns and are never entered by normal execution', async () => {
@@ -1172,7 +1379,7 @@ test('match expressions merge candidate definitions without execution lines; ord
     });
     const ordinary = await draw({ source: loopSource, root: loop });
     assert(flatten(ordinary.graph).some(n => n.lhat?.kind === 'block'), 'loop body is not a match group');
-    assert(ordinary.flow.nodes.every(n => n.data.branchOffset === undefined));
+    assert(flatten(ordinary.graph).filter(n => n.lhat?.branchOffset !== undefined).every(n => n.lhat.kind === 'loop-test'));
 });
 
 test('structured patterns retain their value connections without becoming execution steps', async () => {
