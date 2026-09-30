@@ -26,6 +26,17 @@ async function tokens(source) {
 }
 const scoped = (tokens, scope) => tokens.filter(token => token.scopes.includes(scope)).map(token => token.text);
 
+test('index hat is an implicit variable, including inside interpolation', async () => {
+    for (const source of ['index^', 'index^^', '$"{index^}:{v}"']) {
+        const result = await tokens(source);
+        assert.deepEqual(scoped(result, 'variable.language.lhat'), ['index'], source);
+        assert(!scoped(result, 'keyword.other.lhat').includes('index'));
+    }
+    for (const source of ['index', 'myindex^', '"index^"', '# index^']) {
+        assert.deepEqual(scoped(await tokens(source), 'variable.language.lhat'), [], source);
+    }
+});
+
 test('zero-based dot members stay integer keys, including chained and optional access', async () => {
     for (const source of ['a.0.0', 'a. 0 . 0', 'a?.0.0', '$"{a.0.0}"']) {
         const result = await tokens(source);

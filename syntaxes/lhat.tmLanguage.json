@@ -295,7 +295,7 @@
         },
         {
           "comment": "05 の 8.6's L^ names the machine; these are the hat words that name a value rather than syntax.",
-          "match": "\\b(this|it|self|super|def|L)(\\^+)",
+          "match": "\\b(this|it|index|self|super|def|L)(\\^+)",
           "captures": {
             "1": { "name": "variable.language.lhat" },
             "2": { "name": "punctuation.definition.hat.lhat" }
