@@ -101,7 +101,7 @@ test('dotted paths do not inline calls, indices, computed keys or grouped receiv
 });
 
 test('only resolved self signatures create method receivers, including legacy and explicit calls', () => {
-    for (const signature of ['f^self^;', 'p^ mutable^self^, number^;', 'closed^f^self^ -> number^;']) assert(takesSelf(signature));
+    for (const signature of ['f^self^;', 'p^ mutable^self^, number^;', 'f^self^ -> number^;']) assert(takesSelf(signature));
     for (const signature of ['f^number^;', 'f^f^self^; -> number^;', 'f^number^, self^;', '(f^self^;) & (f^number^;)']) assert(!takesSelf(signature));
     for (const legacy of [false, true]) for (const explicit of [false, true]) {
         const { root } = methodCall({ legacy, explicit });

@@ -52,7 +52,6 @@ export const HAT_GROUPS: readonly (readonly [string, LabelCategory, string, stri
     ["pack", "operator", "Pack as table", "テーブルにまとめる"],
     ["public", "modifier", "Public", "公開"],
     ["mutable", "modifier", "Mutable", "変更可能"],
-    ["closed", "modifier", "Closed", "閉じ込め"],
     ["fresh", "modifier", "Fresh", "新規生成"],
     ["abstract", "modifier", "Abstract", "抽象"],
     ["override", "modifier", "Override", "上書き定義"],

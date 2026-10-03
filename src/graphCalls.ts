@@ -9,7 +9,7 @@ const nodes = (value: AstNode | AstNode[] | undefined): AstNode[] => value ? Arr
 export function takesSelf(signature: string | undefined): boolean {
     if (!signature) return false;
     const tokens = syntaxTokens(signature);
-    let i = tokens[0]?.text === "closed^" ? 1 : 0;
+    let i = 0;
     if (!["f^", "p^"].includes(tokens[i++]?.text)) return false;
     if (tokens[i]?.text === "mutable^") i++;
     return tokens[i]?.text === "self^" && [",", "->", ";"].includes(tokens[i + 1]?.text);
@@ -59,10 +59,9 @@ export function callInfo(node: AstNode): CallableInfo | undefined {
     if (!text) return undefined;
     const tokens = syntaxTokens(text);
     const last = tokens[tokens.length - 1];
-    const first = tokens[0]?.text === "closed^" ? 1 : 0;
-    if (!["f^", "p^"].includes(tokens[first]?.text) || last?.text !== ";") return undefined;
+    if (!["f^", "p^"].includes(tokens[0]?.text) || last?.text !== ";") return undefined;
     let depth = 0, arrow: number | undefined;
-    for (let i = first + 1; i < tokens.length - 1; i++) {
+    for (let i = 1; i < tokens.length - 1; i++) {
         const token = tokens[i];
         if (["(", "[", "{", "f^", "p^"].includes(token.text)) depth++;
         else if ([")", "]", "}", ";"].includes(token.text)) depth--;
@@ -70,7 +69,7 @@ export function callInfo(node: AstNode): CallableInfo | undefined {
         else if (["&", "|"].includes(token.text) && depth === 0) return undefined;
     }
     const end = arrow === undefined ? last.start : tokens[arrow].start;
-    const params = text.slice(tokens[first].end, end).trim();
+    const params = text.slice(tokens[0].end, end).trim();
     const inputs: CallableInput[] = [], info: CallableInfo = { inputs, outputs: [], signature: text };
     for (const [index, part] of (params ? resultTypes(params) : []).entries()) {
         if (index === 0 && takesSelf(text)) {

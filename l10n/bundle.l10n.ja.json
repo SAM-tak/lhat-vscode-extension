@@ -100,7 +100,6 @@
     "Require": "ホストモジュール読込",
     "Public": "公開",
     "Mutable": "変更可能",
-    "Closed": "閉じ込め",
     "Fresh": "新規生成",
     "Abstract": "抽象",
     "Override": "上書き定義",
