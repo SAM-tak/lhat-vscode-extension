@@ -253,5 +253,14 @@
     "Exporting…": "書き出し中…",
     "Graph layout failed: {0}": "グラフのレイアウトに失敗しました: {0}",
     "Fold this node": "このノードを折りたたむ",
-    "Unfold this node": "このノードを展開する"
+    "Unfold this node": "このノードを展開する",
+    "Bitwise and": "ビット積",
+    "Bitwise or": "ビット和",
+    "Bitwise exclusive or": "ビット排他的論理和",
+    "Bit shift": "ビットシフト",
+    "Bitwise not": "ビット反転",
+    "All bits set": "全ビットが立つ",
+    "Any bit set": "いずれかのビットが立つ",
+    "Bit at position": "指定位置のビット",
+    "Is integer": "整数か"
 }

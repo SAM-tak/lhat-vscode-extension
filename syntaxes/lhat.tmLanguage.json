@@ -287,7 +287,7 @@
           }
         },
         {
-          "match": "\\b(and|or|is|fits|as)(\\^+)",
+          "match": "\\b(and|or|is|fits|as|bitand|bitor|bitxor|bitshift|bitnot)(\\^+)",
           "captures": {
             "1": { "name": "keyword.operator.word.lhat" },
             "2": { "name": "punctuation.definition.hat.lhat" }

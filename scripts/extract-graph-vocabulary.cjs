@@ -14,10 +14,10 @@ mod._compile(buildSync({ entryPoints: [file], bundle: true, platform: 'node', fo
 const statementsFile = path.resolve(__dirname, '../src/graphStatements.ts');
 const statements = new Module(statementsFile);
 statements._compile(buildSync({ entryPoints: [statementsFile], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, statementsFile);
-for (const [name, column] of [['bundle.l10n.json', 2], ['bundle.l10n.ja.json', 3]]) {
+for (const name of ['bundle.l10n.json', 'bundle.l10n.ja.json']) {
     const target = path.resolve(__dirname, '../l10n', name);
     const bundle = JSON.parse(fs.readFileSync(target, 'utf8'));
-    for (const entry of mod.exports.HAT_GROUPS) bundle[entry[2]] = entry[column];
+    for (const entry of mod.exports.HAT_GROUPS) bundle[entry[2]] ??= entry[2];
     const assignments = load(path.resolve(__dirname, '../src/graphAssignments.ts'));
     for (const label of Object.values(assignments.exports.ASSIGNMENT_LABELS)) bundle[label] ??= label;
     for (const label of Object.values(statements.exports.STATEMENT_TEMPLATE_LABELS)) bundle[label] ??= label;

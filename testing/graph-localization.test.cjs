@@ -307,10 +307,11 @@ test('every standard hat has a bilingual label and registered graph-specific col
     const colors = new Set(require('../package.json').contributes.colors.map(c => c.id));
     const css = fs.readFileSync(path.resolve(__dirname, '../src/webview/rf/rf.css'), 'utf8');
     const seen = new Set();
-    for (const [words, category, english, translation] of HAT_GROUPS) {
+    for (const [words, category, english] of HAT_GROUPS) {
         assert(colors.has(`lhat.graph.${category}`));
         assert(css.includes(`--vscode-lhat-graph-${category}`));
-        assert.equal(ja[english], translation);
+        const translation = ja[english];
+        assert(typeof translation === 'string' && translation !== english, `untranslated ${english}`);
         for (const word of words.split(' ')) {
             assert(!seen.has(word), `duplicate spelling ${word}`); seen.add(word);
             const source = `${word}^`;

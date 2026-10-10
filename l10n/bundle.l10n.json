@@ -253,5 +253,14 @@
     "Enumeration member": "Enumeration member",
     "Error kind": "Error kind",
     "Variable binding": "Variable binding",
-    "Default argument": "Default argument"
+    "Default argument": "Default argument",
+    "Bitwise and": "Bitwise and",
+    "Bitwise or": "Bitwise or",
+    "Bitwise exclusive or": "Bitwise exclusive or",
+    "Bit shift": "Bit shift",
+    "Bitwise not": "Bitwise not",
+    "All bits set": "All bits set",
+    "Any bit set": "Any bit set",
+    "Bit at position": "Bit at position",
+    "Is integer": "Is integer"
 }
