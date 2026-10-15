@@ -97,6 +97,7 @@ export const HAT_GROUPS: readonly (readonly [string, LabelCategory, string])[] =
     ["width", "modifier", "Width"],
     ["autowidth", "modifier", "Automatic width"],
     ["abs", "member", "Absolute value"],
+    ["assign", "member", "Assign contents"],
     ["at get", "member", "Get element"],
     ["bitall", "member", "All bits set"],
     ["bitany", "member", "Any bit set"],
