@@ -1,8 +1,14 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import * as l10n from "@vscode/l10n";
+import { annotationPresentation, annotationParameterText, type AnnotationParameter } from "../annotations";
+import { graphVocabulary } from "../localization";
+import { labelColumns } from "../labels";
+import { LiteralField } from "./LiteralInput";
+import { TypeLabel } from "./TypeLabel";
+import { InsertionIcon } from "./StatementMenu";
 import type { AstReply, FromWebview, ToWebview } from "../../protocol";
 import { annotationArguments, annotationChoiceText, annotationChoicesForOwner, annotationOwners, annotationOwnerKey, validAnnotation,
-    type AnnotationChoice, type AnnotationOwner, type AnnotationSite } from "../../graphAnnotations";
+    type AnnotationOwner, type AnnotationSite } from "../../graphAnnotations";
 
 type Host = { tree?: AstReply; version?: number; post: (message: FromWebview) => void; boxes: Record<string, boolean>; show: (owner: AnnotationOwner) => void };
 type Actions = Host & { owners: AnnotationOwner[]; busy: boolean;
@@ -58,8 +64,10 @@ function AnnotationPicker({ owner, site, unit = false }: { owner: AnnotationOwne
     const choices = actions.tree ? annotationChoicesForOwner(actions.tree, owner, site) : [];
     const currentName = site ? annotationArguments(site.text).name : "";
     const title = site ? l10n.t("Change annotation") : unit ? l10n.t("Add unit annotation") : l10n.t("Add annotation");
-    return <span className={`annotation-picker ${site ? "annotation-name" : unit ? "" : "annotation-add"}`}>
-        <select className="nodrag nopan nowheel nokey" aria-label={title} title={error || title} aria-invalid={!!error} value={currentName}
+    return <span className={`annotation-picker ${site ? "annotation-name" : unit ? "" : "annotation-add statement-button"}`}>
+        {!site && !unit && <InsertionIcon />}
+        <select className={`nodrag nopan nowheel nokey ${!site && !unit ? "annotation-add-select" : ""}`}
+            style={site ? { width: `calc(${labelColumns(currentName) * 7.2 + 4}px * var(--lhat-scale))` } : undefined} aria-label={title} title={error || title} aria-invalid={!!error} value={currentName}
             disabled={actions.version === undefined || actions.busy || !choices.length}
             onPointerDown={e => e.stopPropagation()} onPointerUp={e => e.stopPropagation()}
             onKeyDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}
@@ -67,7 +75,7 @@ function AnnotationPicker({ owner, site, unit = false }: { owner: AnnotationOwne
                 const choice = choices.find(c => c.name === e.target.value);
                 if (choice) void actions.save(site ?? ownerSite(owner), annotationChoiceText(choice, site?.text), !site).then(setError);
             }}>
-            {!site && <option value="" disabled>{unit ? title : "+"}</option>}
+            {!site && <option value="" disabled>{unit ? title : <InsertionIcon />}</option>}
             {site && !choices.some(c => c.name === currentName) && <option value={currentName}>{currentName}</option>}
             {choices.map(choice => <option key={choice.name} value={choice.name}>
                 {choice.name}
@@ -77,13 +85,12 @@ function AnnotationPicker({ owner, site, unit = false }: { owner: AnnotationOwne
     </span>;
 }
 
-function AnnotationParameters({ site, choice }: { site: AnnotationSite; choice?: AnnotationChoice }) {
+function AnnotationParameterInput({ site, text, parameter, index, name }: {
+    site: AnnotationSite; text: string; parameter: AnnotationParameter; index: number; name: string;
+}) {
     const actions = useContext(Annotations);
-    const original = annotationArguments(site.text);
-    const defaults = choice && annotationArguments(annotationChoiceText(choice, site.text)).arguments;
-    const initial = original.arguments ?? defaults ?? "";
-    const [value, setValue] = useState(initial);
-    const [committed, setCommitted] = useState(initial);
+    const [value, setValue] = useState(parameter.value);
+    const [committed, setCommitted] = useState(parameter.value);
     const [error, setError] = useState<string>();
     const cancelled = useRef(false);
     const active = useRef(true);
@@ -91,28 +98,34 @@ function AnnotationParameters({ site, choice }: { site: AnnotationSite; choice?:
     const commit = () => {
         if (cancelled.current) { cancelled.current = false; return; }
         if (actions.busy || value === committed) return;
-        const text = `@${original.name}(${value})`;
-        if (!validAnnotation(text)) { setError(l10n.t("Annotation arguments must be literals or names.")); return; }
-        void actions.save(site, text).then(reason => {
+        const source = annotationParameterText(text, parameter, value);
+        if (!validAnnotation(source)) { setError(l10n.t("Annotation arguments must be literals or names.")); return; }
+        void actions.save(site, source).then(reason => {
             if (!active.current) return;
             setError(reason); if (!reason) setCommitted(value);
         });
     };
-    return <span className="annotation-parameters">
-        <span aria-hidden="true">(</span>
-        <input type="text" className="annotation-arguments nodrag nopan nowheel nokey" value={value}
-            aria-label={l10n.t("Annotation arguments for {0}", original.name)} aria-invalid={!!error}
-            title={error || l10n.t("Edit arguments. Enter saves; Escape cancels.")} spellCheck={false} autoComplete="off"
-            readOnly={actions.version === undefined || actions.busy}
-            onChange={e => { setValue(e.target.value); setError(undefined); }}
-            onFocus={() => { cancelled.current = false; }} onBlur={commit}
-            onPointerDown={e => e.stopPropagation()} onPointerUp={e => e.stopPropagation()}
-            onKeyDown={e => {
-                e.stopPropagation(); if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-                if (e.key === "Escape") { e.preventDefault(); cancelled.current = true; setValue(committed); setError(undefined); e.currentTarget.blur(); }
-                else if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
-            }} />
-        <span aria-hidden="true">)</span>
+    const inputProps = {
+        className: `annotation-arguments ${parameter.kind === "name" ? "name-input" : "literal-input"} nodrag nopan nowheel nokey`,
+        value, "aria-label": l10n.t("Annotation argument {0} of {1}", index + 1, name), "aria-invalid": !!error,
+        title: error || l10n.t("Edit arguments. Enter saves; Escape cancels."), spellCheck: false, autoComplete: "off",
+        readOnly: actions.version === undefined || actions.busy,
+        onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => { setValue(event.target.value); setError(undefined); },
+        onFocus: () => { cancelled.current = false; }, onBlur: commit,
+        onPointerDown: (event: React.PointerEvent) => event.stopPropagation(),
+        onPointerUp: (event: React.PointerEvent) => event.stopPropagation(),
+        onKeyDown: (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+            event.stopPropagation(); if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            if (event.key === "Escape") { event.preventDefault(); cancelled.current = true; setValue(committed); setError(undefined); event.currentTarget.blur(); }
+            else if (event.key === "Enter" && !(parameter.kind === "string" && event.shiftKey)) { event.preventDefault(); event.currentTarget.blur(); }
+        },
+    };
+    return <span className="annotation-parameter" style={{ width: `calc(${parameter.width}px * var(--lhat-scale))`, height: `calc(${parameter.height}px * var(--lhat-scale))` }}>
+        {parameter.kind === "name" ? <input {...inputProps} type="text" /> :
+            <span className={`box literal-node literal-${parameter.kind}`}>
+                <span className="literal-type-label"><TypeLabel label={parameter.typeLabel} /></span>
+                <LiteralField kind={parameter.kind} modified={value !== committed} inputProps={inputProps} />
+            </span>}
         {error && <small className="annotation-error" role="alert">{error}</small>}
     </span>;
 }
@@ -122,10 +135,14 @@ function AnnotationRow({ owner, site }: { owner: AnnotationOwner; site: Annotati
     const [error, setError] = useState<string>();
     const parsed = annotationArguments(site.text);
     const choice = actions.tree?.annotationChoices?.find(c => c.name === parsed.name);
-    const parameters = parsed.arguments !== undefined || !!choice?.parameterTypes?.length || !!choice?.variadic;
-    return <div className="annotation-row" role="listitem" data-annotation-start={site.start}>
+    const presentation = annotationPresentation(site, choice, graphVocabulary());
+    return <div className="annotation-row" role="listitem" data-annotation-start={site.start}
+        style={{ height: `calc(${presentation.height}px * var(--lhat-scale))` }}>
         <AnnotationPicker owner={owner} site={site} />
-        {parameters && <AnnotationParameters key={site.text} site={site} choice={choice} />}
+        {presentation.parameters.length > 0 && <span className="annotation-parameters">
+            {presentation.parameters.map((parameter, index) => <AnnotationParameterInput key={`${site.text}:${index}`}
+                site={site} text={presentation.text} parameter={parameter} index={index} name={parsed.name} />)}
+        </span>}
         <button type="button" className="annotation-delete nodrag nopan nokey" title={error || l10n.t("Delete annotation")}
             aria-label={l10n.t("Delete annotation")} disabled={actions.version === undefined || actions.busy}
             onPointerDown={e => e.stopPropagation()} onPointerUp={e => e.stopPropagation()}
@@ -159,10 +176,10 @@ export function AddAnnotation({ start, end, kind, unit = false }: { start?: numb
     const owner = unit ? actions.owners[0] : actions.owners.find(o => o.start === start && o.end === end && o.kind === kind);
     if (!owner || !owner.canAdd || (!unit && (owner.annotations.length || actions.boxes[annotationOwnerKey(owner)]))) return null;
     const title = unit ? l10n.t("Add unit annotation") : l10n.t("Add annotation");
-    return <button type="button" className={unit ? "annotation-unit-add" : "add-annotation nodrag nopan nokey"}
+    return <button type="button" className={unit ? "annotation-unit-add" : "add-annotation statement-button nodrag nopan nokey"}
         title={title} aria-label={title} disabled={actions.version === undefined || actions.busy}
         onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
         onClick={event => { event.stopPropagation(); actions.show(owner); }}>
-        {unit ? title : "+"}
+        {unit ? title : <InsertionIcon />}
     </button>;
 }

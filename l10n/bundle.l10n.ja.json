@@ -273,6 +273,6 @@
     "Annotations": "アノテーション",
     "Change annotation": "アノテーションを変更",
     "Annotation arguments must be literals or names.": "引数にはリテラルまたは名前を指定してください。",
-    "Annotation arguments for {0}": "{0} のアノテーション引数",
-    "Edit arguments. Enter saves; Escape cancels.": "引数を編集。Enter で保存、Escape でキャンセル。"
+    "Edit arguments. Enter saves; Escape cancels.": "引数を編集。Enter で保存、Escape でキャンセル。",
+    "Annotation argument {0} of {1}": "{1} の引数 {0}"
 }

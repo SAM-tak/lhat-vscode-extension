@@ -464,6 +464,37 @@ test('a function literal is an external call target and operator calls connect f
         edge.sourceHandle === 'definition-out'));
     assert.equal(all.find(node => node.lhat?.kind === 'ident' && node.lhat.start === second.fields.target.start)?.lhat.inlineable, true);
 });
+test('top-level annotation sidebars participate in viewport landing, centring and horizontal scrolling', () => {
+    for (const callTree of [false, true]) {
+        const card = { id: 'card', x: 0, y: 0, width: 100, height: 40, lhat: { kind: 'ident', start: 2, end: 3 } };
+        const owner = { id: 'owner', x: 300, y: 30, width: 1200, height: 100,
+            lhat: { kind: callTree ? 'call-tree' : 'define', start: 0, end: 20, callTree, layoutOnly: callTree },
+            children: callTree ? [{ id: 'column', x: 0, y: 0, width: 100, height: 40, children: [card] }] : [card] };
+        const note = { id: 'annotation', x: 96, y: 30, width: 180, height: 100,
+            lhat: { kind: 'annotation-list', start: 0, end: 20, commentOwner: 'define', annotationList: {}, commentAnchor: { id: 'owner', dx: -204, dy: 0 } } };
+        const graph = { id: 'view', width: 1600, height: 200, children: [note, owner] };
+        const paint = (width, slides = {}) => toFlow(graph, slides, width, undefined, noop, noop, noop, noop, { current: null }, noop);
+        for (const width of [320, 700, 1000]) {
+            const flow = paint(width), box = flow.nodes.find(n => n.id === owner.id), sidebar = flow.nodes.find(n => n.id === note.id);
+            const x = graphViewportX(graph, width);
+            assert.equal(sidebar.position.x + x, 8);
+            assert(sidebar.position.x + sidebar.width + x <= width - 8);
+            assert.equal(box.position.x - sidebar.position.x, 204);
+            assert(box.data.slideKey && box.data.slideMin < 0);
+            assert.equal(box.data.slideMax, 0);
+            assert.equal(sidebar.data.slideKey, box.data.slideKey);
+            const moved = paint(width, { [box.data.slideKey]: { dx: box.data.slideMin, dy: 0 } });
+            const shifted = moved.nodes.find(n => n.id === owner.id), shiftedNote = moved.nodes.find(n => n.id === note.id);
+            assert.equal(shifted.position.x + shifted.width + x, width - 8);
+            assert.equal(shifted.position.x - shiftedNote.position.x, 204);
+        }
+        if (callTree) {
+            const width = 1800, flow = paint(width), sidebar = flow.nodes.find(n => n.id === note.id);
+            assert.equal(sidebar.position.x + graphViewportX(graph, width) + (1200 + 204) / 2, width / 2);
+        }
+    }
+});
+
 test('fitting expressions are centred as a whole; oversized expressions start left and scroll', () => {
     const card = { id: 'card', x: 0, y: 0, width: 120, height: 100,
         lhat: { kind: 'call', start: 0, end: 10, invocation: true } };

@@ -35,6 +35,7 @@ import { LiteralEditProvider, LiteralEditStatus, LiteralInput } from "./LiteralI
 import { NameInput, RenameProvider } from "./NameInput";
 import { TypeLabel, TypeProvider } from "./TypeLabel";
 import { StatementProvider, StatementButton, useStatementActions } from "./StatementMenu";
+import { CommentLink } from "./CommentLink";
 import { AnnotationProvider, AnnotationList, AddAnnotation, useAnnotationOwner } from "./AnnotationEditor";
 import { annotationOwners, annotationOwnerKey, type AnnotationOwner } from "../../graphAnnotations";
 import type { InsertionSite, OperatorSite } from "../../graphLists";
@@ -125,6 +126,7 @@ interface BoxData extends Record<string, unknown>, SlideData {
     isRangeArrow: boolean;
     label: string;
     commentOwner?: string;
+    commentLink?: { x: number; y: number }[];
     annotationList?: AnnotationOwner;
     operatorExpression?: boolean;
     operandInput?: boolean;
@@ -266,8 +268,11 @@ function toFlow(
     const definitions: Edge[] = [];
     const endpoints = new Map<string, ElkNode>();
     const parents = new Map<string, ElkNode>();
+    const annotations = new Map<string, ElkNode[]>();
     const index = (node: ElkNode, parent?: ElkNode): void => {
         endpoints.set(node.id, node);
+        const anchor = node.lhat?.commentAnchor;
+        if (node.lhat?.annotationList && anchor) annotations.set(anchor.id, [...annotations.get(anchor.id) ?? [], node]);
         if (parent !== undefined) parents.set(node.id, parent);
         for (const port of node.ports ?? []) endpoints.set(port.id, node);
         for (const child of node.children ?? []) index(child, node);
@@ -309,6 +314,13 @@ function toFlow(
             const topLevel = parentId === undefined;
             const w = c.width ?? 0;
             const h = c.height ?? 0;
+            // Attached sidebars move with their owner. Use the full group for
+            // landing, centring and scrolling so the owner cannot hide them
+            // beyond the viewport's left margin.
+            const sidebars = annotations.get(c.id) ?? [];
+            const left = Math.min(0, ...sidebars.map(note => note.lhat!.commentAnchor!.dx ?? 0));
+            const right = Math.max(w, ...sidebars.map(note => (note.lhat!.commentAnchor!.dx ?? 0) + (note.width ?? 0)));
+            const groupWidth = right - left;
             const isContainer = (c.children ?? []).length > 0;
             const isStart = c.lhat?.synthetic === "start";
             const isAdd = c.lhat?.synthetic === "add";
@@ -354,15 +366,15 @@ function toFlow(
                 else x = aligned;
             }
             let baseShift = 0;
-            if (topLevel && (c.lhat?.callTree || c.lhat?.expressionTree) && !detachedValue && usable > 0 && w <= usable) {
-                // Centre the complete statement, not only its execution card.
-                baseShift = baseAbs + (usable - w) / 2 - parentX - x;
+            if (topLevel && (c.lhat?.callTree || c.lhat?.expressionTree) && !detachedValue && usable > 0 && groupWidth <= usable) {
+                // Centre the complete statement and its attached annotation box.
+                baseShift = baseAbs + (usable - groupWidth) / 2 - parentX - x - left;
                 x += baseShift;
             } else if (topLevel && (!layoutOnly || c.lhat?.callTree || c.lhat?.expressionTree) && !detachedValue && usable > 0 &&
-                (w > usable || parentX + x + w > baseAbs + usable)) {
+                (groupWidth > usable || parentX + x + right > baseAbs + usable)) {
                 // Use the placed right edge, not width alone: an expression
                 // can fit the viewport but overflow from the execution column.
-                baseShift = baseAbs - parentX - x;
+                baseShift = baseAbs - parentX - x - left;
                 x += baseShift;
             }
             // A wide definition's invisible row and declaration stay fixed;
@@ -370,8 +382,8 @@ function toFlow(
             // containers still move as a whole. Deeper boxes never acquire
             // another offset; gestures there are routed to the same owner.
             const canSlide = ownsHorizontalSlide(
-                detachedValue, topLevel, layoutOnly && !c.lhat?.callTree && !c.lhat?.expressionTree, isContainer, usable, w,
-                parentX + x - baseAbs);
+                detachedValue, topLevel, layoutOnly && !c.lhat?.callTree && !c.lhat?.expressionTree,
+                isContainer || sidebars.length > 0, usable, groupWidth, parentX + x + left - baseAbs);
             const key = canSlide && c.lhat !== undefined ? slideKeyOf(c.lhat) : undefined;
             // Normal boxes stop at the viewport's side margins; a lowered
             // value stops at its initial x or at the viewport's right margin.
@@ -379,8 +391,8 @@ function toFlow(
             // Saved offsets from a different layout are clamped as before.
             // A detached value starts beside the declaration as before; its
             // rightward stop keeps that initial gap for the definition line.
-            const max = detachedValue ? 0 : baseAbs - parentX - x;
-            const min = Math.min(max, baseAbs + usable - parentX - x - w);
+            const max = detachedValue ? 0 : baseAbs - parentX - x - left;
+            const min = Math.min(max, baseAbs + usable - parentX - x - right);
             const ownDx = key !== undefined
                 ? slidePosition(slides[key], { min, max }) : 0;
             const slide: SlideData = topLevel || detachedValue ? {
@@ -432,6 +444,7 @@ function toFlow(
                     slideMotion,
                     label: c.labels?.[0]?.text ?? "",
                     commentOwner: c.lhat?.commentOwner,
+                    commentLink: c.lhat?.commentLink,
                     annotationList: c.lhat?.annotationList,
                     drillTarget: c.lhat?.drillTarget,
                     operatorExpression: c.lhat?.operatorExpression,
@@ -970,7 +983,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         data-vscode-context={statements.context(undefined, data, data.annotationList ? annotationOwner : undefined)}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove}
         onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onAuxClick={onAuxClick}
-    ><span className="comment-text">{data.label}</span>{foldButton}</div>;
+    ><CommentLink points={data.commentLink} /><span className="comment-text">{data.label}</span>{foldButton}</div>;
 
     // Match arms share their FOR's box. The invisible grouping still owns
     // the branch junction, unlike a declaration row with no handles at all.
@@ -1956,7 +1969,7 @@ function App() {
         <InterpolationProvider value={{ sourceKey, version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <AnnotationProvider value={{ tree: reply, version: laidSourceKey === sourceKey ? version : undefined, post,
             boxes: annotationBoxes, show: showAnnotationBox }}>
-        <div id="app">
+        <div id="app" data-graph-version={laidSourceKey === sourceKey ? version : undefined}>
             <div id="bar">
                 <AddAnnotation unit />
                 <button

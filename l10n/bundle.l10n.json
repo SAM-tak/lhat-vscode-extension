@@ -106,7 +106,7 @@
     "Change annotation": "Change annotation",
     "Add unit annotation": "Add unit annotation",
     "Add annotation": "Add annotation",
-    "Annotation arguments for {0}": "Annotation arguments for {0}",
+    "Annotation argument {0} of {1}": "Annotation argument {0} of {1}",
     "Edit arguments. Enter saves; Escape cancels.": "Edit arguments. Enter saves; Escape cancels.",
     "Delete annotation": "Delete annotation",
     "Annotations": "Annotations",

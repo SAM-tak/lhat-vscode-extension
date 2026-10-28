@@ -112,6 +112,7 @@ export interface ElkNode {
         /** Exact AST owner of a separately displayed comment. */
         commentOwner?: string;
         annotationList?: import("../graphAnnotations").AnnotationOwner;
+        commentLink?: { x: number; y: number }[];
         commentAnchor?: { id: string; dx?: number; dy: number };
         /** Main execution and independently entered exception handlers. */
         catchScope?: boolean;
@@ -404,7 +405,7 @@ export function graphViewportX(laid: ElkNode, width: number): number {
             // Overflowing values get their own scroller. The binding stays
             // fixed, including unboxed columns of multiple output bindings.
             for (const child of node.children ?? []) {
-                if (child.lhat?.definitionRole === "declaration") include(child, x + (child.x ?? 0));
+                if (child.lhat?.definitionRole === "declaration" || child.lhat?.annotationList) include(child, x + (child.x ?? 0));
             }
         } else if (node.lhat?.expressionTree) {
             const row = node.children?.[0];
@@ -416,6 +417,10 @@ export function graphViewportX(laid: ElkNode, width: number): number {
             if (column && card) include(card, x + (column.x ?? 0) + (card.x ?? 0));
         } else if (node.lhat === undefined || node.lhat.layoutOnly) {
             for (const child of node.children ?? []) include(child, x + (child.x ?? 0));
+        } else if (node.lhat.annotationList) {
+            // Keep the sidebar's reading edge even in a very narrow viewport.
+            left = Math.min(left, x);
+            right = Math.max(right, x + Math.min(node.width ?? 0, Math.max(0, usable)));
         } else if ((node.width ?? 0) <= usable) {
             left = Math.min(left, x);
             right = Math.max(right, x + (node.width ?? 0));

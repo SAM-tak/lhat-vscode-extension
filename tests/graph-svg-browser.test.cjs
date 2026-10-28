@@ -434,7 +434,7 @@ test('AST comments render above their owner as separate multiline boxes', { time
             const owner=document.querySelector('.box.folded[data-source-start="${owner.start}"]');
             return {owner:rect(owner),comments:[...document.querySelectorAll('.comment-box')].map(e=>({
                 ...rect(e),text:e.querySelector('.comment-text').textContent,title:e.title,handles:e.parentElement.querySelectorAll('.react-flow__handle').length,
-                overflow:e.scrollHeight>e.clientHeight}))};
+                overflow:e.querySelector('.comment-text').getBoundingClientRect().bottom>e.getBoundingClientRect().bottom}))};
         })()`);
         assert.equal(result.comments[0].text, 'function comment');
         assert.equal(result.comments[1].text, '日本語のコメント\nsecond line');
@@ -446,6 +446,16 @@ test('AST comments render above their owner as separate multiline boxes', { time
             assert.equal(comment.overflow, false);
         }
         assert(result.comments[0].y + result.comments[0].h < result.comments[1].y);
+        const inspectLinks = async () => {
+            const links = await evaluate(`(()=>{const owner=document.querySelector('.box.folded[data-source-start="${owner.start}"]').getBoundingClientRect();return [...document.querySelectorAll('.comment-link path')].map(path=>{const p=path.getPointAtLength(path.getTotalLength()),end=new DOMPoint(p.x,p.y).matrixTransform(path.getScreenCTM());return {x:end.x,y:end.y,left:owner.left,right:owner.right,top:owner.top,dash:getComputedStyle(path).strokeDasharray,pointer:getComputedStyle(path).pointerEvents}})})()`);
+            assert.equal(links.length, 2);
+            for (const link of links) {
+                assert(link.x >= link.left && link.x <= link.right);
+                assert(Math.abs(link.y - link.top) < 2, JSON.stringify(link));
+                assert.notEqual(link.dash, 'none'); assert.equal(link.pointer, 'none');
+            }
+        };
+        await inspectLinks();
         const toggle = async () => {
             const point = await evaluate(`(()=>{const r=document.querySelectorAll('.comment-box .foldbtn')[1].getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()`);
             await call('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
@@ -459,6 +469,15 @@ test('AST comments render above their owner as separate multiline boxes', { time
         await until(`document.querySelectorAll('.comment-box .foldbtn')[1].getAttribute('aria-expanded')==='true' && !document.querySelector('.svg-export>button').disabled`);
         assert.equal(await evaluate(`document.querySelectorAll('.comment-text')[1].textContent`), result.comments[1].text);
         assert.equal(await evaluate(`document.querySelectorAll('.comment-box')[1].getBoundingClientRect().height`), result.comments[1].h);
+        await inspectLinks();
+        await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='A+').click()`);
+        await until(`document.querySelector('#flow').style.getPropertyValue('--lhat-scale')!=='1' && !document.querySelector('.svg-export>button').disabled`);
+        await inspectLinks();
+        await evaluate(`document.querySelector('.svg-export>button').click()`);
+        await until(`document.querySelector('.svg-export-menu>button')`);
+        await evaluate(`document.querySelector('.svg-export-menu>button').click()`);
+        await until(`window.exports.length===1`);
+        assert.equal(await evaluate(`(()=>{const doc=new DOMParser().parseFromString(window.exports[0].svg,'image/svg+xml');return [...doc.querySelectorAll('[data-node-id^="comment__"] path')].filter(p=>p.getAttribute('stroke-dasharray') && p.getAttribute('stroke-dasharray')!=='none').length})()`), 2);
         assert.equal(errors.length, 0, JSON.stringify(errors));
     });
 });
@@ -1109,6 +1128,12 @@ test('annotation sidebars group names without @ and support inline arguments, dr
         assert.equal(appearance.heading, 'アノテーション'); assert.equal(appearance.color, appearance.moduleColor);
         assert.equal(appearance.nameColor, 'rgb(216, 205, 109)'); assert.equal(appearance.border, 'rgb(204, 167, 0)');
         assert(appearance.alpha > 0 && appearance.alpha < 255);
+        const controls = await evaluate(`(()=>{const row=[...document.querySelectorAll('.annotation-row')].find(r=>r.querySelector('select').value==='range'),name=row.querySelector('select').getBoundingClientRect(),field=row.querySelector('.annotation-parameter').getBoundingClientRect(),add=row.closest('.annotation-box').querySelector('.annotation-add').getBoundingClientRect(),other=document.querySelector('.statement-button.floating-add').getBoundingClientRect(),numbers=[...row.querySelectorAll('.literal-number')],string=row.querySelector('.literal-string'),standard=[...document.querySelectorAll('.literal-number')].find(n=>!n.closest('.annotation-box'));return {gap:field.left-name.right,add:add.width,other:other.width,numbers:numbers.length,stringValue:string.querySelector('textarea').value,numberRadius:getComputedStyle(numbers[0]).borderRadius,standardRadius:getComputedStyle(standard).borderRadius,text:[...row.childNodes].filter(n=>n.nodeType===Node.TEXT_NODE).map(n=>n.textContent).join('')}})()`);
+        assert(controls.gap >= 0 && controls.gap < 8, JSON.stringify(controls));
+        assert(Math.abs(controls.add - controls.other) < 0.01); assert.equal(controls.numbers, 2);
+        assert.equal(controls.stringValue, 'a,b'); assert.equal(controls.numberRadius, controls.standardRadius);
+        assert(!/[(),]/.test(controls.text));
+
 
         assert.equal(await evaluate(`document.querySelector('.annotation-editor')`), null);
         if (process.env.LHAT_TEST_SCREENSHOT) fs.writeFileSync(process.env.LHAT_TEST_SCREENSHOT,
@@ -1128,23 +1153,27 @@ test('annotation sidebars group names without @ and support inline arguments, dr
             reply = fixture(reply.source.slice(0, edit.start) + edit.value + (edit.add ? '\n' : '') + reply.source.slice(edit.add ? edit.start : edit.end));
             version++;
             await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(reply)},uri:'file:///svg-example.lh',version:${version}},'*')`);
-            await until(`${ready} && document.querySelector('.annotation-box[data-source-start="${reply.source.indexOf('let^')}"][data-source-end="${reply.source.length}"]')`);
+            await until(`document.querySelector('#app').dataset.graphVersion==='${version}' && ${ready} && document.querySelector('.annotation-box[data-source-start="${reply.source.indexOf('let^')}"][data-source-end="${reply.source.length}"]')`);
         };
         await setInput('call()'); await key('Enter');
         await until(`document.querySelector('.annotation-arguments').getAttribute('aria-invalid')==='true'`);
         assert.equal(await evaluate(`window.edits.length`), 0);
         await evaluate(`document.querySelector('.annotation-arguments').focus()`); await key('Escape');
-        assert.equal(await evaluate(`document.querySelector('.annotation-arguments').value`), '0, 100, "a,b"');
-        await setInput('1, 50, "changed"'); await key('Enter');
+        assert.equal(await evaluate(`document.querySelector('.annotation-arguments').value`), '0');
+        await setInput('1'); await key('Enter');
         await until(`window.edits.length===1`);
         let edit = await evaluate(`window.edits[0]`);
-        assert.equal(edit.value, '@range(1, 50, "changed")'); assert.equal(edit.version, version);
+        assert.equal(edit.value, '@range(1, 100, "a,b")'); assert.equal(edit.version, version);
         await refresh(edit);
+        await evaluate(`(()=>{const input=document.querySelector('.annotation-parameters textarea');input.focus();Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'changed');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+        await key('Enter'); await until(`window.edits.length===2`);
+        edit = await evaluate(`window.edits[1]`);
+        assert.equal(edit.value, '@range(1, 100, "changed")'); await refresh(edit);
         await evaluate(`(()=>{const s=[...document.querySelectorAll('.annotation-name select')].find(s=>s.value==='range');s.value='game';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
-        await until(`window.edits.length===2`); edit = await evaluate(`window.edits[1]`);
+        await until(`window.edits.length===3`); edit = await evaluate(`window.edits[2]`);
         assert.equal(edit.value, '@game'); await refresh(edit);
         await evaluate(`(()=>{const s=document.querySelector('.annotation-box[data-source-start="${reply.source.indexOf('let^')}"] .annotation-add select');s.value='export_range';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
-        await until(`window.edits.length===3`); edit = await evaluate(`window.edits[2]`);
+        await until(`window.edits.length===4`); edit = await evaluate(`window.edits[3]`);
         assert.equal(edit.value, '@export_range(0, 0)'); assert.equal(edit.add, true); assert.equal(edit.ownerKind, 'define');
         await refresh(edit);
         await until(`document.querySelectorAll('.annotation-row').length===4 && ${ready}`);
@@ -1152,8 +1181,8 @@ test('annotation sidebars group names without @ and support inline arguments, dr
         await evaluate(`document.querySelector('.annotation-box .foldbtn').click()`);
         await until(`document.querySelector('.annotation-box .foldbtn').getAttribute('aria-expanded')==='false' && ${ready}`);
         await evaluate(`document.querySelector('.annotation-row .annotation-delete').click()`);
-        await until(`window.edits.length===4`);
-        assert.equal(await evaluate(`window.edits[3].value`), '');
+        await until(`window.edits.length===5`);
+        assert.equal(await evaluate(`window.edits[4].value`), '');
         assert.equal(errors.length, 0, JSON.stringify(errors));
     });
 });
@@ -1189,6 +1218,8 @@ test('unsaved annotation deletion refreshes candidates and disables the previous
     const unsaved = fixture(saved.source.replace('@game @export_class\n', ''));
     await browser({ ...routes, '/': { type: 'text/html', body: html(saved) } }, async ({ evaluate, until, errors }) => {
         await until(`document.querySelectorAll('.annotation-row').length===3 && !document.querySelector('.svg-export>button').disabled`);
+        const compact = await evaluate(`(()=>{const box=document.querySelector('.annotation-box[data-source-start="${saved.source.indexOf('let^')}"]');return {width:box.getBoundingClientRect().width,gaps:[...box.querySelectorAll('.annotation-row')].map(row=>row.querySelector('.annotation-delete').getBoundingClientRect().left-row.querySelector('.annotation-name').getBoundingClientRect().right)}})()`);
+        assert(compact.width < 150, JSON.stringify(compact)); assert(compact.gaps.every(gap=>gap >= 0 && gap < 8), JSON.stringify(compact));
         await evaluate(`window.postMessage({type:'pending'},'*')`);
         await until(`[...document.querySelectorAll('.annotation-picker select')].every(s=>s.disabled)`);
         assert.equal(await evaluate(`window.edits.length`), 0);
@@ -1266,6 +1297,46 @@ test('individual annotation deletion updates the live text and removes its box o
             assert.equal(await evaluate(`document.querySelectorAll('.annotation-box').length`), expectedRows === 1 ? 1 : 2);
         }
         assert.equal(source, savedText); assert.equal(document.isDirty, false);
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('a wide top-level definition keeps its annotation sidebar inside the viewport after resize and folding', { timeout: 60000 }, async () => {
+    const base = branchedCalls(), prefix = 'module^"demo"\n@game @export_class\npublic^let^ Player = ';
+    const shift = node => ({ ...node, start: node.start + prefix.length, end: node.end + prefix.length,
+        ...(node.fields ? { fields: Object.fromEntries(Object.entries(node.fields).map(([key, value]) => [key, Array.isArray(value) ? value.map(shift) : shift(value)])) } : {}) });
+    const callNode = shift(base.root.fields.items[0].fields.value); callNode.callable.outputs = ['number^'];
+    const start = prefix.indexOf('public^'), source = prefix + base.source;
+    const definition = { kind: 'define', start, end: callNode.end, line: 3, column: 1, fields: {
+        targets: [{ kind: 'ident', start: prefix.indexOf('Player'), end: prefix.indexOf('Player') + 6, line: 3, column: 1 }], values: [callNode] } };
+    const reply = { source, root: { kind: 'block', start: 0, end: source.length, line: 1, column: 1,
+        fields: { items: [{ kind: 'module', start: 0, end: prefix.indexOf('\n'), line: 1, column: 1 }, definition, shift(base.root.fields.items[1])] } } };
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, call, errors }) => {
+        const ready = `!document.querySelector('.svg-export>button').disabled`;
+        const inspect = () => evaluate(`(()=>{const box=document.querySelector('.annotation-box[data-source-start="${start}"]'),r=box.getBoundingClientRect(),flow=document.querySelector('#flow').getBoundingClientRect(),owner=document.querySelector('.box:not(.annotation-box)[data-source-start="${start}"]').getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,width:r.width,flowLeft:flow.left,flowRight:flow.right,ownerLeft:owner.left,ownerRight:owner.right}})()`);
+        const check = async () => {
+            const result = await inspect();
+            assert(result.left >= result.flowLeft + 7, JSON.stringify(result));
+            assert(result.right <= result.flowRight - 7, JSON.stringify(result));
+            assert(result.ownerLeft > result.right, JSON.stringify(result));
+        };
+        for (const width of [500, 700, 1000]) {
+            await call('Emulation.setDeviceMetricsOverride', { width, height: 700, deviceScaleFactor: 1, mobile: false });
+            await until(`document.querySelector('#flow')?.clientWidth===${width} && document.querySelector('.annotation-box[data-source-start="${start}"]') && ${ready}`);
+            await new Promise(resolve => setTimeout(resolve, 250));
+            await until(ready);
+            await check();
+            if (width === 500) {
+                const result = await inspect();
+                assert(result.ownerRight > result.flowRight, 'the regression fixture must contain an overflowing definition');
+            }
+        }
+        await evaluate(`document.querySelector('.annotation-box .foldbtn').click()`);
+        await until(`document.querySelector('.annotation-box .foldbtn').getAttribute('aria-expanded')==='false' && ${ready}`);
+        await check();
+        await evaluate(`document.querySelector('.annotation-box .foldbtn').click()`);
+        await until(`document.querySelector('.annotation-box .foldbtn').getAttribute('aria-expanded')==='true' && ${ready}`);
+        await check();
         assert.equal(errors.length, 0, JSON.stringify(errors));
     });
 });

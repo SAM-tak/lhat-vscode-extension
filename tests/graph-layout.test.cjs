@@ -30,6 +30,9 @@ test('comments occupy independent boxes above their owners without overlapping a
     assert.ok(next.y >= owner.y + owner.height + 20);
     assert.ok(right.x >= comment.x + comment.width + 20);
     assert.equal(comment.lhat.commentAnchor.id, owner.id);
+    const end = comment.lhat.commentLink.at(-1);
+    assert.equal(comment.x + end.x, owner.x + owner.width / 4);
+    assert.equal(comment.y + end.y, owner.y);
     for (const child of graph.children) {
         assert.ok(child.x + child.width <= graph.width);
         assert.ok(child.y + child.height <= graph.height);
@@ -98,6 +101,42 @@ function engine() {
     };
 }
 const result = id => ({ graph: { id }, elapsed: 20 });
+
+test('comment links bypass other comments and root comments connect to the scope entry', () => {
+    const source = '# first\n# second\nx';
+    const ast = { kind: 'ident', start: source.length - 1, end: source.length, line: 3, column: 1,
+        comments: [{ start: 0, end: 7, block: false }, { start: 8, end: 16, block: false }] };
+    const owner = { id: 'owner', x: 10, y: 10, width: 80, height: 30, lhat: { ...ast } };
+    const graph = placeComments({ id: 'view', width: 100, height: 50, children: [owner] }, { source, root: ast });
+    const comments = graph.children.filter(n => n.lhat?.kind === 'comment');
+    assert.equal(comments.length, 2);
+    for (const comment of comments) {
+        const points = comment.lhat.commentLink;
+        const end = points.at(-1);
+        assert.equal(comment.y + end.y, owner.y);
+        for (let i = 1; i < points.length; i++) {
+            for (let step = 1; step < 20; step++) {
+                const x = comment.x + points[i - 1].x + (points[i].x - points[i - 1].x) * step / 20;
+                const y = comment.y + points[i - 1].y + (points[i].y - points[i - 1].y) * step / 20;
+                assert(!comments.some(other => other !== comment && x > other.x && x < other.x + other.width && y > other.y && y < other.y + other.height));
+            }
+        }
+    }
+    const entry = { id: 'start', x: 20, y: 0, width: 24, height: 24, lhat: { kind: 'start', synthetic: 'start' } };
+    const root = { kind: 'block', start: 0, end: source.length, line: 1, column: 1, comments: ast.comments };
+    const view = placeComments({ id: 'root', width: 120, height: 60, children: [entry] }, { source, root });
+    for (const comment of view.children.filter(n => n.lhat?.kind === 'comment')) {
+        assert.equal(comment.lhat.commentAnchor.id, entry.id);
+        const end = comment.lhat.commentLink.at(-1);
+        assert.equal(comment.x + end.x, entry.x + entry.width / 2);
+        assert.equal(comment.y + end.y, entry.y);
+    }
+    const withoutEntry = placeComments({ id: 'members', width: 120, height: 60, children: [
+        { id: 'field', width: 40, height: 30, lhat: { kind: 'ident', start: source.length - 1, end: source.length } },
+    ] }, { source, root });
+    assert(withoutEntry.children.filter(n => n.lhat?.kind === 'comment').every(n => !n.lhat.commentLink),
+        'a scope comment must not be reassigned to an unrelated first field');
+});
 
 test('mounting a large graph relies on the shared resize observer, without per-node forced updates', () => {
     const nodes = Array.from({ length: 1700 }, (_, i) => ({ id: `node${i}`, data: { flowHandleX: 40, definitionHandleY: 20 } }));

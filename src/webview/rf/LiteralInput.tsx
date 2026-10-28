@@ -47,6 +47,17 @@ export function LiteralFrame({ kind, modified, children }: {
     </div>;
 }
 
+/** Shared field/frame, with the caller choosing its source-commit behaviour. */
+export function LiteralField({ kind, modified, inputProps }: {
+    kind: LiteralValue["kind"]; modified: boolean;
+    inputProps: React.InputHTMLAttributes<HTMLInputElement> & React.TextareaHTMLAttributes<HTMLTextAreaElement>;
+}) {
+    return <LiteralFrame kind={kind} modified={modified}>
+        {kind === "number" ? <input {...inputProps} type="text" inputMode="decimal" />
+            : <textarea {...inputProps} rows={1} wrap="soft" />}
+    </LiteralFrame>;
+}
+
 export function LiteralInput({ literal }: { literal: LiteralValue }) {
     const { sourceKey, values, change, commit } = useContext(LiteralEdits);
     const value = values[literal.key] ?? literal.value;
@@ -87,8 +98,5 @@ export function LiteralInput({ literal }: { literal: LiteralValue }) {
         },
         onKeyUp: (event: React.KeyboardEvent) => event.stopPropagation(),
     };
-    return <LiteralFrame kind={literal.kind} modified={value !== literal.value}>
-        {literal.kind === "number" ? <input {...props} type="text" inputMode="decimal" />
-            : <textarea {...props} rows={1} wrap="soft" />}
-    </LiteralFrame>;
+    return <LiteralField kind={literal.kind} modified={value !== literal.value} inputProps={props} />;
 }

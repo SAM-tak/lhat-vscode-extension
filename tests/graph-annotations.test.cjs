@@ -9,7 +9,7 @@ function load(file, vscode) {
     mod._compile(buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', external: ['vscode'], write: false }).outputFiles[0].text, entry);
     return mod.exports;
 }
-const { annotationOwners, editAnnotation, validAnnotation, annotationOwnerKey, annotationArguments, parseAnnotationCatalog, annotationChoicesForOwner, annotationChoiceText } = load('graphAnnotations.ts');
+const { annotationOwners, editAnnotation, validAnnotation, annotationOwnerKey, annotationArgumentSpans, annotationArguments, parseAnnotationCatalog, annotationChoicesForOwner, annotationChoiceText } = load('graphAnnotations.ts');
 const { placeComments } = load('webview/comments.ts');
 const fixture = require('./annotation-fixture.cjs');
 const apply = (source, edit) => source.slice(0, edit.start) + edit.text + source.slice(edit.end);
@@ -259,4 +259,17 @@ test('an explicitly opened empty annotation box has geometry without changing th
     assert(box.x + box.width < graph.children.find(c => c.id === 'owner').x);
     assert.equal(JSON.stringify(tree), original);
     assert.equal(placeComments(make(), tree).children.filter(c => c.lhat?.annotationList).length, 1);
+});
+
+test('individual annotation parameter fields preserve quoted commas and source separators', () => {
+    const { annotationPresentation, annotationParameterText } = load('webview/annotations.ts');
+    const text = '@range(-2, 100, "a,b", HOST_NAME)', site = { start: 0, end: text.length, ownerStart: 0, ownerEnd: 10, ownerKind: 'define', text };
+    assert.deepEqual(annotationArgumentSpans(text).map(span => span.text), ['-2', '100', '"a,b"', 'HOST_NAME']);
+    const view = annotationPresentation(site);
+    assert.deepEqual(view.parameters.map(p => p.kind), ['number', 'number', 'string', 'name']);
+    assert.deepEqual(view.parameters.map(p => p.value), ['-2', '100', 'a,b', 'HOST_NAME']);
+    assert.equal(annotationParameterText(text, view.parameters[1], '400'), '@range(-2, 400, "a,b", HOST_NAME)');
+    assert.equal(annotationParameterText(text, view.parameters[2], 'new, "text"'), '@range(-2, 100, ' + JSON.stringify('new, "text"') + ', HOST_NAME)');
+    const plain = annotationPresentation({ ...site, text: '@export_class' });
+    assert.equal(plain.parameters.length, 0); assert(plain.width < 128);
 });

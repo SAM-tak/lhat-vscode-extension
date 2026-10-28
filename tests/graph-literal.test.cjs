@@ -10,7 +10,7 @@ function load(file) {
     mod._compile(buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
     return mod.exports;
 }
-const { literalOf, isNumberLiteral } = load('literals.ts');
+const { literalOf, isNumberLiteral, quoteString } = load('literals.ts');
 const { toElk } = load('map.ts');
 const node = (kind, text, start = 0, fields) => ({ kind, start, end: start + text.length, line: 1, column: 1, fields });
 const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
@@ -114,5 +114,12 @@ test('long text soft-wraps up to five rows without widening the clamp or changin
         assert.equal(slot('1\n2\n3\n4\n5\n6\n7').height, five.height, 'explicit newlines share the cap');
         assert.equal(capped.width, two.width, 'the existing horizontal clamp is preserved');
         assert.equal(capped.lhat.literal.value, long, 'soft wrapping never inserts source newlines');
+    }
+});
+
+test('string serialization used by source-backed literal fields preserves Unicode, quotes and controls', () => {
+    for (const value of ['AnimatedSprite2D', '日本語😀', 'a,b', 'quote " and slash \\', '\n\r\t\0\b\f\x7f']) {
+        const source = quoteString(value);
+        assert.equal(literalOf(node('string', source), source).value, value);
     }
 });

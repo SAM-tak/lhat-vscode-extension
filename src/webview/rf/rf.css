@@ -680,6 +680,7 @@ textarea.literal-input {
 .box.decoration { background: transparent; border-color: transparent; display: flex; align-items: center; justify-content: center; }
 .box.decoration .boxlabel { padding: 0; }
 .box.comment-box {
+    overflow: visible;
     box-sizing: border-box;
     width: 100%;
     height: 100%;
@@ -708,24 +709,29 @@ textarea.literal-input {
 }
 .annotation-link { position: absolute; top: calc(16px * var(--lhat-scale)); left: 100%; width: calc(24px * var(--lhat-scale)); height: 2px; overflow: visible; pointer-events: none; }
 .annotation-link path { stroke: var(--vscode-editorWarning-foreground, #cca700); stroke-width: 1; fill: none; }
-.annotation-header { height: calc(26px * var(--lhat-scale)); padding-right: calc(20px * var(--lhat-scale)); white-space: nowrap; }
-.annotation-row { position: relative; display: flex; align-items: center; gap: calc(4px * var(--lhat-scale)); height: calc(30px * var(--lhat-scale)); }
+.annotation-header { height: calc(22px * var(--lhat-scale)); padding-right: calc(20px * var(--lhat-scale)); white-space: nowrap; }
+.annotation-row { position: relative; display: flex; align-items: center; gap: calc(4px * var(--lhat-scale)); }
 .annotation-picker { position: relative; display: inline-flex; min-width: 0; }
 .annotation-picker select { font: inherit; color: inherit; background: transparent; border: 0; cursor: pointer; max-width: 100%; }
-.annotation-name { color: #d8cd6d; flex: 0 1 auto; max-width: 55%; }
-.annotation-name:only-child { max-width: 100%; }
+.annotation-name { color: #d8cd6d; flex: none; }
 .annotation-name select { appearance: none; text-overflow: ellipsis; }
 .annotation-name select:hover, .annotation-name select:focus { background: var(--vscode-list-hoverBackground); }
 .annotation-picker option { color: #d8cd6d; background: var(--vscode-dropdown-background); }
-.annotation-parameters { position: relative; display: inline-flex; align-items: center; flex: 1; min-width: 0; }
-.annotation-arguments { font: inherit; color: var(--vscode-input-foreground); background: transparent; border: 1px solid transparent; border-radius: 3px; padding: 1px 2px; width: 100%; min-width: 2ch; }
-.annotation-arguments:hover, .annotation-arguments:focus { background: var(--vscode-input-background); border-color: var(--vscode-focusBorder); }
-.annotation-arguments[aria-invalid="true"] { border-color: var(--vscode-inputValidation-errorBorder); }
-.annotation-delete { margin-left: auto; flex-shrink: 0; }
-.annotation-delete { font: inherit; color: inherit; background: transparent; border: 0; cursor: pointer; }
-.annotation-footer { height: calc(28px * var(--lhat-scale)); display: flex; justify-content: center; align-items: center; }
-.annotation-add select { appearance: none; border: 1px solid var(--vscode-descriptionForeground); border-radius: 50%; text-align: center; text-align-last: center; width: calc(20px * var(--lhat-scale)); height: calc(20px * var(--lhat-scale)); padding: 0; }
+.annotation-parameters { display: inline-flex; align-items: center; gap: calc(6px * var(--lhat-scale)); flex: none; }
+.annotation-parameter { position: relative; display: inline-flex; flex: none; }
+.annotation-parameter > .box { display: block; }
+.annotation-parameter .literal-type-label { display: block; }
+.annotation-parameter .name-input { width: 100%; height: 100%; }
+.annotation-delete { flex: none; font: inherit; width: calc(12px * var(--lhat-scale)); padding: 0; color: inherit; background: transparent; border: 0; cursor: pointer; }
+.annotation-footer { height: calc(22px * var(--lhat-scale)); display: flex; justify-content: center; align-items: center; }
+.annotation-add .annotation-add-select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; padding: 0; }
+.annotation-add:has(select:disabled) { opacity: 0.45; cursor: default; }
+.annotation-add:focus-within { border-color: var(--vscode-focusBorder); }
 .annotation-error { position: absolute; top: 100%; left: 0; z-index: 5; padding: 4px; color: var(--vscode-errorForeground); background: var(--vscode-editorWidget-background); min-width: 180px; }
 .annotation-unit-add { display: inline-flex; align-items: center; }
-.add-annotation { font: inherit; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); border: 1px solid var(--vscode-descriptionForeground); border-radius: 50%; width: calc(20px * var(--lhat-scale)); height: calc(20px * var(--lhat-scale)); padding: 0; cursor: pointer; position: absolute; right: calc(24px * var(--lhat-scale)); top: calc(-20px * var(--lhat-scale)); opacity: 0; z-index: 2; }
+.add-annotation { position: absolute; right: calc(24px * var(--lhat-scale)); top: calc(-18.7px * var(--lhat-scale)); opacity: 0; z-index: 2; }
+
 .react-flow__node:hover > .add-annotation, .react-flow__node:focus-within > .add-annotation { opacity: 1; }
+
+.comment-link { position: absolute; overflow: visible; pointer-events: none; }
+.comment-link path { fill: none; stroke: var(--vscode-descriptionForeground); stroke-width: 1; stroke-dasharray: 4 3; }

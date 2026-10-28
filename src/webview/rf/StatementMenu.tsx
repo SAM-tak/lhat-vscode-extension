@@ -95,6 +95,11 @@ export function StatementButton({ site, append = false, floating = false, axis =
         onOpen={anchor => actions.open(site, anchor)} />;
 }
 
+export function InsertionIcon({ plus = true, axis = "horizontal" }: { plus?: boolean; axis?: "horizontal" | "vertical" }) {
+    return <svg viewBox="0 0 24 24" aria-hidden="true"><path d={plus ? "M 12 6 V 18 M 6 12 H 18"
+        : axis === "horizontal" ? "M 6 9 L 12 15 L 18 9" : "M 9 6 L 15 12 L 9 18"} /></svg>;
+}
+
 export function InsertionButton({ title, append = true, floating = false, axis = "horizontal", style, plus = true, disabled, onOpen }: {
     title: string; append?: boolean; floating?: boolean; axis?: "horizontal" | "vertical"; style?: React.CSSProperties;
     plus?: boolean; disabled?: boolean; onOpen: (anchor: HTMLElement) => void;
@@ -105,8 +110,7 @@ export function InsertionButton({ title, append = true, floating = false, axis =
         onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
         onDoubleClick={event => event.stopPropagation()}
         onClick={event => { event.stopPropagation(); onOpen(event.currentTarget); }}>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d={plus ? "M 12 6 V 18 M 6 12 H 18"
-            : axis === "horizontal" ? "M 6 9 L 12 15 L 18 9" : "M 9 6 L 15 12 L 9 18"} /></svg>
+        <InsertionIcon plus={plus} axis={axis} />
     </button>;
 }
 

@@ -225,6 +225,7 @@ export function graphSvg(flow: HTMLElement, options: SvgExportOptions): string {
         for (const child of node.children) draw(child, group);
         if (!group.querySelector("rect, path, text, circle, polygon")) continue;
         bounds(node.getBoundingClientRect());
+        for (const path of node.querySelectorAll<SVGGraphicsElement>(".comment-link path")) bounds(path.getBoundingClientRect());
         if (options.controls) for (const button of node.querySelectorAll(".statement-button, .foldbtn")) bounds(button.getBoundingClientRect());
         parts.push({ element: group, z: px(style(node).zIndex), order: parts.length });
     }

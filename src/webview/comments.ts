@@ -1,4 +1,5 @@
-import { annotationOwners, annotationOwnerKey } from "../graphAnnotations";
+import { annotationPresentation } from "./annotations";
+import { annotationOwners, annotationOwnerKey, annotationArguments } from "../graphAnnotations";
 import type { AstNode, AstReply } from "../protocol";
 import type { ElkNode, MapOptions } from "./map";
 import { labelColumns } from "./labels";
@@ -35,10 +36,12 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
                 ? matches.find(box => box.lhat?.definitionRole === "row") ?? owner : owner;
             const foldKey = `annotations:${node.kind}:${node.start}:${node.end}`;
             const collapsed = options.folds?.[foldKey] ?? options.collapseAll === true;
+            const rows = sites.map(site => annotationPresentation(site,
+                reply.annotationChoices?.find(choice => choice.name === annotationArguments(site.text).name), options.vocabulary));
             sideNotes.set(target, {
                 id: `annotations__${serial++}`, labels: [{ text: sites.map(a => a.text.replace(/^@/, "")).join("\n") }],
-                width: px(collapsed ? 180 : Math.min(440, Math.max(180, ...sites.map(a => labelColumns(a.text) * 7.2 + 64)))) + 2,
-                height: px(collapsed ? 36 : 36 + sites.length * 30 + (annotationOwner.canAdd ? 28 : 0)) + 2,
+                width: px(collapsed ? 128 : Math.max(128, ...rows.map(row => row.width + 16))) + 2,
+                height: px(collapsed ? 30 : 30 + rows.reduce((sum, row) => sum + row.height, 0) + (annotationOwner.canAdd ? 22 : 0)) + 2,
                 lhat: { kind: "annotation-list", start: node.start, end: node.end,
                     annotationList: { ...annotationOwner, annotations: sites }, noExecutionHandles: true,
                     foldable: true, foldKey, collapsed, commentOwner: `${node.kind} (${node.line}:${node.column})` },
@@ -89,6 +92,25 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
     // Reserve the space in the layout so preceding siblings stay clear too.
     const commentBand = (comments: ElkNode[]) => comments.length
         ? comments.reduce((sum, comment) => sum + comment.height! + gap, 0) + px(16) : 0;
+    const linkGutter = (comments: ElkNode[]) => comments.length > 1 ? px(8 + comments.length * 4) : 0;
+    const linkComments = (comments: ElkNode[], owner: ElkNode): void => {
+        const left = Math.min(...comments.map(comment => comment.x!));
+        comments.forEach((comment, index) => {
+            const x = owner.x! + (owner.lhat?.synthetic === "start" ? owner.width! / 2
+                : Math.min(owner.width! / 4, px(12 + index * 4))) - comment.x!;
+            const y = owner.y! - comment.y!;
+            const approach = y - px(6);
+            if (comments.length > 1) {
+                // Route around intervening comments rather than through them.
+                const rail = left - px(8 + index * 4) - comment.x!;
+                comment.lhat!.commentLink = [{ x: 0, y: comment.height! / 2 }, { x: rail, y: comment.height! / 2 },
+                    { x: rail, y: approach }, { x, y: approach }, { x, y }];
+            } else {
+                const from = Math.max(px(8), Math.min(comment.width! - px(8), x));
+                comment.lhat!.commentLink = [{ x: from, y: comment.height! }, { x: from, y: approach }, { x, y: approach }, { x, y }];
+            }
+        });
+    };
     const pack = (parent: ElkNode): void => {
         const originalWidth = parent.width ?? 0, originalHeight = parent.height ?? 0;
         const entries = (parent.children ?? []).map(child => {
@@ -96,7 +118,7 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
             pack(child);
             const comments = (attached.get(child) ?? []).sort((a, b) => a.lhat!.start - b.lhat!.start);
             const band = commentBand(comments);
-            const width = Math.max(child.width ?? 0, ...comments.map(comment => comment.width!));
+            const width = Math.max(child.width ?? 0, ...comments.map(comment => comment.width!)) + 2 * linkGutter(comments);
             const side = sideNotes.get(child), sideWidth = side ? side.width! + px(24) : 0;
             return { child, old, comments, side, sideWidth, band, contentWidth: width, width: width + sideWidth,
                 height: Math.max(child.height ?? 0, side?.height ?? 0) + band, x: old.x, y: old.y };
@@ -134,6 +156,7 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
                 comment.lhat!.commentAnchor = { id: child.id, dy: top - child.y };
                 top += comment.height! + gap;
             }
+            linkComments(comments, child);
             growX = Math.max(growX, x + width - old.x - old.w);
             growY = Math.max(growY, y + height - old.y - old.h);
         }
@@ -150,13 +173,21 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
     // The view root has no rendered box; its comments precede its contents.
     const rootComments = attached.get(graph) ?? [];
     const band = commentBand(rootComments);
-    graph.width = Math.max(graph.width ?? 0, ...rootComments.map(comment => comment.width!));
+    graph.width = Math.max(graph.width ?? 0, ...rootComments.map(comment => comment.width! + 2 * linkGutter(rootComments)));
     for (const child of graph.children ?? []) child.y = (child.y ?? 0) + band;
     let y = 0;
     for (const comment of rootComments) {
         comment.x = ((graph.width ?? 0) - comment.width!) / 2;
         comment.y = y;
         y += comment.height! + gap;
+    }
+    // A drilled/root scope has no frame; use its execution entry when present.
+    const entry = graph.children?.find(child => child.lhat?.synthetic === "start");
+    if (entry) {
+        for (const comment of rootComments) comment.lhat!.commentAnchor = {
+            id: entry.id, dx: comment.x! - entry.x!, dy: comment.y! - entry.y!,
+        };
+        linkComments(rootComments, entry);
     }
     graph.children = [...rootComments, ...graph.children ?? []];
     graph.height = (graph.height ?? 0) + band;

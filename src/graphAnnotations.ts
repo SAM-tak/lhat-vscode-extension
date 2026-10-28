@@ -16,6 +16,21 @@ export function annotationArguments(text: string): { name: string; arguments?: s
     return { name, arguments: open < 0 ? undefined : text.slice(open + 1, text.lastIndexOf(")")) };
 }
 
+/** Source spans for individual arguments; quoted commas remain inside a value. */
+export function annotationArgumentSpans(text: string): (SourceSpan & { text: string })[] {
+    const open = text.indexOf("("), close = text.lastIndexOf(")");
+    if (open < 0 || close < open) return [];
+    const tokens = syntaxTokens(text, open + 1, close), result: (SourceSpan & { text: string })[] = [];
+    let start = open + 1;
+    for (const end of [...tokens.filter(token => token.text === ",").map(token => token.start), close]) {
+        const value = tokens.filter(token => token.start >= start && token.end <= end);
+        if (value.length) result.push({ start: value[0].start, end: value[value.length - 1].end,
+            text: text.slice(value[0].start, value[value.length - 1].end) });
+        start = end + 1;
+    }
+    return result;
+}
+
 export function parseAnnotationCatalog(value: unknown): AnnotationChoice[] {
     if (!value || typeof value !== "object" || !Array.isArray((value as { annotations?: unknown }).annotations)) return [];
     const choices: AnnotationChoice[] = [];
