@@ -33,7 +33,7 @@ async function tokenize(source) {
 const withScope = (tokens, scope) => tokens.filter(t => t.scopes.includes(scope)).map(t => t.text);
 
 test('enum keyword, declaration name, members and values receive separate scopes', async () => {
-    const tokens = await tokenize(fs.readFileSync(path.join(__dirname, 'enum.lh'), 'utf8'));
+    const tokens = await tokenize(fs.readFileSync(path.join(__dirname, '../testing/enum.lh'), 'utf8'));
     assert(withScope(tokens, 'keyword.other.declaration.lhat').includes('enum'));
     assert(withScope(tokens, 'punctuation.definition.hat.lhat').includes('^'));
     assert.deepEqual(withScope(tokens, 'entity.name.type.enum.lhat'), ['Mode']);

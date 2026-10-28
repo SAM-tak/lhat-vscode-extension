@@ -179,6 +179,9 @@ npm run test:lhat -- /path/to/rebuilt/lhat
 products. The runtime checks cover dense sequences, inclusive ranges, string
 positions, variadic arguments, enum numbers and regex capture groups.
 
+`testing/` contains the manual Extension Development Host environment and L^
+samples. Automated tests and their helpers live in `tests/`.
+
 `npm test` includes SVG saving tests. `npm run test:svg` additionally checks the
 export in a real browser; set `LHAT_TEST_BROWSER` to a Chrome/Edge executable if
 it is not installed in a standard location. This checks offscreen content,

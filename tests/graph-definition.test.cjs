@@ -1,4 +1,4 @@
-// Run with: node --test testing/graph-definition.test.cjs
+// Run with: node --test tests/graph-definition.test.cjs
 // AST fixtures keep these layout regressions independent of a local lhatls.
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
