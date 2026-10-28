@@ -398,7 +398,8 @@
           {
             "scope": "keyword.operator.spread.lhat",
             "settings": {
-              "foreground": "#C586C0"
+              "foreground": "#C586C0",
+              "fontStyle": "bold"
             }
           },
           {
