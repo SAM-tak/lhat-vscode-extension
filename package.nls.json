@@ -6,5 +6,6 @@
     "graph.toggleStatement": "Toggle statement enabled",
     "graph.toggleFold": "Toggle Fold/Unfold",
     "graph.language.auto": "Follow VS Code",
-    "graph.language.description": "Display language for translated labels in the visual editor. Auto follows VS Code. Changes apply to open graphs without restarting; VS Code menus and settings keep their own language."
+    "graph.language.description": "Display language for translated labels in the visual editor. Auto follows VS Code. Changes apply to open graphs without restarting; VS Code menus and settings keep their own language.",
+    "graph.addAnnotation": "Add annotation"
 }

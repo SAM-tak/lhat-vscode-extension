@@ -17,6 +17,8 @@ import { referenceFromGraph } from "./graphReference";
 import { applyTypeFromGraph, removeTypeFromGraph, typeOptionsFromGraph, type TypeSelection } from "./graphTypeEditor";
 import { reorderFromGraph } from "./graphReorderEditor";
 import { editStatementFromGraph } from "./graphStatementEditor";
+import { annotationOwners } from "./graphAnnotations";
+import { readAnnotationCatalog } from "./graphAnnotationCatalog";
 import { graphTreeForDocument } from "./graphSource";
 import { saveGraphSvg } from "./graphSvg";
 
@@ -33,6 +35,8 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
     private readonly panels = new Map<string, Set<vscode.WebviewPanel>>();
     private readonly statementEditors = new Map<vscode.WebviewPanel, (message: StatementRequest) => void>();
 
+    private readonly annotationAdders = new Map<vscode.WebviewPanel, (context: Record<string, unknown>) => Promise<void>>();
+
     /** Native webview context menus carry the exact clicked statement, not a text-editor selection. */
     public toggleStatement(context: Record<string, unknown> | undefined): void {
         if (!context || typeof context.lhatGraphUri !== "string" ||
@@ -43,6 +47,15 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
         if (panel) this.statementEditors.get(panel)?.({ type: "toggleStatement", id: `toggle-${Date.now()}`,
             start: context.lhatStatementStart as number, end: context.lhatStatementEnd as number,
             version: context.lhatGraphVersion as number });
+    }
+
+    public async addAnnotation(context: Record<string, unknown> | undefined): Promise<void> {
+        if (!context || context.lhatCanAddAnnotation !== true || typeof context.lhatGraphUri !== "string" ||
+            !Number.isInteger(context.lhatAnnotationStart) || !Number.isInteger(context.lhatAnnotationEnd) ||
+            typeof context.lhatAnnotationKind !== "string" || !Number.isInteger(context.lhatGraphVersion)) return;
+        const panels = [...this.panels.get(context.lhatGraphUri) ?? []];
+        const panel = panels.find(panel => panel.active) ?? panels[0];
+        if (panel) await this.annotationAdders.get(panel)?.(context);
     }
 
     public toggleFold(context: Record<string, unknown> | undefined): void {
@@ -150,13 +163,18 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
                     textDocument: { uri: document.uri.toString() },
                 });
                 if (disposed || revision !== treeRevision || document.version !== version) return;
+                const annotationChoices = await readAnnotationCatalog(document);
+                if (disposed || revision !== treeRevision || document.version !== version) return;
+                if (reply && annotationChoices !== undefined) reply.annotationChoices = annotationChoices;
                 const matched = reply === null ? undefined : graphTreeForDocument(reply, document.getText());
-                currentTree = matched ?? reply ?? undefined;
+                // Only a tree matching the live TextDocument may supply labels,
+                // annotation ownership or candidates. The checker may lag behind
+                // unsaved edits; never republish its previous source as current.
+                currentTree = matched;
                 const fresh = matched !== undefined;
-                post(reply === null
+                post(matched === undefined
                     ? { type: "pending" }
-                    : { type: "tree", reply: matched ?? reply, uri: document.uri.toString(),
-                        version: fresh ? version : undefined });
+                    : { type: "tree", reply: matched, uri: document.uri.toString(), version });
                 if (fresh) treeRetryDelay = 100;
                 else {
                     // didChange only queues checking. Its immediate AST may
@@ -200,11 +218,25 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
             }).finally(() => { editingStatement = false; });
         };
         this.statementEditors.set(panel, editStatement);
+        this.annotationAdders.set(panel, async context => {
+            const tree = currentTree, version = context.lhatGraphVersion as number;
+            const check = () => {
+                if (disposed || !tree || document.version !== version || document.getText() !== tree.source || editingStatement)
+                    throw new Error(vscode.l10n.t("The source changed. Try again in the updated graph."));
+            };
+            check();
+            const owner = annotationOwners(tree!).find(o => o.start === context.lhatAnnotationStart &&
+                o.end === context.lhatAnnotationEnd && o.kind === context.lhatAnnotationKind && o.canAdd);
+            if (!owner) return;
+            post({ type: "showAnnotations", ownerStart: owner.start, ownerEnd: owner.end, ownerKind: owner.kind, version });
+        });
 
         // Start a new snapshot request on edits; send() follows the checker
         // until it catches up, even when diagnostics themselves don't change.
         const changed = vscode.workspace.onDidChangeTextDocument((event) => {
             if (initialTreeRequested && event.document.uri.toString() === document.uri.toString()) {
+                currentTree = undefined;
+                post({ type: "pending" });
                 treeRetryDelay = 100;
                 void send();
             }
@@ -221,6 +253,7 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
             changed.dispose();
             configurationChanged.dispose();
             this.statementEditors.delete(panel);
+            this.annotationAdders.delete(panel);
             open.delete(panel);
             if (open.size === 0) this.panels.delete(key);
         });

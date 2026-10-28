@@ -148,7 +148,7 @@ export function graphSvg(flow: HTMLElement, options: SvgExportOptions): string {
     };
     const draw = (source: Element, parent: Element): void => {
         if (source.matches(".react-flow__handle, .node-reorder") ||
-            (!options.controls && source.matches(".foldbtn, .statement-button, .add-node"))) return;
+            (!options.controls && source.matches(".foldbtn, .statement-button, .add-node, .add-annotation, .annotation-footer, .annotation-delete"))) return;
         const css = style(source), rect = source.getBoundingClientRect();
         if (css.display === "none" || css.visibility === "hidden" || css.opacity === "0") return;
         if (source instanceof SVGGraphicsElement) { vector(source, parent); return; }
@@ -169,6 +169,12 @@ export function graphSvg(flow: HTMLElement, options: SvgExportOptions): string {
         }
         let content: Element = group;
         if (["hidden", "auto", "scroll"].includes(css.overflowX) || ["hidden", "auto", "scroll"].includes(css.overflowY)) content = clip(group, rect, radius);
+        if (source instanceof HTMLSelectElement) {
+            const { ascent, descent } = fontMetrics(css);
+            const value = source.selectedOptions[0]?.textContent?.trim() ?? "";
+            text(value, rect.left + px(css.paddingLeft), rect.top + rect.height / 2 + (ascent - descent) / 2, css, clip(content, rect));
+            return;
+        }
         if (source instanceof HTMLInputElement || source instanceof HTMLTextAreaElement) {
             const left = rect.left + px(css.borderLeftWidth) + px(css.paddingLeft);
             const top = rect.top + px(css.borderTopWidth) + px(css.paddingTop);

@@ -698,28 +698,34 @@ textarea.literal-input {
 .box.operand-slot { border-radius: calc(15px * var(--lhat-scale)); }
 
 .box.annotation-box {
-    padding-right: calc(70px * var(--lhat-scale));
+    overflow: visible;
+    padding: calc(4px * var(--lhat-scale)) calc(8px * var(--lhat-scale));
     border-style: solid;
     border-color: var(--vscode-editorWarning-foreground, #cca700);
+    background: color-mix(in srgb, var(--vscode-editor-background) 80%, transparent);
     box-shadow: 0 3px 8px #0003;
+    white-space: normal;
 }
-.box.annotation-box::after {
-    content: "";
-    position: absolute;
-    bottom: calc(-5px * var(--lhat-scale));
-    left: calc(50% - 4px * var(--lhat-scale));
-    width: calc(8px * var(--lhat-scale));
-    height: calc(8px * var(--lhat-scale));
-    background: var(--vscode-editor-background);
-    border-right: 1px solid var(--vscode-editorWarning-foreground, #cca700);
-    border-bottom: 1px solid var(--vscode-editorWarning-foreground, #cca700);
-    transform: rotate(45deg);
-}
-.annotation-actions { position: absolute; right: calc(22px * var(--lhat-scale)); top: calc(5px * var(--lhat-scale)); display: flex; }
-.annotation-actions button, .add-annotation { font: inherit; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); border: 0; cursor: pointer; }
-.add-annotation { position: absolute; right: calc(24px * var(--lhat-scale)); top: calc(-17px * var(--lhat-scale)); opacity: 0; z-index: 2; }
-.box:hover > .add-annotation, .box:focus-within > .add-annotation, .add-annotation:focus { opacity: 1; }
-.annotation-backdrop { position: fixed; inset: 0; z-index: 100000; background: #0004; display: grid; place-items: center; }
-.annotation-editor { width: min(480px, calc(100vw - 32px)); padding: 16px; display: grid; gap: 12px; background: var(--vscode-editorWidget-background); color: var(--vscode-editorWidget-foreground); border: 1px solid var(--vscode-widget-border); box-shadow: 0 4px 16px #0006; }
-.annotation-editor textarea { box-sizing: border-box; width: 100%; min-height: 100px; resize: vertical; font-family: monospace; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); }
-.annotation-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.annotation-link { position: absolute; top: calc(16px * var(--lhat-scale)); left: 100%; width: calc(24px * var(--lhat-scale)); height: 2px; overflow: visible; pointer-events: none; }
+.annotation-link path { stroke: var(--vscode-editorWarning-foreground, #cca700); stroke-width: 1; fill: none; }
+.annotation-header { height: calc(26px * var(--lhat-scale)); padding-right: calc(20px * var(--lhat-scale)); white-space: nowrap; }
+.annotation-row { position: relative; display: flex; align-items: center; gap: calc(4px * var(--lhat-scale)); height: calc(30px * var(--lhat-scale)); }
+.annotation-picker { position: relative; display: inline-flex; min-width: 0; }
+.annotation-picker select { font: inherit; color: inherit; background: transparent; border: 0; cursor: pointer; max-width: 100%; }
+.annotation-name { color: #d8cd6d; flex: 0 1 auto; max-width: 55%; }
+.annotation-name:only-child { max-width: 100%; }
+.annotation-name select { appearance: none; text-overflow: ellipsis; }
+.annotation-name select:hover, .annotation-name select:focus { background: var(--vscode-list-hoverBackground); }
+.annotation-picker option { color: #d8cd6d; background: var(--vscode-dropdown-background); }
+.annotation-parameters { position: relative; display: inline-flex; align-items: center; flex: 1; min-width: 0; }
+.annotation-arguments { font: inherit; color: var(--vscode-input-foreground); background: transparent; border: 1px solid transparent; border-radius: 3px; padding: 1px 2px; width: 100%; min-width: 2ch; }
+.annotation-arguments:hover, .annotation-arguments:focus { background: var(--vscode-input-background); border-color: var(--vscode-focusBorder); }
+.annotation-arguments[aria-invalid="true"] { border-color: var(--vscode-inputValidation-errorBorder); }
+.annotation-delete { margin-left: auto; flex-shrink: 0; }
+.annotation-delete { font: inherit; color: inherit; background: transparent; border: 0; cursor: pointer; }
+.annotation-footer { height: calc(28px * var(--lhat-scale)); display: flex; justify-content: center; align-items: center; }
+.annotation-add select { appearance: none; border: 1px solid var(--vscode-descriptionForeground); border-radius: 50%; text-align: center; text-align-last: center; width: calc(20px * var(--lhat-scale)); height: calc(20px * var(--lhat-scale)); padding: 0; }
+.annotation-error { position: absolute; top: 100%; left: 0; z-index: 5; padding: 4px; color: var(--vscode-errorForeground); background: var(--vscode-editorWidget-background); min-width: 180px; }
+.annotation-unit-add { display: inline-flex; align-items: center; }
+.add-annotation { font: inherit; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); border: 1px solid var(--vscode-descriptionForeground); border-radius: 50%; width: calc(20px * var(--lhat-scale)); height: calc(20px * var(--lhat-scale)); padding: 0; cursor: pointer; position: absolute; right: calc(24px * var(--lhat-scale)); top: calc(-20px * var(--lhat-scale)); opacity: 0; z-index: 2; }
+.react-flow__node:hover > .add-annotation, .react-flow__node:focus-within > .add-annotation { opacity: 1; }

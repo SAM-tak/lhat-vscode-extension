@@ -1,8 +1,63 @@
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
-import { syntaxTokens } from "./graphSyntax";
+import { resultTypes, syntaxTokens } from "./graphSyntax";
 
 export interface AnnotationSite extends SourceSpan { ownerStart: number; ownerEnd: number; ownerKind: string; text: string }
-export interface AnnotationOwner extends SourceSpan { kind: string; canAdd: boolean; annotations: AnnotationSite[] }
+export interface AnnotationOwner extends SourceSpan { kind: string; canAdd: boolean; annotations: AnnotationSite[];
+    target: "unit" | "binding" | "field" | "member"; public?: boolean }
+export interface AnnotationChoice { name: string; module?: string; targets?: Record<string, boolean>;
+    parameterTypes?: string[]; variadic?: boolean }
+
+/** Identity for view-only annotation boxes; never serialized into source. */
+export const annotationOwnerKey = (owner: SourceSpan & { kind: string }): string => `${owner.kind}:${owner.start}:${owner.end}`;
+
+export function annotationArguments(text: string): { name: string; arguments?: string } {
+    const name = /^@([\p{L}_][\p{L}\p{N}_]*)/u.exec(text)?.[1] ?? "";
+    const open = text.indexOf("(");
+    return { name, arguments: open < 0 ? undefined : text.slice(open + 1, text.lastIndexOf(")")) };
+}
+
+export function parseAnnotationCatalog(value: unknown): AnnotationChoice[] {
+    if (!value || typeof value !== "object" || !Array.isArray((value as { annotations?: unknown }).annotations)) return [];
+    const choices: AnnotationChoice[] = [];
+    for (const entry of (value as { annotations: unknown[] }).annotations) {
+        if (!entry || typeof entry !== "object") continue;
+        const item = entry as Record<string, unknown>;
+        if (typeof item.name !== "string" || !/^[\p{L}_][\p{L}\p{N}_]*$/u.test(item.name) ||
+            !item.targets || typeof item.targets !== "object") continue;
+        const choice: AnnotationChoice = { name: item.name, module: typeof item.module === "string" ? item.module : undefined,
+            targets: Object.fromEntries(Object.entries(item.targets).map(([k, v]) => [k, v === true])) };
+        if (typeof item.signature === "string") {
+            const tokens = syntaxTokens(item.signature), end = tokens.find(t => t.text === "->" || t.text === ";")?.start;
+            if (["f^", "p^"].includes(tokens[0]?.text) && end !== undefined) {
+                const params = item.signature.slice(tokens[0].end, end).trim();
+                const types = params ? resultTypes(params) : [];
+                choice.parameterTypes = types.filter(t => !t.startsWith("..."));
+                choice.variadic = types.some(t => t.startsWith("..."));
+            }
+        }
+        choices.push(choice);
+    }
+    return choices;
+}
+
+export function annotationChoicesForOwner(tree: AstReply, owner: AnnotationOwner, replacing?: AnnotationSite): AnnotationChoice[] {
+    const choices: AnnotationChoice[] = tree.annotationChoices ?? [...new Map(annotationOwners(tree).flatMap(o => o.annotations)
+        .map(a => { const name = annotationArguments(a.text).name; return [name, { name }] as const; })).values()];
+    const used = owner.annotations.filter(a => a.start !== replacing?.start).map(a => annotationArguments(a.text).name);
+    return choices.filter(c => !used.includes(c.name) && (!c.targets || c.targets[owner.target] ||
+        (owner.target === "binding" && owner.public && c.targets.public))).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function annotationChoiceText(choice: AnnotationChoice, current?: string): string {
+    const previous = current && annotationArguments(current).arguments;
+    if (!choice.parameterTypes) return `@${choice.name}${previous !== undefined ? `(${previous})` : ""}`;
+    const types = choice.parameterTypes;
+    if (!types.length && !choice.variadic) return `@${choice.name}`;
+    const count = previous ? syntaxTokens(previous).filter(t => t.text === ",").length + 1 : 0;
+    const args = previous !== undefined && (count === types.length || (choice.variadic && count >= types.length))
+        ? previous : types.map(type => type.includes("number^") ? "0" : type.includes("bool^") ? "false^" : '""').join(", ");
+    return `@${choice.name}(${args ?? ""})`;
+}
 
 /** Servers may omit annotation lists from their AST visitor. Recover only
  * standalone annotation tokens immediately preceding a supported declaration. */
@@ -13,7 +68,9 @@ export function annotationOwners(tree: AstReply): AnnotationOwner[] {
         if (["string", "interp-text", "disabled"].includes(node.kind)) { literals.push(node); return; }
         if (node === tree.root || node.kind === "define" ||
             (node.kind === "table-entry" && ["self-table", "def"].includes(parent?.kind ?? "")))
-            owners.push({ start: node.start, end: node.end, kind: node.kind, canAdd: true, annotations: [] });
+            owners.push({ start: node.start, end: node.end, kind: node.kind, canAdd: true, annotations: [],
+                target: node === tree.root ? "unit" : node.kind === "define" ? "binding" : parent?.kind === "def" ? "member" : "field",
+                public: node.kind === "define" && /\bpublic\^/.test(tree.source.slice(node.start, Math.min(node.end, node.start + 40))) });
         for (const [field, value] of Object.entries(node.fields ?? {})) {
             if (field === "annotations") continue;
             for (const child of Array.isArray(value) ? value : [value]) visit(child, node);
@@ -80,12 +137,18 @@ export function editAnnotation(tree: AstReply, request: SourceSpan & { ownerStar
     if (value && !validAnnotation(value)) return;
     if (request.add) {
         if (!value || !owner.canAdd) return;
-        const at = owner.annotations[0]?.start ?? owner.start;
-        // The unit starts before its first token (and after a possible BOM).
-        const insert = owner.kind === tree.root.kind && owner.start === tree.root.start ? (tree.source.startsWith("\uFEFF") ? 1 : 0) : at;
+        const unit = owner.kind === tree.root.kind && owner.start === tree.root.start;
+        const last = owner.annotations[owner.annotations.length - 1];
+        // Append before the declaration, leaving existing annotations and their
+        // trailing comments in their original order. Units precede the first code token.
+        const insert = unit ? last ? syntaxTokens(tree.source, last.end)[0]?.start ?? tree.source.length
+            : tree.source.startsWith("\uFEFF") ? 1 : 0 : owner.start;
+        const newline = tree.source.includes("\r\n") ? "\r\n" : "\n";
         const line = tree.source.lastIndexOf("\n", insert - 1) + 1;
-        const indent = /^[\t ]*$/.test(tree.source.slice(line, insert)) ? tree.source.slice(line, insert) : "";
-        return { start: insert, end: insert, text: value + (tree.source.includes("\r\n") ? "\r\n" : "\n") + indent };
+        const before = tree.source.slice(line, insert);
+        const indent = /^[\t ]*$/.test(before) ? before : /^[\t ]*/.exec(before)![0];
+        const prefix = before.trim() ? newline + indent : "";
+        return { start: insert, end: insert, text: prefix + value + newline + indent };
     }
     const site = owner.annotations.find(a => a.start === request.start && a.end === request.end);
     if (!site) return;

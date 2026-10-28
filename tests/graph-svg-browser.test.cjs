@@ -36,13 +36,13 @@ const root = n('block', source, { items: [
     n('define', source.split('\n')[2], { targets: [ident('nested')], values: [n('table', '{2, 3}', { items: [number(2), number(3)] })] }),
     n('define', source.split('\n')[3], { targets: [ident('last', 0, 'string^')], values: [string('日本語 & <text>')] }),
 ] });
-const html = reply => `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'nonce-test'; connect-src 'self'; worker-src blob:;"><style>:root {
+const html = (reply, acknowledgeEdits = true) => `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'nonce-test'; connect-src 'self'; worker-src blob:;"><style>:root {
 --vscode-editor-background:#111314;--vscode-editor-foreground:#ddd;--vscode-editor-font-family:Consolas,monospace;
 --vscode-editorWidget-background:#222;--vscode-editorWidget-border:#333;--vscode-input-background:#151718;
 --vscode-input-foreground:#ddd;--vscode-focusBorder:#58a;--vscode-descriptionForeground:#999;
 }</style><link rel="stylesheet" href="/graph.css"><link rel="stylesheet" href="/bundle.css"><div id="root" data-layout-worker="/layout-worker.js"></div><script nonce="test">
 window.exports=[];window.edits=[];window.acquireVsCodeApi=()=>({getState(){},setState(){},postMessage(m){
-if(m.type==='editInterpolation'||m.type==='editAnnotation'){window.edits.push(m);window.postMessage({type:'statementResult',id:m.id},'*');}
+if(m.type==='editInterpolation'||m.type==='editAnnotation'){window.edits.push(m);${acknowledgeEdits ? "window.postMessage({type:'statementResult',id:m.id},'*');" : ''}}
 if(m.type==='saveSvg'){window.exports.push(m);window.postMessage({type:'svgResult',id:m.id},'*');}
 if(m.type==='ready'){window.postMessage({type:'localization',language:'ja',bundle:${JSON.stringify(ja)}},'*');window.postMessage({type:'tree',reply:${JSON.stringify(reply)},uri:'file:///svg-example.lh',version:1},'*');}
 }});</script><script nonce="test" src="/bundle.js"></script>`;
@@ -1089,39 +1089,183 @@ test('reassignment pairs render in vertical rows with matching definition wires 
 });
 
 
-test('annotation popups fold, hide, restore and send versioned edits from a dialog', { timeout: 60000 }, async () => {
-    const reply = require('./annotation-fixture.cjs')();
-    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
-        await until(`document.querySelectorAll('.annotation-box').length===3 && !document.querySelector('.svg-export>button').disabled`);
+test('annotation sidebars group names without @ and support inline arguments, dropdown changes and additions', { timeout: 60000 }, async () => {
+    const fixture = require('./annotation-fixture.cjs');
+    let reply = fixture(), version = 1;
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, call, errors }) => {
+        const ready = `!document.querySelector('.svg-export>button').disabled`;
+        await until(`document.querySelectorAll('.annotation-box').length===2 && ${ready}`);
+        const geometry = await evaluate(`(()=>{
+            const side=document.querySelector('.annotation-box[data-source-start="${reply.source.indexOf('let^')}"]');
+            const owner=document.querySelector('.box:not(.annotation-box)[data-source-start="${reply.source.indexOf('let^')}"]');
+            const a=side.getBoundingClientRect(),b=owner.getBoundingClientRect();
+            return {right:a.right,left:b.left,top:a.top,ownerTop:b.top,rows:side.querySelectorAll('.annotation-row').length,
+                names:[...side.querySelectorAll('.annotation-name select')].map(s=>s.selectedOptions[0].textContent.trim())};
+        })()`);
+        assert(geometry.right < geometry.left, JSON.stringify(geometry));
+        assert.equal(geometry.top, geometry.ownerTop);
+        assert.equal(geometry.rows, 2); assert.deepEqual(geometry.names, ['range', 'label']);
+        const appearance = await evaluate(`(()=>{const box=document.querySelector('.annotation-box'),header=box.querySelector('.annotation-header .semantic-label'),name=document.querySelector('.annotation-name select'),module=document.querySelector('.box:not(.annotation-box) .semantic-label[data-category="module"]');const c=document.createElement('canvas').getContext('2d');c.fillStyle=getComputedStyle(box).backgroundColor;c.fillRect(0,0,1,1);return {heading:header.textContent,color:getComputedStyle(header).color,moduleColor:getComputedStyle(module).color,nameColor:getComputedStyle(name).color,border:getComputedStyle(box).borderTopColor,alpha:c.getImageData(0,0,1,1).data[3]}})()`);
+        assert.equal(appearance.heading, 'アノテーション'); assert.equal(appearance.color, appearance.moduleColor);
+        assert.equal(appearance.nameColor, 'rgb(216, 205, 109)'); assert.equal(appearance.border, 'rgb(204, 167, 0)');
+        assert(appearance.alpha > 0 && appearance.alpha < 255);
+
+        assert.equal(await evaluate(`document.querySelector('.annotation-editor')`), null);
+        if (process.env.LHAT_TEST_SCREENSHOT) fs.writeFileSync(process.env.LHAT_TEST_SCREENSHOT,
+            Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+        await evaluate(`document.querySelector('.svg-export>button').click()`);
+        await until(`document.querySelector('.svg-export-menu>button')`);
+        await evaluate(`document.querySelector('.svg-export-menu>button').click()`);
+        await until(`window.exports.length===1`);
+        const exportedNames = await evaluate(`(()=>{const doc=new DOMParser().parseFromString(window.exports[0].svg,'image/svg+xml');return [...doc.querySelectorAll('text')].map(t=>t.textContent)})()`);
+        assert(exportedNames.includes('range') && exportedNames.includes('label'));
+        assert(!exportedNames.includes('game') && !exportedNames.includes('export_range'), 'export includes selected names, not hidden dropdown options');
+        const setInput = async value => {
+            await evaluate(`(()=>{const input=document.querySelector('.annotation-arguments');input.focus();Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(value)});input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+        };
+        const key = key => call('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: key === 'Enter' ? 13 : 27 });
+        const refresh = async edit => {
+            reply = fixture(reply.source.slice(0, edit.start) + edit.value + (edit.add ? '\n' : '') + reply.source.slice(edit.add ? edit.start : edit.end));
+            version++;
+            await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(reply)},uri:'file:///svg-example.lh',version:${version}},'*')`);
+            await until(`${ready} && document.querySelector('.annotation-box[data-source-start="${reply.source.indexOf('let^')}"][data-source-end="${reply.source.length}"]')`);
+        };
+        await setInput('call()'); await key('Enter');
+        await until(`document.querySelector('.annotation-arguments').getAttribute('aria-invalid')==='true'`);
+        assert.equal(await evaluate(`window.edits.length`), 0);
+        await evaluate(`document.querySelector('.annotation-arguments').focus()`); await key('Escape');
+        assert.equal(await evaluate(`document.querySelector('.annotation-arguments').value`), '0, 100, "a,b"');
+        await setInput('1, 50, "changed"'); await key('Enter');
+        await until(`window.edits.length===1`);
+        let edit = await evaluate(`window.edits[0]`);
+        assert.equal(edit.value, '@range(1, 50, "changed")'); assert.equal(edit.version, version);
+        await refresh(edit);
+        await evaluate(`(()=>{const s=[...document.querySelectorAll('.annotation-name select')].find(s=>s.value==='range');s.value='game';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+        await until(`window.edits.length===2`); edit = await evaluate(`window.edits[1]`);
+        assert.equal(edit.value, '@game'); await refresh(edit);
+        await evaluate(`(()=>{const s=document.querySelector('.annotation-box[data-source-start="${reply.source.indexOf('let^')}"] .annotation-add select');s.value='export_range';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+        await until(`window.edits.length===3`); edit = await evaluate(`window.edits[2]`);
+        assert.equal(edit.value, '@export_range(0, 0)'); assert.equal(edit.add, true); assert.equal(edit.ownerKind, 'define');
+        await refresh(edit);
+        await until(`document.querySelectorAll('.annotation-row').length===4 && ${ready}`);
+        assert.deepEqual(await evaluate(`[...document.querySelectorAll('.annotation-box[data-source-start="${reply.source.indexOf('let^')}"] .annotation-name select')].map(s=>s.value)`), ['game', 'label', 'export_range']);
         await evaluate(`document.querySelector('.annotation-box .foldbtn').click()`);
-        await until(`document.querySelector('.annotation-box .foldbtn').getAttribute('aria-expanded')==='false' && !document.querySelector('.svg-export>button').disabled`);
-        await evaluate(`document.querySelector('.annotation-actions button:last-child').click()`);
-        await until(`document.querySelectorAll('.annotation-box').length===2 && !document.querySelector('.svg-export>button').disabled`);
-        await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent.includes('非表示のアノテーションを再表示')).click()`);
-        await until(`document.querySelectorAll('.annotation-box').length===3 && !document.querySelector('.svg-export>button').disabled`);
-        await evaluate(`document.querySelector('.annotation-actions button').click()`);
-        await until(`document.querySelector('.annotation-editor textarea')`);
-        await evaluate(`(()=>{const input=document.querySelector('.annotation-editor textarea');const set=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;set.call(input,'@renamed(5, "text")');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-        await evaluate(`document.querySelector('.annotation-editor button[type=submit]').click()`);
+        await until(`document.querySelector('.annotation-box .foldbtn').getAttribute('aria-expanded')==='false' && ${ready}`);
+        await evaluate(`document.querySelector('.annotation-row .annotation-delete').click()`);
+        await until(`window.edits.length===4`);
+        assert.equal(await evaluate(`window.edits[3].value`), '');
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('opening an empty annotation box is view-only and its footer selects the first source annotation', { timeout: 60000 }, async () => {
+    const fixture = require('./annotation-fixture.cjs');
+    const reply = fixture('@unit\nmodule^"demo"\nlet^ value = 1'), start = reply.source.indexOf('let^');
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, call, errors }) => {
+        const ready = `!document.querySelector('.svg-export>button').disabled`;
+        await until(`document.querySelector('.add-annotation') && ${ready}`);
+        const context = await evaluate(`JSON.parse(document.querySelector('.add-annotation').parentElement.querySelector('.box').dataset.vscodeContext)`);
+        assert.equal(context.lhatCanAddAnnotation, true);
+        await evaluate(`window.postMessage({type:'showAnnotations',ownerStart:${start},ownerEnd:${reply.source.length},ownerKind:'define',version:1},'*')`);
+        await until(`document.querySelector('.annotation-box[data-source-start="${start}"] .annotation-add select') && ${ready}`);
+        assert.equal(await evaluate(`window.edits.length`), 0);
+        assert.equal(await evaluate(`document.querySelector('.annotation-box[data-source-start="${start}"]').querySelectorAll('.annotation-row').length`), 0);
+        assert.equal(await evaluate(`document.querySelectorAll('.annotation-hide').length`), 0);
+        await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='A+').click()`);
+        await until(`document.querySelector('#flow').style.getPropertyValue('--lhat-scale')!=='1' && ${ready}`);
+        assert.equal(await evaluate(`document.querySelectorAll('.annotation-box').length`), 2);
+        await evaluate(`(()=>{const s=document.querySelector('.annotation-box[data-source-start="${start}"] .annotation-add select');s.value='game';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
         await until(`window.edits.length===1`);
         const edit = await evaluate(`window.edits[0]`);
-        assert.equal(edit.type, 'editAnnotation'); assert.equal(edit.version, 1);
-        assert.equal(edit.value, '@renamed(5, "text")');
-        await until(`!document.querySelector('.annotation-editor')`);
-        await evaluate(`document.querySelector('.annotation-actions button').click()`);
-        await until(`document.querySelector('.annotation-editor')`);
-        await evaluate(`[...document.querySelectorAll('.annotation-editor button')].find(b=>b.textContent==='アノテーションを削除').click()`);
-        await until(`window.edits.length===2 && !document.querySelector('.annotation-editor')`);
-        assert.equal(await evaluate(`window.edits[1].value`), '');
-        assert.equal(await evaluate(`document.querySelectorAll('.add-annotation').length`), 1);
-        await evaluate(`document.querySelector('.add-annotation').click()`);
-        await until(`document.querySelector('.annotation-editor textarea')`);
-        await evaluate(`(()=>{const input=document.querySelector('.annotation-editor textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'@added(1)');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-        await evaluate(`document.querySelector('.annotation-editor button[type=submit]').click()`);
-        await until(`window.edits.length===3`);
-        assert.equal(await evaluate(`window.edits[2].add`), true);
-        assert.equal(await evaluate(`window.edits[2].ownerKind`), 'define');
+        assert.equal(edit.value, '@game'); assert.equal(edit.add, true);
+        assert.equal(reply.source, '@unit\nmodule^"demo"\nlet^ value = 1');
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
 
+test('unsaved annotation deletion refreshes candidates and disables the previous snapshot while checking', { timeout: 60000 }, async () => {
+    const fixture = require('./annotation-fixture.cjs');
+    const saved = fixture('@unit\nmodule^"demo"\n@game @export_class\nlet^ value = 1');
+    const unsaved = fixture(saved.source.replace('@game @export_class\n', ''));
+    await browser({ ...routes, '/': { type: 'text/html', body: html(saved) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelectorAll('.annotation-row').length===3 && !document.querySelector('.svg-export>button').disabled`);
+        await evaluate(`window.postMessage({type:'pending'},'*')`);
+        await until(`[...document.querySelectorAll('.annotation-picker select')].every(s=>s.disabled)`);
+        assert.equal(await evaluate(`window.edits.length`), 0);
+        await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(unsaved)},uri:'file:///svg-example.lh',version:2},'*')`);
+        await until(`document.querySelector('.add-annotation') && !document.querySelector('.add-annotation').disabled && !document.querySelector('.svg-export>button').disabled`);
+        await evaluate(`document.querySelector('.add-annotation').click()`);
+        await until(`document.querySelector('.annotation-box[data-source-start="${unsaved.source.indexOf('let^')}"] .annotation-add select') && !document.querySelector('.svg-export>button').disabled`);
+        const names = await evaluate(`[...document.querySelector('.annotation-box[data-source-start="${unsaved.source.indexOf('let^')}"] .annotation-add select').options].map(o=>o.value)`);
+        assert(names.includes('game') && names.includes('export_class'));
+        await evaluate(`(()=>{const s=document.querySelector('.annotation-box[data-source-start="${unsaved.source.indexOf('let^')}"] .annotation-add select');s.value='game';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+        await until(`window.edits.length===1`);
+        assert.equal(await evaluate(`window.edits[0].version`), 2);
+        assert.equal(await evaluate(`window.edits[0].value`), '@game');
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+test('individual annotation deletion updates the live text and removes its box only at zero entries', { timeout: 60000 }, async () => {
+    const fixture = require('./annotation-fixture.cjs');
+    const initial = fixture(), savedText = initial.source;
+    let source = savedText, version = 1;
+    const history = [], applied = [];
+    await browser({ ...routes, '/': { type: 'text/html', body: html(initial, false) } }, async ({ evaluate, until, errors }) => {
+        const document = { uri: 'file:live-annotations', get version() { return version; }, get isDirty() { return source !== savedText; },
+            getText: () => source, positionAt: character => ({ line: 0, character }), save: () => { throw Error('must not save'); } };
+        const vscode = { l10n: { t: text => text }, Range: class { constructor(start, end) { Object.assign(this, { start, end }); } },
+            WorkspaceEdit: class { changes = []; replace(uri, range, text) { this.changes.push({ range, text }); } },
+            workspace: { applyEdit: async edit => {
+                history.push(source); applied.push(edit);
+                for (const change of [...edit.changes].sort((a, b) => b.range.start.character - a.range.start.character))
+                    source = source.slice(0, change.range.start.character) + change.text + source.slice(change.range.end.character);
+                version++;
+                await evaluate(`window.postMessage({type:'pending'},'*')`);
+                return true;
+            } } };
+        const entry = path.resolve(__dirname, '../src/graphStatementEditor.ts'), mod = new (require('node:module'))(entry);
+        mod.require = name => name === 'vscode' ? vscode : require(name);
+        mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', external: ['vscode'], write: false }).outputFiles[0].text, entry);
+        const { editStatementFromGraph } = mod.exports;
+        const ready = `!document.querySelector('.svg-export>button').disabled`;
+        await until(`document.querySelectorAll('.annotation-box').length===2 && ${ready}`);
+        for (const [index, name] of ['range', 'label'].entries()) {
+            const tree = fixture(source), before = source;
+            await evaluate(`[...document.querySelectorAll('.annotation-row')].find(row=>row.querySelector('select')?.value===${JSON.stringify(name)}).querySelector('.annotation-delete').click()`);
+            await until(`window.edits.length===${index + 1}`);
+            const message = await evaluate(`window.edits[${index}]`);
+            assert.equal(message.type, 'editAnnotation'); assert.equal(message.value, '');
+            assert.equal(source, before, 'clicking cannot remove the display before a successful text edit');
+            assert.equal(await evaluate(`document.querySelectorAll('.annotation-box').length`), 2);
+            await editStatementFromGraph(document, tree, message, undefined, () => true);
+            assert.equal(applied.length, index + 1); assert.equal(applied[index].changes.length, 1);
+            assert.equal(document.isDirty, true);
+            assert(!source.includes(`@${name}`)); assert(source.includes('@unit') && source.includes('let^ value = 1'));
+            const updated = fixture(source);
+            await evaluate(`window.postMessage({type:'statementResult',id:${JSON.stringify(message.id)}},'*');window.postMessage({type:'tree',reply:${JSON.stringify(updated)},uri:'file:///svg-example.lh',version:${version}},'*')`);
+            await until(`document.querySelectorAll('.annotation-row').length===${2 - index} && ${ready}`);
+        }
+        assert.equal(await evaluate(`document.querySelectorAll('.annotation-box').length`), 1, 'the empty declaration sidebar disappears');
+        await evaluate(`document.querySelector('.add-annotation').click()`);
+        await until(`document.querySelector('.annotation-box[data-source-start="${source.indexOf('let^')}"] .annotation-add select') && ${ready}`);
+        assert.equal(await evaluate(`window.edits.length`), 2, 'opening the empty box must not edit source');
+        const names = await evaluate(`[...document.querySelector('.annotation-box[data-source-start="${source.indexOf('let^')}"] .annotation-add select').options].map(o=>o.value)`);
+        assert(names.includes('range') && names.includes('label'));
+        await evaluate(`(()=>{const s=document.querySelector('.annotation-box[data-source-start="${source.indexOf('let^')}"] .annotation-add select');s.value='game';s.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+        await until(`window.edits.length===3`);
+        const addition = await evaluate(`window.edits[2]`);
+        await editStatementFromGraph(document, fixture(source), addition, undefined, () => true);
+        assert.equal(applied.length, 3); assert(source.includes('@game')); assert(document.isDirty);
+        await evaluate(`window.postMessage({type:'statementResult',id:${JSON.stringify(addition.id)}},'*');window.postMessage({type:'tree',reply:${JSON.stringify(fixture(source))},uri:'file:///svg-example.lh',version:${version}},'*')`);
+        await until(`document.querySelectorAll('.annotation-row').length===2 && ${ready}`);
+        for (const expectedRows of [1, 2, 3]) {
+            source = history.pop(); version++;
+            await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(fixture(source))},uri:'file:///svg-example.lh',version:${version}},'*')`);
+            await until(`document.querySelectorAll('.annotation-row').length===${expectedRows} && ${ready}`);
+            assert.equal(await evaluate(`document.querySelectorAll('.annotation-box').length`), expectedRows === 1 ? 1 : 2);
+        }
+        assert.equal(source, savedText); assert.equal(document.isDirty, false);
         assert.equal(errors.length, 0, JSON.stringify(errors));
     });
 });

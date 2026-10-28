@@ -267,15 +267,12 @@
     "Any bit set": "いずれかのビットが立つ",
     "Bit at position": "指定位置のビット",
     "Is integer": "整数か",
-    "Edit annotation": "アノテーションを編集",
-    "Hide annotation": "アノテーションを非表示",
     "Add annotation": "アノテーションを追加",
     "Add unit annotation": "単位のアノテーションを追加",
-    "Show hidden annotations": "非表示のアノテーションを再表示",
-    "Annotation name and arguments": "アノテーション名と引数",
-    "Enter @name or @name(arguments). Arguments must be literals or names.": "@名前 または @名前(引数) を入力してください。引数にはリテラルまたは名前を指定します。",
-    "Example: @export_range(0, 100). Edit the name and add, remove or change arguments here.": "例: @export_range(0, 100)。名前の変更、引数の追加・削除・値の変更ができます。",
     "Delete annotation": "アノテーションを削除",
-    "Cancel": "キャンセル",
-    "Save": "保存"
+    "Annotations": "アノテーション",
+    "Change annotation": "アノテーションを変更",
+    "Annotation arguments must be literals or names.": "引数にはリテラルまたは名前を指定してください。",
+    "Annotation arguments for {0}": "{0} のアノテーション引数",
+    "Edit arguments. Enter saves; Escape cancels.": "引数を編集。Enter で保存、Escape でキャンセル。"
 }

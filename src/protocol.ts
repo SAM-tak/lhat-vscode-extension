@@ -51,6 +51,8 @@ export interface AstComment {
 }
 
 export interface AstReply {
+    /** Host registrations used by the graph annotation picker. */
+    annotationChoices?: import("./graphAnnotations").AnnotationChoice[];
     /** The whole unit. Every position above indexes into this. */
     source: string;
     root: AstNode;
@@ -89,6 +91,7 @@ export type ToWebview =
     | { type: "reorderResult"; id: string; error?: string }
     | { type: "statementResult"; id: string; error?: string }
     | { type: "svgResult"; id: string; error?: string }
+    | { type: "showAnnotations"; ownerStart: number; ownerEnd: number; ownerKind: string; version: number }
     | { type: "toggleFold"; key: string; version: number }
     | { type: "referenceResult"; id: string; version: number; target?: ReferenceTarget }
     /** The unit is not part of any checked root yet (06 の 4.3). */

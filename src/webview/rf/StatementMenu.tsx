@@ -1,3 +1,4 @@
+import type { AnnotationOwner } from "../../graphAnnotations";
 import React, { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as l10n from "@vscode/l10n";
@@ -13,7 +14,7 @@ type Picker = { id: string; site?: InsertionSite; operator?: OperatorSite; ancho
     choices: StatementTemplate[]; saving?: boolean; error?: string };
 const Statements = createContext({
     version: undefined as number | undefined,
-    context: (_site?: StatementSite, _fold?: FoldContext): string | undefined => undefined,
+    context: (_site?: StatementSite, _fold?: FoldContext, _annotation?: AnnotationOwner): string | undefined => undefined,
     open: (_site: InsertionSite, _anchor: HTMLElement) => {},
     operator: (_site: OperatorSite, _anchor: HTMLElement) => {},
     interpolation: (_site: InterpolationSite, _anchor: HTMLElement) => {},
@@ -73,9 +74,11 @@ export function StatementProvider({ value, children }: { value: Host; children: 
         ] });
     };
     return <Statements.Provider value={{ version: value.version, open, operator, interpolation,
-        context: (site, fold) => JSON.stringify({ webviewSection: "statement", lhatStatement: !!site && value.version !== undefined,
+        context: (site, fold, annotation) => JSON.stringify({ webviewSection: "statement", lhatStatement: !!site && value.version !== undefined,
             lhatGraphUri: value.uri, lhatGraphVersion: value.version, lhatStatementStart: site?.start, lhatStatementEnd: site?.end,
-            lhatFoldable: !!fold?.foldable && !!fold.foldKey && value.version !== undefined, lhatFoldKey: fold?.foldKey }) }}>
+            lhatFoldable: !!fold?.foldable && !!fold.foldKey && value.version !== undefined, lhatFoldKey: fold?.foldKey,
+            lhatCanAddAnnotation: !!annotation?.canAdd && value.version !== undefined,
+            lhatAnnotationStart: annotation?.start, lhatAnnotationEnd: annotation?.end, lhatAnnotationKind: annotation?.kind }) }}>
         {children}
         {picker && createPortal(<TemplateMenu key={picker.id} picker={picker} close={close} select={select} />, document.body)}
     </Statements.Provider>;

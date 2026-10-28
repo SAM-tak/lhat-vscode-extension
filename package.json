@@ -264,6 +264,11 @@
         "command": "lhat.graph.toggleFold",
         "title": "%graph.toggleFold%",
         "category": "L^"
+      },
+      {
+        "command": "lhat.graph.addAnnotation",
+        "title": "%graph.addAnnotation%",
+        "category": "L^"
       }
     ],
     "menus": {
@@ -316,6 +321,10 @@
         {
           "command": "lhat.toggleDisabledCode",
           "when": "editorLangId == lhat"
+        },
+        {
+          "command": "lhat.graph.addAnnotation",
+          "when": "false"
         }
       ],
       "webview/context": [
@@ -328,6 +337,11 @@
           "command": "lhat.graph.toggleStatement",
           "when": "webviewId == lhat.graph && lhatStatement",
           "group": "1_edit"
+        },
+        {
+          "command": "lhat.graph.addAnnotation",
+          "when": "webviewId == lhat.graph && lhatCanAddAnnotation",
+          "group": "1_edit@2"
         }
       ]
     },

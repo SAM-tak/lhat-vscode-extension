@@ -229,6 +229,7 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
         vscode.commands.registerCommand("lhat.graph.toggleStatement", context => graphs.toggleStatement(context)),
         vscode.commands.registerCommand("lhat.graph.toggleFold", context => graphs.toggleFold(context)),
+        vscode.commands.registerCommand("lhat.graph.addAnnotation", context => graphs.addAnnotation(context)),
         vscode.window.registerCustomEditorProvider(
             LhatGraphEditorProvider.viewType,
             graphs,

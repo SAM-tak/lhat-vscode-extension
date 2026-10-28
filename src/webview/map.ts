@@ -111,8 +111,8 @@ export interface ElkNode {
         drillTarget?: DrillTarget;
         /** Exact AST owner of a separately displayed comment. */
         commentOwner?: string;
-        annotation?: import("../graphAnnotations").AnnotationSite;
-        commentAnchor?: { id: string; dy: number };
+        annotationList?: import("../graphAnnotations").AnnotationOwner;
+        commentAnchor?: { id: string; dx?: number; dy: number };
         /** Main execution and independently entered exception handlers. */
         catchScope?: boolean;
         operatorExpression?: boolean;
@@ -371,7 +371,7 @@ export interface MapOptions {
      * Source identities survive replacement of the AST objects on refresh.
      */
     folds?: Record<string, boolean>;
-    hiddenAnnotations?: Record<string, boolean>;
+    annotationBoxes?: Record<string, boolean>;
     /** Explicit toolbar Fold All, distinct from the initial definition folds. */
     collapseAll?: boolean;
     /**

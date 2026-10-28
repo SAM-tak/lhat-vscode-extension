@@ -766,10 +766,13 @@ test('language changes update open graphs without rereading the AST, and listene
     assert.equal(host.messages.length, 5, 'unrelated configuration changes are ignored');
     host.edit(); await flush();
     assert.equal(host.requests, 2, 'source editing still refreshes the AST');
+    assert.deepEqual(host.messages.slice(-2).map(message => message.type), ['pending', 'tree'],
+        'live edits invalidate the previous graph before publishing the matching snapshot');
+    const beforeClose = host.messages.length;
     host.close();
     assert.equal(host.subscriptionsDisposed, 2);
     host.change('ja'); await flush();
-    assert.equal(host.messages.length, 6, 'closed views receive no updates');
+    assert.equal(host.messages.length, beforeClose, 'closed views receive no updates');
 });
 
 test('a slow bundle cannot overwrite a newer language or publish a tree before the latest language', async () => {

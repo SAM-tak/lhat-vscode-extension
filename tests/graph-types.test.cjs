@@ -301,8 +301,8 @@ test('type edits catch up with the checked source and re-enable further selectio
             h.receive({ type: 'chooseType', id, version: h.document.version, start: 4, end: 9 });
             await waitFor(() => h.messages.some(m => m.type === 'typeOptions' && m.id === id && m.candidates));
             h.receive({ type: 'applyType', id, typeText }); await new Promise(setImmediate);
-            assert.equal(h.messages.filter(m => m.type === 'tree').at(-1).version, undefined,
-                'the first post-edit reply is deliberately from the previous checker snapshot');
+            assert.equal(h.messages.at(-1).type, 'pending',
+                'a previous checker snapshot is withheld until it matches the live document');
             h.completeCheck();
             await waitFor(() => h.messages.some(m => m.type === 'tree' && m.version === h.document.version));
             assert.equal(h.messages.filter(m => m.type === 'tree').at(-1).reply.source, h.document.getText());
