@@ -9,3 +9,5 @@ bin/
 # change -- generate it rather than track it.
 lhat-host.json
 testing.code-workspace
+AGENT.md
+CLAUDE.md
