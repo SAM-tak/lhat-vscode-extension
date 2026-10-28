@@ -329,7 +329,7 @@
         { "match": "=|<|>", "name": "keyword.operator.comparison.lhat" },
         { "match": "\\?\\?", "name": "keyword.operator.nil-coalescing.lhat" },
         { "match": "\\?\\.|\\?\\(|\\?\\[", "name": "keyword.operator.nil-propagation.lhat" },
-        { "match": "\\.\\.\\.", "name": "keyword.control.lhat" },
+        { "match": "\\.\\.\\.", "name": "keyword.operator.spread.lhat" },
         { "match": "\\.\\.", "name": "keyword.operator.concat.lhat" },
         { "match": "\\*\\*|//", "name": "keyword.operator.arithmetic.lhat" },
         { "match": "[+\\-*/%]", "name": "keyword.operator.arithmetic.lhat" },

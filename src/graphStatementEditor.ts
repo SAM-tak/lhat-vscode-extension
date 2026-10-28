@@ -1,3 +1,4 @@
+import { editAnnotation } from "./graphAnnotations";
 import * as vscode from "vscode";
 import type { LanguageClient } from "vscode-languageclient/node";
 import type { AstReply, FromWebview } from "./protocol";
@@ -5,7 +6,7 @@ import { insertStatementEdit, statementSites } from "./graphStatements";
 import { insertListEdit, replaceOperatorEdit } from "./graphLists";
 import { editInterpolation } from "./graphInterpolation";
 
-type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" | "editInterpolation" }>;
+type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" | "editInterpolation" | "editAnnotation" }>;
 
 /** Every graph statement edit is validated against the displayed source and has one undo step. */
 export async function editStatementFromGraph(document: vscode.TextDocument, tree: AstReply,
@@ -19,6 +20,7 @@ export async function editStatementFromGraph(document: vscode.TextDocument, tree
     if (message.type !== "toggleStatement") {
         const change = message.type === "insertStatement" ? insertStatementEdit(tree, message.site, message.template)
              : message.type === "insertElement" ? insertListEdit(tree, message.site, message.template)
+            : message.type === "editAnnotation" ? editAnnotation(tree, message)
             : message.type === "editInterpolation" ? editInterpolation(tree, message.site, message.value)
             : replaceOperatorEdit(tree, message, message.operator);
         if (!change) throw new Error(vscode.l10n.t("This edit is not available at this location."));

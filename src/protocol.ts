@@ -111,6 +111,7 @@ export type FromWebview =
     | { type: "insertStatement"; id: string; site: StatementInsertion; template: string; version: number }
     | { type: "insertElement"; id: string; site: ListInsertion; template: string; version: number }
     | { type: "replaceOperator"; id: string; start: number; end: number; operator: string; version: number }
+    | { type: "editAnnotation"; id: string; start: number; end: number; ownerStart: number; ownerEnd: number; ownerKind: string; value: string; add?: boolean; version: number }
     | { type: "editInterpolation"; id: string; site: InterpolationSite; value: string; version: number }
     | { type: "toggleStatement"; id: string; start: number; end: number; version: number }
     | { type: "reorder"; id: string; sourceStart: number; sourceEnd: number; targetStart: number; targetEnd: number; before: boolean; version: number }

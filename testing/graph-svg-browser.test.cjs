@@ -42,7 +42,7 @@ const html = reply => `<!doctype html><meta charset="utf-8"><meta http-equiv="Co
 --vscode-input-foreground:#ddd;--vscode-focusBorder:#58a;--vscode-descriptionForeground:#999;
 }</style><link rel="stylesheet" href="/graph.css"><link rel="stylesheet" href="/bundle.css"><div id="root" data-layout-worker="/layout-worker.js"></div><script nonce="test">
 window.exports=[];window.edits=[];window.acquireVsCodeApi=()=>({getState(){},setState(){},postMessage(m){
-if(m.type==='editInterpolation'){window.edits.push(m);window.postMessage({type:'statementResult',id:m.id},'*');}
+if(m.type==='editInterpolation'||m.type==='editAnnotation'){window.edits.push(m);window.postMessage({type:'statementResult',id:m.id},'*');}
 if(m.type==='saveSvg'){window.exports.push(m);window.postMessage({type:'svgResult',id:m.id},'*');}
 if(m.type==='ready'){window.postMessage({type:'localization',language:'ja',bundle:${JSON.stringify(ja)}},'*');window.postMessage({type:'tree',reply:${JSON.stringify(reply)},uri:'file:///svg-example.lh',version:1},'*');}
 }});</script><script nonce="test" src="/bundle.js"></script>`;
@@ -1086,4 +1086,42 @@ test('reassignment pairs render in vertical rows with matching definition wires 
             assert.equal(errors.length, 0, JSON.stringify(errors));
         });
     }
+});
+
+
+test('annotation popups fold, hide, restore and send versioned edits from a dialog', { timeout: 60000 }, async () => {
+    const reply = require('./annotation-fixture.cjs')();
+    await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelectorAll('.annotation-box').length===3 && !document.querySelector('.svg-export>button').disabled`);
+        await evaluate(`document.querySelector('.annotation-box .foldbtn').click()`);
+        await until(`document.querySelector('.annotation-box .foldbtn').getAttribute('aria-expanded')==='false' && !document.querySelector('.svg-export>button').disabled`);
+        await evaluate(`document.querySelector('.annotation-actions button:last-child').click()`);
+        await until(`document.querySelectorAll('.annotation-box').length===2 && !document.querySelector('.svg-export>button').disabled`);
+        await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent.includes('非表示のアノテーションを再表示')).click()`);
+        await until(`document.querySelectorAll('.annotation-box').length===3 && !document.querySelector('.svg-export>button').disabled`);
+        await evaluate(`document.querySelector('.annotation-actions button').click()`);
+        await until(`document.querySelector('.annotation-editor textarea')`);
+        await evaluate(`(()=>{const input=document.querySelector('.annotation-editor textarea');const set=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;set.call(input,'@renamed(5, "text")');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+        await evaluate(`document.querySelector('.annotation-editor button[type=submit]').click()`);
+        await until(`window.edits.length===1`);
+        const edit = await evaluate(`window.edits[0]`);
+        assert.equal(edit.type, 'editAnnotation'); assert.equal(edit.version, 1);
+        assert.equal(edit.value, '@renamed(5, "text")');
+        await until(`!document.querySelector('.annotation-editor')`);
+        await evaluate(`document.querySelector('.annotation-actions button').click()`);
+        await until(`document.querySelector('.annotation-editor')`);
+        await evaluate(`[...document.querySelectorAll('.annotation-editor button')].find(b=>b.textContent==='アノテーションを削除').click()`);
+        await until(`window.edits.length===2 && !document.querySelector('.annotation-editor')`);
+        assert.equal(await evaluate(`window.edits[1].value`), '');
+        assert.equal(await evaluate(`document.querySelectorAll('.add-annotation').length`), 1);
+        await evaluate(`document.querySelector('.add-annotation').click()`);
+        await until(`document.querySelector('.annotation-editor textarea')`);
+        await evaluate(`(()=>{const input=document.querySelector('.annotation-editor textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(input,'@added(1)');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+        await evaluate(`document.querySelector('.annotation-editor button[type=submit]').click()`);
+        await until(`window.edits.length===3`);
+        assert.equal(await evaluate(`window.edits[2].add`), true);
+        assert.equal(await evaluate(`window.edits[2].ownerKind`), 'define');
+
+        assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
 });

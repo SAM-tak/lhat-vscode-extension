@@ -111,6 +111,7 @@ export interface ElkNode {
         drillTarget?: DrillTarget;
         /** Exact AST owner of a separately displayed comment. */
         commentOwner?: string;
+        annotation?: import("../graphAnnotations").AnnotationSite;
         commentAnchor?: { id: string; dy: number };
         /** Main execution and independently entered exception handlers. */
         catchScope?: boolean;
@@ -246,7 +247,7 @@ function allChildren(node: AstNode): Child[] {
 function drawnChildren(node: AstNode): Child[] {
     if (ALWAYS_LEAF.has(node.kind)) return [];
     const skip = NOT_DRAWN_FIELDS[node.kind] ?? [];
-    return allChildren(node).filter((c) => c.field !== "arms" && !skip.includes(c.field) &&
+    return allChildren(node).filter((c) => c.field !== "arms" && c.field !== "annotations" && c.node.kind !== "annotation" && !skip.includes(c.field) &&
         (!NOT_DRAWN.has(c.node.kind) ||
             (node.kind === "type" && ["type-table", "type-func", "type-tuple"].includes(c.node.kind)) ||
             (node.kind === "type-table" && c.node.kind === "member-decl") ||
@@ -370,6 +371,7 @@ export interface MapOptions {
      * Source identities survive replacement of the AST objects on refresh.
      */
     folds?: Record<string, boolean>;
+    hiddenAnnotations?: Record<string, boolean>;
     /** Explicit toolbar Fold All, distinct from the initial definition folds. */
     collapseAll?: boolean;
     /**

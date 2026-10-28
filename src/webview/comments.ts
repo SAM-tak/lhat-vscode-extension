@@ -1,3 +1,4 @@
+import { annotationOwners } from "../graphAnnotations";
 import type { AstNode, AstReply } from "../protocol";
 import type { ElkNode, MapOptions } from "./map";
 import { labelColumns } from "./labels";
@@ -19,17 +20,23 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
     index(graph);
     const attached = new Map<ElkNode, ElkNode[]>();
     let serial = 0;
+    const annotations = annotationOwners(reply);
     const visit = (node: AstNode, inherited: ElkNode): void => {
         const matches = boxes.get(`${node.start}:${node.end}`) ?? [];
         const owner = matches.find(box => box.lhat?.kind === node.kind && !box.lhat.layoutOnly && box.lhat.definitionRole !== "row")
             ?? matches.find(box => box.lhat?.kind === node.kind)
             ?? matches.find(box => !box.lhat?.layoutOnly && box.lhat?.definitionRole !== "row")
             ?? inherited;
-        for (const comment of node.comments ?? []) {
+        const sites = annotations.find(a => a.start === node.start && a.end === node.end && a.kind === node.kind)?.annotations ?? [];
+        const notes = [...(node.comments ?? []).map(comment => ({ ...comment, annotation: undefined as import("../graphAnnotations").AnnotationSite | undefined })),
+            ...sites.map(annotation => ({ ...annotation, block: false, annotation }))];
+        for (const comment of notes) {
+            const annotation = comment.annotation;
+            if (annotation && options.hiddenAnnotations?.[`${annotation.start}:${annotation.end}`]) continue;
             // Delimiters and surrounding whitespace are hidden only in the view.
             // Source edits continue to use the untouched reply.source and span.
             const raw = reply.source.slice(comment.start, comment.end);
-            const text = (comment.block && raw.startsWith("#[")
+            const text = annotation ? raw : (comment.block && raw.startsWith("#[")
                 ? raw.slice(2, raw.endsWith("]#") ? -2 : undefined)
                 : raw.startsWith("#") ? raw.slice(1) : raw).trim();
             const lines: string[] = [];
@@ -41,15 +48,15 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
                 }
                 lines.push(part);
             }
-            const foldKey = `comment:${comment.start}:${comment.end}`;
+            const foldKey = `${annotation ? "annotation" : "comment"}:${comment.start}:${comment.end}`;
             const collapsed = options.folds?.[foldKey] ?? options.collapseAll === true;
             const visible = collapsed ? [lines[0] + (lines.length > 1 ? "…" : "")] : lines;
             const box: ElkNode = {
                 id: `comment__${serial++}`,
                 labels: [{ text: visible.join("\n") }],
-                width: px(Math.max(100, Math.max(...visible.map(labelColumns)) * 7.2 + 36)) + 2,
+                width: px(Math.max(100, Math.max(...visible.map(labelColumns)) * 7.2 + (annotation ? 80 : 36))) + 2,
                 height: px(visible.length * 18 + 16) + 2,
-                lhat: { kind: "comment", start: comment.start, end: comment.end,
+                lhat: { kind: annotation ? "annotation" : "comment", annotation, start: comment.start, end: comment.end,
                     noExecutionHandles: true, foldable: true, foldKey, collapsed,
                     commentOwner: `${node.kind} (${node.line}:${node.column})` },
             };
@@ -57,7 +64,8 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
         }
         // Folding continues to hide the contents, including their comments.
         if (owner.lhat?.collapsed) return;
-        for (const child of Object.values(node.fields ?? {})) {
+        for (const [field, child] of Object.entries(node.fields ?? {})) {
+            if (field === "annotations") continue;
             for (const item of Array.isArray(child) ? child : [child]) visit(item, owner);
         }
     };

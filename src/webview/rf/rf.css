@@ -696,3 +696,30 @@ textarea.literal-input {
 }
 .box.operand-slot .boxlabel { justify-content: center; padding: 0; }
 .box.operand-slot { border-radius: calc(15px * var(--lhat-scale)); }
+
+.box.annotation-box {
+    padding-right: calc(70px * var(--lhat-scale));
+    border-style: solid;
+    border-color: var(--vscode-editorWarning-foreground, #cca700);
+    box-shadow: 0 3px 8px #0003;
+}
+.box.annotation-box::after {
+    content: "";
+    position: absolute;
+    bottom: calc(-5px * var(--lhat-scale));
+    left: calc(50% - 4px * var(--lhat-scale));
+    width: calc(8px * var(--lhat-scale));
+    height: calc(8px * var(--lhat-scale));
+    background: var(--vscode-editor-background);
+    border-right: 1px solid var(--vscode-editorWarning-foreground, #cca700);
+    border-bottom: 1px solid var(--vscode-editorWarning-foreground, #cca700);
+    transform: rotate(45deg);
+}
+.annotation-actions { position: absolute; right: calc(22px * var(--lhat-scale)); top: calc(5px * var(--lhat-scale)); display: flex; }
+.annotation-actions button, .add-annotation { font: inherit; color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); border: 0; cursor: pointer; }
+.add-annotation { position: absolute; right: calc(24px * var(--lhat-scale)); top: calc(-17px * var(--lhat-scale)); opacity: 0; z-index: 2; }
+.box:hover > .add-annotation, .box:focus-within > .add-annotation, .add-annotation:focus { opacity: 1; }
+.annotation-backdrop { position: fixed; inset: 0; z-index: 100000; background: #0004; display: grid; place-items: center; }
+.annotation-editor { width: min(480px, calc(100vw - 32px)); padding: 16px; display: grid; gap: 12px; background: var(--vscode-editorWidget-background); color: var(--vscode-editorWidget-foreground); border: 1px solid var(--vscode-widget-border); box-shadow: 0 4px 16px #0006; }
+.annotation-editor textarea { box-sizing: border-box; width: 100%; min-height: 100px; resize: vertical; font-family: monospace; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); }
+.annotation-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }

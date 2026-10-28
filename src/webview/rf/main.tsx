@@ -35,6 +35,8 @@ import { LiteralEditProvider, LiteralEditStatus, LiteralInput } from "./LiteralI
 import { NameInput, RenameProvider } from "./NameInput";
 import { TypeLabel, TypeProvider } from "./TypeLabel";
 import { StatementProvider, StatementButton, useStatementActions } from "./StatementMenu";
+import { AnnotationProvider, AnnotationActions, AddAnnotation } from "./AnnotationEditor";
+import type { AnnotationSite } from "../../graphAnnotations";
 import type { InsertionSite, OperatorSite } from "../../graphLists";
 import type { StatementSite, StatementInsertion } from "../../graphStatements";
 import { ReferenceLine } from "./ReferenceLine";
@@ -123,6 +125,7 @@ interface BoxData extends Record<string, unknown>, SlideData {
     isRangeArrow: boolean;
     label: string;
     commentOwner?: string;
+    annotation?: AnnotationSite;
     operatorExpression?: boolean;
     operandInput?: boolean;
     operandOutputY?: number;
@@ -429,6 +432,7 @@ function toFlow(
                     slideMotion,
                     label: c.labels?.[0]?.text ?? "",
                     commentOwner: c.lhat?.commentOwner,
+                    annotation: c.lhat?.annotation,
                     drillTarget: c.lhat?.drillTarget,
                     operatorExpression: c.lhat?.operatorExpression,
                     operandInput: c.lhat?.operandInput,
@@ -951,12 +955,12 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         }}
     >{data.collapsed ? "▸" : "▾"}</button>;
 
-    if (data.commentOwner !== undefined) return <div className="box comment-box"
+    if (data.commentOwner !== undefined) return <div className={`box comment-box ${data.annotation ? "annotation-box" : ""}`}
         title={data.commentOwner} data-source-start={data.start} data-source-end={data.sourceEnd}
         data-vscode-context={statements.context(undefined, data)}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove}
         onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onAuxClick={onAuxClick}
-    ><span className="comment-text">{data.label}</span>{foldButton}</div>;
+    ><span className="comment-text">{data.label}</span>{data.annotation && <AnnotationActions site={data.annotation} />}{foldButton}</div>;
 
     // Match arms share their FOR's box. The invisible grouping still owns
     // the branch junction, unlike a declaration row with no handles at all.
@@ -1039,6 +1043,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                 {data.reorder !== undefined && <ReorderHandle site={data.reorder} label={data.label}
                     onDrop={data.onReorder} />}
                 {foldButton}
+                {!data.isStart && !data.isReturn && !data.isAdd && <AddAnnotation start={data.start} end={data.sourceEnd} kind={data.drillTarget?.kind} />}
                 {data.isRangeArrow ? (
                     <svg className="range-arrow-icon" viewBox="0 0 40 30" aria-label="Range" role="img">
                         <path d="M 5 15 H 34 M 27 9 L 34 15 L 27 21" />
@@ -1290,6 +1295,8 @@ function App() {
     // What the reader folded or unfolded one at a time, over that default.
     const [folds, setFolds] = useState<Record<string, boolean>>({});
     const [collapseAll, setCollapseAll] = useState(false);
+    const [hiddenAnnotations, setHiddenAnnotations] = useState<Record<string, boolean>>({});
+    useEffect(() => { setHiddenAnnotations({}); }, [sourceKey]);
     const [trail, setTrail] = useState<DrillTarget[]>([]);
     const [slides, setSlides] = useState<Slides>({});
     const slidesRef = useRef(slides);
@@ -1400,6 +1407,7 @@ function App() {
             nameValues: nameSizes.sourceKey === sourceKey ? nameSizes.values : undefined,
             collapse: foldByDefault,
             collapseAll,
+            hiddenAnnotations,
             folds,
             root: view.path.length > 0 ? view.root : undefined,
             rootTarget: view.path.length > 0 ? trail[view.path.length - 1] : undefined,
@@ -1420,7 +1428,7 @@ function App() {
             if (!stale) setNote(l10n.t("Graph layout failed: {0}", reason instanceof Error ? reason.message : String(reason)));
         });
         return () => { stale = true; request.cancel(); };
-    }, [reply, view, foldByDefault, collapseAll, folds, scale, viewWidth, vocabulary, literalSizes, nameSizes, sourceKey, layoutClient]);
+    }, [reply, view, foldByDefault, collapseAll, hiddenAnnotations, folds, scale, viewWidth, vocabulary, literalSizes, nameSizes, sourceKey, layoutClient]);
 
     // What the bar's button says and does, both from the picture itself. One
     // definition still folded is enough to make the press an unfold: the way
@@ -1921,8 +1929,13 @@ function App() {
         <TypeProvider value={{ version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <StatementProvider value={{ tree: reply, uri, version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <InterpolationProvider value={{ sourceKey, version: laidSourceKey === sourceKey ? version : undefined, post }}>
+        <AnnotationProvider value={{ tree: reply, version: laidSourceKey === sourceKey ? version : undefined, post,
+            hide: site => setHiddenAnnotations(h => ({ ...h, [`${site.start}:${site.end}`]: true })) }}>
         <div id="app">
             <div id="bar">
+                <AddAnnotation unit />
+                {Object.keys(hiddenAnnotations).length > 0 && <button type="button" onClick={() => setHiddenAnnotations({})}>
+                    {l10n.t("Show hidden annotations")}</button>}
                 <button
                     type="button"
                     className={trail.length > 0 ? "active" : undefined}
@@ -2078,6 +2091,7 @@ function App() {
                     version={laidSourceKey === sourceKey ? version : undefined} post={post} />
             </div>
         </div>
+        </AnnotationProvider>
         </InterpolationProvider>
         </StatementProvider>
         </TypeProvider>
