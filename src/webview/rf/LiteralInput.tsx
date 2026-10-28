@@ -1,19 +1,45 @@
-import React, { createContext, useContext, useRef, useState } from "react";
+import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import { isNumberLiteral, type LiteralValue } from "../literals";
 import * as l10n from "@vscode/l10n";
 
+import type { FromWebview, ToWebview } from "../../protocol";
+
 interface Edits {
+    disabled: boolean;
     sourceKey: string;
     values: Record<string, string>;
     change: (literal: LiteralValue, value: string) => void;
     commit: (literal: LiteralValue, value: string) => void;
 }
-const LiteralEdits = createContext<Edits>({ sourceKey: "", values: {}, change: () => {}, commit: () => {} });
+const LiteralEdits = createContext<Edits>({ disabled: true, sourceKey: "", values: {}, change: () => {}, commit: () => {} });
 
-/** Session-only values survive node unmounts (folding/drilling), not source changes. */
-export function LiteralEditProvider({ sourceKey, children, onCommit }: {
-    sourceKey: string; children: React.ReactNode; onCommit: (literal: LiteralValue, value: string) => void;
+/** Drafts survive folding until a versioned source edit commits. */
+export function LiteralEditProvider({ sourceKey, children, version, post }: {
+    sourceKey: string; children: React.ReactNode; version?: number; post: (message: FromWebview) => void;
 }) {
+    const pending = useRef<string | undefined>(undefined);
+    const sequence = useRef(0);
+    const [saving, setSaving] = useState(false);
+    useEffect(() => {
+        pending.current = undefined;
+        setSaving(false);
+    }, [sourceKey, version]);
+    useEffect(() => {
+        const receive = ({ data }: MessageEvent<ToWebview>) => {
+            if (data.type !== "statementResult" || data.id !== pending.current) return;
+            pending.current = undefined;
+            setSaving(false);
+        };
+        window.addEventListener("message", receive);
+        return () => window.removeEventListener("message", receive);
+    }, []);
+    const commit = (literal: LiteralValue, value: string) => {
+        if (version === undefined || pending.current || value === literal.value) return;
+        const id = `literal-${++sequence.current}`;
+        pending.current = id;
+        setSaving(true);
+        post({ type: "editLiteral", id, key: literal.key, value, version });
+    };
     const [state, setState] = useState({ sourceKey, values: {} as Record<string, string> });
     if (state.sourceKey !== sourceKey) setState({ sourceKey, values: {} });
     const values = state.sourceKey === sourceKey ? state.values : {};
@@ -23,16 +49,7 @@ export function LiteralEditProvider({ sourceKey, children, onCommit }: {
         else next[literal.key] = value;
         return { sourceKey, values: next };
     });
-    return <LiteralEdits.Provider value={{ sourceKey, values, change, commit: onCommit }}>{children}</LiteralEdits.Provider>;
-}
-
-export function LiteralEditStatus() {
-    const { values } = useContext(LiteralEdits);
-    const count = Object.keys(values).length;
-    return count === 0 ? null : <span className="literal-edit-status" role="status"
-        title={l10n.t("Graph-only edits. Not saved to source; cleared when source changes or this view reloads.")}>
-        {l10n.t("Graph only · {0}", count)}
-    </span>;
+    return <LiteralEdits.Provider value={{ disabled: version === undefined || saving, sourceKey, values, change, commit }}>{children}</LiteralEdits.Provider>;
 }
 
 export function LiteralFrame({ kind, modified, children }: {
@@ -59,7 +76,7 @@ export function LiteralField({ kind, modified, inputProps }: {
 }
 
 export function LiteralInput({ literal }: { literal: LiteralValue }) {
-    const { sourceKey, values, change, commit } = useContext(LiteralEdits);
+    const { disabled, sourceKey, values, change, commit } = useContext(LiteralEdits);
     const value = values[literal.key] ?? literal.value;
     const original = useRef({ sourceKey, value });
     if (original.current.sourceKey !== sourceKey) original.current = { sourceKey, value };
@@ -69,10 +86,11 @@ export function LiteralInput({ literal }: { literal: LiteralValue }) {
     const props = {
         className: "literal-input nodrag nopan nowheel nokey",
         value,
+        disabled,
         "aria-label": literal.kind === "number" ? l10n.t("Number literal") : l10n.t("Text literal"),
         "aria-invalid": invalid,
         title: invalid ? l10n.t("Enter a number (for example 42, -0.5, 1e3 or 0xFF). Escape cancels.")
-            : l10n.t("Edit in graph only (not saved to source). Enter finishes; Escape cancels. Shift+Enter adds a text line."),
+            : l10n.t("Enter saves to source; Escape cancels. Shift+Enter adds a text line."),
         spellCheck: false,
         autoComplete: "off",
         onFocus: () => { original.current = { sourceKey, value }; cancelled.current = false; },

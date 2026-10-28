@@ -42,7 +42,7 @@ const html = (reply, acknowledgeEdits = true) => `<!doctype html><meta charset="
 --vscode-input-foreground:#ddd;--vscode-focusBorder:#58a;--vscode-descriptionForeground:#999;
 }</style><link rel="stylesheet" href="/graph.css"><link rel="stylesheet" href="/bundle.css"><div id="root" data-layout-worker="/layout-worker.js"></div><script nonce="test">
 window.exports=[];window.edits=[];window.acquireVsCodeApi=()=>({getState(){},setState(){},postMessage(m){
-if(m.type==='editInterpolation'||m.type==='editAnnotation'){window.edits.push(m);${acknowledgeEdits ? "window.postMessage({type:'statementResult',id:m.id},'*');" : ''}}
+if(m.type==='replaceExpression'||m.type==='editLiteral'||m.type==='editInterpolation'||m.type==='editAnnotation'){window.edits.push(m);${acknowledgeEdits ? "window.postMessage({type:'statementResult',id:m.id},'*');" : ''}}
 if(m.type==='saveSvg'){window.exports.push(m);window.postMessage({type:'svgResult',id:m.id},'*');}
 if(m.type==='ready'){window.postMessage({type:'localization',language:'ja',bundle:${JSON.stringify(ja)}},'*');window.postMessage({type:'tree',reply:${JSON.stringify(reply)},uri:'file:///svg-example.lh',version:1},'*');}
 }});</script><script nonce="test" src="/bundle.js"></script>`;
@@ -1153,7 +1153,7 @@ test('annotation sidebars group names without @ and support inline arguments, dr
             reply = fixture(reply.source.slice(0, edit.start) + edit.value + (edit.add ? '\n' : '') + reply.source.slice(edit.add ? edit.start : edit.end));
             version++;
             await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(reply)},uri:'file:///svg-example.lh',version:${version}},'*')`);
-            await until(`document.querySelector('#app').dataset.graphVersion==='${version}' && ${ready} && document.querySelector('.annotation-box[data-source-start="${reply.source.indexOf('let^')}"][data-source-end="${reply.source.length}"]')`);
+            await until(`document.querySelector('#app')?.dataset.graphVersion==='${version}' && ${ready} && document.querySelector('.annotation-box[data-source-start="${reply.source.indexOf('let^')}"][data-source-end="${reply.source.length}"]')`);
         };
         await setInput('call()'); await key('Enter');
         await until(`document.querySelector('.annotation-arguments').getAttribute('aria-invalid')==='true'`);
@@ -1338,5 +1338,97 @@ test('a wide top-level definition keeps its annotation sidebar inside the viewpo
         await until(`document.querySelector('.annotation-box .foldbtn').getAttribute('aria-expanded')==='true' && ${ready}`);
         await check();
         assert.equal(errors.length, 0, JSON.stringify(errors));
+    });
+});
+
+
+test('ordinary literal inputs commit source values and redraw after the live document changes', { timeout: 60000 }, async () => {
+    const fixture = source => {
+        const at = source.indexOf('=') + 2;
+        const n = (kind, start, end, fields) => ({ kind, start, end, line: 1, column: start + 1, fields });
+        return { source, root: n('block', 0, source.length, { items: [n('define', 0, source.length, {
+            targets: [n('ident', 5, 10)], values: [n(source[at] === '"' ? 'string' : 'int', at, source.length)] })] }) };
+    };
+    await browser({ ...routes, '/': { type: 'text/html', body: html(fixture('let^ value = 1'), false) } }, async ({ evaluate, until, call, errors }) => {
+        let text = 'let^ value = 1', version = 1;
+        const document = { uri: 'file:live-literals', get version() { return version; }, getText: () => text,
+            positionAt: character => ({ line: 0, character }) };
+        const vscode = { l10n: { t: value => value },
+            Range: class { constructor(start, end) { Object.assign(this, { start, end }); } },
+            WorkspaceEdit: class { changes = []; replace(uri, range, text) { this.changes.push({ uri, range, text }); } },
+            workspace: { applyEdit: async edit => {
+                assert.equal(edit.changes.length, 1);
+                const change = edit.changes[0];
+                text = text.slice(0, change.range.start.character) + change.text + text.slice(change.range.end.character);
+                version++; return true;
+            } } };
+        const entry = path.resolve(__dirname, '../src/graphStatementEditor.ts'), mod = new (require('node:module'))(entry);
+        mod.require = name => name === 'vscode' ? vscode : require(name);
+        mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', external: ['vscode'], write: false }).outputFiles[0].text, entry);
+        const publish = async () => {
+            await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(fixture(text))},uri:'file:///svg-example.lh',version:${version}},'*')`);
+            await until(`document.querySelector('#app')?.dataset.graphVersion==='${version}' && document.querySelector('.literal-input') && !document.querySelector('.svg-export>button').disabled`);
+        };
+        await publish();
+        for (const [index, value] of ['1234567890123456789', '日本語 "quoted"'].entries()) {
+            if (index) { text = 'let^ value = "old"'; version++; await publish(); }
+            const before = fixture(text);
+            await evaluate(`document.querySelector('.literal-input').focus();document.querySelector('.literal-input').select()`);
+            await call('Input.insertText', { text: value });
+            await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+            await until(`window.edits.length===${index + 1}`);
+            const message = await evaluate(`window.edits[${index}]`);
+            assert.equal(message.type, 'editLiteral'); assert.equal(message.value, value);
+            await assert.rejects(mod.exports.editStatementFromGraph(document, before, { ...message, version: version - 1 }, undefined, () => true));
+            await mod.exports.editStatementFromGraph(document, before, message, undefined, () => true);
+            assert.notEqual(text, before.source);
+            await evaluate(`window.postMessage({type:'statementResult',id:${JSON.stringify(message.id)}},'*')`);
+            await publish();
+            assert.equal(await evaluate(`document.querySelector('.literal-input').value`), value);
+        }
+        await evaluate(`document.querySelector('.literal-input').focus();document.querySelector('.literal-input').select()`);
+        await call('Input.insertText', { text: 'cancel me' });
+        await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+        assert.equal(await evaluate(`window.edits.length`), 2);
+        assert.equal(await evaluate(`document.querySelector('.literal-input').value`), '日本語 "quoted"');
+        assert.deepEqual(errors, []);
+    });
+});
+
+
+test('expression menu changes a value reference and wraps it in a call without renaming declarations', { timeout: 60000 }, async () => {
+    const fixture = value => {
+        const source = `let^ value = ${value}`;
+        const n = (kind, start, end, fields) => ({ kind, start, end, line: 1, column: start + 1, fields });
+        const expression = value === '(fn)(nil^)' ? n('call', 13, source.length, {
+            target: n('ident', 14, 16), argument: [n('hat-ident', 18, 22)] })
+            : n(value === '0' ? 'int' : 'ident', 13, source.length);
+        return { source, root: n('block', 0, source.length, { items: [n('define', 0, source.length, {
+            targets: [n('ident', 5, 10)], values: [expression] })] }) };
+    };
+    let tree = fixture('0');
+    const entry = path.resolve(__dirname, '../src/graphExpressions.ts'), mod = new (require('node:module'))(entry);
+    mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
+    await browser({ ...routes, '/': { type: 'text/html', body: html(tree) } }, async ({ evaluate, until, call, errors }) => {
+        const ready = `document.querySelector('.expression-edit') && !document.querySelector('.svg-export>button').disabled`;
+        await until(ready);
+        for (const [index, query, expected] of [[0, 'fn', 'fn'], [1, 'Call this value', '(fn)(nil^)']]) {
+            await evaluate(`document.querySelector('.expression-edit').click()`);
+            await until(`document.querySelector('.statement-menu input')`);
+            await call('Input.insertText', { text: query });
+            await until(`document.querySelector('.statement-menu [role=option]')`);
+            await evaluate(`document.querySelector('.statement-menu [role=option]').click()`);
+            await until(`window.edits.length===${index + 1}`);
+            const message = await evaluate(`window.edits[${index}]`);
+            assert.equal(message.type, 'replaceExpression');
+            const edit = mod.exports.replaceExpression(tree, message.site, message.template);
+            const source = tree.source.slice(0, edit.start) + edit.text + tree.source.slice(edit.end);
+            assert.equal(source, `let^ value = ${expected}`);
+            tree = fixture(expected);
+            await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(tree)},uri:'file:///svg-example.lh',version:${index + 2}},'*')`);
+            await until(`document.querySelector('#app')?.dataset.graphVersion==='${index + 2}' && ${ready}`);
+        }
+        assert.equal(await evaluate(`document.querySelector('.box[data-source-start="5"] .expression-edit')`), null);
+        assert.deepEqual(errors, []);
     });
 });

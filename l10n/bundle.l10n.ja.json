@@ -49,12 +49,10 @@
     "Number": "数値",
     "The language server is not running.": "言語サーバーが起動していません。",
     "lhat/ast failed: {0}": "lhat/ast に失敗しました: {0}",
-    "Graph-only edits. Not saved to source; cleared when source changes or this view reloads.": "グラフ内だけの編集です。ソースには保存されず、ソース変更やビューの再読み込みで元に戻ります。",
-    "Graph only · {0}": "グラフ内のみ · {0}",
     "Number literal": "数値リテラル",
     "Text literal": "文字列リテラル",
     "Enter a number (for example 42, -0.5, 1e3 or 0xFF). Escape cancels.": "数値を入力してください（例: 42、-0.5、1e3、0xFF）。Escapeで取り消します。",
-    "Edit in graph only (not saved to source). Enter finishes; Escape cancels. Shift+Enter adds a text line.": "グラフ内だけを編集します（ソースには保存されません）。Enterで確定、Escapeで取り消し、Shift+Enterで文字列を改行します。",
+    "Enter saves to source; Escape cancels. Shift+Enter adds a text line.": "Enter またはフォーカスを外す操作でソースに反映します。Escape で取り消し、Shift+Enter で文字列を改行します。",
     "Use resource": "リソース使用",
     "Type definition": "型定義",
     "Table type definition": "テーブル型定義",
@@ -274,5 +272,12 @@
     "Change annotation": "アノテーションを変更",
     "Annotation arguments must be literals or names.": "引数にはリテラルまたは名前を指定してください。",
     "Edit arguments. Enter saves; Escape cancels.": "引数を編集。Enter で保存、Escape でキャンセル。",
-    "Annotation argument {0} of {1}": "{1} の引数 {0}"
+    "Annotation argument {0} of {1}": "{1} の引数 {0}",
+    "Change expression": "式を変更",
+    "Filter choices or enter a reference name": "候補を絞り込む、または参照名を入力",
+    "Call this value": "この値を呼び出す",
+    "Index this value": "この値の要素を参照",
+    "Add to this value": "この値に加算",
+    "Negate condition": "条件を反転",
+    "Negate number": "数値の符号を反転"
 }

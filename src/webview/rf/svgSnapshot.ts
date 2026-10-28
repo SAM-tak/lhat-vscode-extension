@@ -148,7 +148,7 @@ export function graphSvg(flow: HTMLElement, options: SvgExportOptions): string {
     };
     const draw = (source: Element, parent: Element): void => {
         if (source.matches(".react-flow__handle, .node-reorder") ||
-            (!options.controls && source.matches(".foldbtn, .statement-button, .add-node, .add-annotation, .annotation-footer, .annotation-delete"))) return;
+            (!options.controls && source.matches(".foldbtn, .statement-button, .add-node, .add-annotation, .annotation-footer, .annotation-delete, .expression-edit"))) return;
         const css = style(source), rect = source.getBoundingClientRect();
         if (css.display === "none" || css.visibility === "hidden" || css.opacity === "0") return;
         if (source instanceof SVGGraphicsElement) { vector(source, parent); return; }

@@ -123,3 +123,19 @@ test('string serialization used by source-backed literal fields preserves Unicod
         assert.equal(literalOf(node('string', source), source).value, value);
     }
 });
+
+const { editLiteral } = load('../graphLiterals.ts');
+test('source literal edits validate AST identity and preserve numeric spelling and string values', () => {
+    for (const [kind, source, value] of [['int', '1', '-0xFF'], ['float', '0.2', '1e-12'],
+        ['string', '"old"', '日本語\n"quoted"\\\0\b']]) {
+        const root = node(kind, source), tree = { source, root };
+        const edit = editLiteral(tree, literalOf(root, source).key, value);
+        assert.equal(edit.start, 0); assert.equal(edit.end, source.length);
+        const result = literalOf(node(kind === 'string' ? 'string' : 'unary', edit.text), edit.text);
+        assert.equal(result.value, value);
+        assert.equal(editLiteral(tree, 'int:999:1000', value), undefined);
+    }
+    const root = node('int', '1'), tree = { source: '1', root };
+    assert.equal(editLiteral(tree, 'int:0:1', '2; evil()'), undefined);
+    assert.equal(editLiteral({ ...tree, root: node('disabled', '1', 0, { body: root }) }, 'int:0:1', '2'), undefined);
+});

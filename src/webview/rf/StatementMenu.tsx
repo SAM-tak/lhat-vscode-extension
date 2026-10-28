@@ -1,5 +1,6 @@
+import { expressionSites, expressionTemplates, validReference, type ExpressionSite } from "../../graphExpressions";
 import type { AnnotationOwner } from "../../graphAnnotations";
-import React, { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as l10n from "@vscode/l10n";
 import type { AstReply, FromWebview, ToWebview } from "../../protocol";
@@ -10,19 +11,22 @@ import type { InterpolationSite } from "../../graphInterpolation";
 type Host = { tree?: AstReply; uri: string; version?: number; post: (message: FromWebview) => void };
 type FoldContext = { foldable: boolean; foldKey?: string };
 type Picker = { id: string; site?: InsertionSite; operator?: OperatorSite; anchor: HTMLElement; version: number;
-    interpolation?: InterpolationSite;
+    interpolation?: InterpolationSite; expression?: ExpressionSite;
     choices: StatementTemplate[]; saving?: boolean; error?: string };
 const Statements = createContext({
     version: undefined as number | undefined,
     context: (_site?: StatementSite, _fold?: FoldContext, _annotation?: AnnotationOwner): string | undefined => undefined,
     open: (_site: InsertionSite, _anchor: HTMLElement) => {},
     operator: (_site: OperatorSite, _anchor: HTMLElement) => {},
+    expressions: [] as ExpressionSite[],
+    expression: (_site: ExpressionSite, _anchor: HTMLElement) => {},
     interpolation: (_site: InterpolationSite, _anchor: HTMLElement) => {},
 });
 let sequence = 0;
 export const useStatementActions = () => useContext(Statements);
 
 export function StatementProvider({ value, children }: { value: Host; children: React.ReactNode }) {
+    const expressions = useMemo(() => value.tree ? expressionSites(value.tree) : [], [value.tree]);
     const [picker, setPicker] = useState<Picker>();
     const active = useRef(picker); active.current = picker;
     const host = useRef(value); host.current = value;
@@ -58,7 +62,8 @@ export function StatementProvider({ value, children }: { value: Host; children: 
         if (!current || current.saving || host.current.version !== current.version) return;
         setPicker({ ...current, saving: true, error: undefined });
         const common = { id: current.id, version: current.version };
-        if (current.interpolation) host.current.post({ ...common, type: "editInterpolation", site: current.interpolation, value: template });
+        if (current.expression) host.current.post({ ...common, type: "replaceExpression", site: current.expression, template });
+        else if (current.interpolation) host.current.post({ ...common, type: "editInterpolation", site: current.interpolation, value: template });
         else if (current.operator) host.current.post({ ...common, type: "replaceOperator",
             start: current.operator.start, end: current.operator.end, operator: template });
         else if (current.site) host.current.post(isListInsertion(current.site)
@@ -73,7 +78,13 @@ export function StatementProvider({ value, children }: { value: Host; children: 
             { id: "expression", label: "Interpolation expression", text: "{nil^}" },
         ] });
     };
-    return <Statements.Provider value={{ version: value.version, open, operator, interpolation,
+    const expression = (site: ExpressionSite, anchor: HTMLElement) => {
+        const { tree, version } = host.current;
+        if (!tree || version === undefined) return;
+        setPicker({ id: `expression-${++sequence}`, expression: site, anchor, version,
+            choices: expressionTemplates(tree, site) });
+    };
+    return <Statements.Provider value={{ version: value.version, open, operator, interpolation, expression, expressions,
         context: (site, fold, annotation) => JSON.stringify({ webviewSection: "statement", lhatStatement: !!site && value.version !== undefined,
             lhatGraphUri: value.uri, lhatGraphVersion: value.version, lhatStatementStart: site?.start, lhatStatementEnd: site?.end,
             lhatFoldable: !!fold?.foldable && !!fold.foldKey && value.version !== undefined, lhatFoldKey: fold?.foldKey,
@@ -118,11 +129,13 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
     const menu = useRef<HTMLDivElement>(null), input = useRef<HTMLInputElement>(null);
     const [query, setQuery] = useState(""), [index, setIndex] = useState(0);
     const [position, setPosition] = useState({ left: 0, top: 0 });
-    const title = picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
+    const title = picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
         ? l10n.t("Choose an element template") : l10n.t("Choose a statement template");
+    const choices = picker.expression && validReference(query.trim()) && !picker.choices.some(c => c.id === `reference:${query.trim()}`)
+        ? [...picker.choices, { id: `reference:${query.trim()}`, label: query.trim(), text: query.trim() }] : picker.choices;
     const words = query.toLocaleLowerCase().trim().split(/\s+/);
-    const filtered = picker.choices.filter(choice => words.every(word =>
-        `${l10n.t(choice.label)} ${choice.text}`.toLocaleLowerCase().includes(word)));
+    const filtered = choices.filter(choice => words.every(word =>
+        `${l10n.t(choice.label)} ${choice.label} ${choice.text}`.toLocaleLowerCase().includes(word)));
     const selected = Math.min(index, Math.max(0, filtered.length - 1));
     useLayoutEffect(() => {
         const place = () => {
@@ -162,7 +175,7 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
             <button type="button" aria-label={l10n.t("Close menu")} onClick={() => close(true)}>×</button></div>
         <input ref={input} role="combobox" aria-expanded="true" aria-controls={`${picker.id}-options`}
             aria-activedescendant={filtered.length ? `${picker.id}-${selected}` : undefined}
-            placeholder={l10n.t("Filter choices")} aria-label={l10n.t("Filter choices")}
+            placeholder={picker.expression ? l10n.t("Filter choices or enter a reference name") : l10n.t("Filter choices")} aria-label={l10n.t("Filter choices")}
             disabled={picker.saving} value={query} onChange={event => { setQuery(event.target.value); setIndex(0); }}
             onKeyDown={event => {
                 if (event.nativeEvent.isComposing || picker.saving) return;
@@ -182,4 +195,15 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
                 {!filtered.length && <div className="type-menu-status">{l10n.t("No choices match this filter.")}</div>}
             </div>}
     </div>;
+}
+
+
+export function ExpressionButton({ start, end }: { start?: number; end?: number }) {
+    const actions = useStatementActions();
+    const site = actions.expressions.find(site => site.start === start && site.end === end);
+    if (!site) return null;
+    return <button type="button" className="expression-edit nodrag nopan nokey" title={l10n.t("Change expression")}
+        aria-label={l10n.t("Change expression")} disabled={actions.version === undefined}
+        onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
+        onClick={event => { event.stopPropagation(); actions.expression(site, event.currentTarget); }}>✎</button>;
 }

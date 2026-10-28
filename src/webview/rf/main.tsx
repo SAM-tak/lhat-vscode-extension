@@ -31,10 +31,10 @@ import "./rf.css";
 import type { AstNode, AstReply, FromWebview, ToWebview } from "../../protocol";
 import { graphViewportX, nodeAt, titleOf, type ElkNode, type DrillTarget } from "../map";
 import type { LiteralValue } from "../literals";
-import { LiteralEditProvider, LiteralEditStatus, LiteralInput } from "./LiteralInput";
+import { LiteralEditProvider, LiteralInput } from "./LiteralInput";
 import { NameInput, RenameProvider } from "./NameInput";
 import { TypeLabel, TypeProvider } from "./TypeLabel";
-import { StatementProvider, StatementButton, useStatementActions } from "./StatementMenu";
+import { StatementProvider, StatementButton, ExpressionButton, useStatementActions } from "./StatementMenu";
 import { CommentLink } from "./CommentLink";
 import { AnnotationProvider, AnnotationList, AddAnnotation, useAnnotationOwner } from "./AnnotationEditor";
 import { annotationOwners, annotationOwnerKey, type AnnotationOwner } from "../../graphAnnotations";
@@ -1068,6 +1068,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                 {data.reorder !== undefined && <ReorderHandle site={data.reorder} label={data.label}
                     onDrop={data.onReorder} />}
                 {foldButton}
+                {!data.disabled && !data.operator && <ExpressionButton start={data.start} end={data.sourceEnd} />}
                 {data.isRangeArrow ? (
                     <svg className="range-arrow-icon" viewBox="0 0 40 30" aria-label="Range" role="img">
                         <path d="M 5 15 H 34 M 27 9 L 34 15 L 27 21" />
@@ -1285,18 +1286,6 @@ function App() {
     const [uri, setUri] = useState("");
     const [version, setVersion] = useState<number>();
     const sourceKey = `${uri}\0${reply?.source ?? ""}`;
-    const [literalSizes, setLiteralSizes] = useState({ sourceKey: "", values: {} as Record<string, string> });
-    if (literalSizes.sourceKey !== sourceKey) setLiteralSizes({ sourceKey, values: {} });
-    const commitLiteral = useCallback((literal: LiteralValue, value: string) => {
-        setLiteralSizes(previous => {
-            const values = previous.sourceKey === sourceKey ? previous.values : {};
-            if ((values[literal.key] ?? literal.value) === value) return previous;
-            const next = { ...values };
-            if (value === literal.value) delete next[literal.key];
-            else next[literal.key] = value;
-            return { sourceKey, values: next };
-        });
-    }, [sourceKey]);
     const [nameSizes, setNameSizes] = useState({ sourceKey: "", values: {} as Record<string, string> });
     if (nameSizes.sourceKey !== sourceKey) setNameSizes({ sourceKey, values: {} });
     const resizeName = useCallback((name: RenameTarget, value: string) => {
@@ -1428,7 +1417,6 @@ function App() {
         setLayoutPending(true);
         const request = layoutClient.layout(reply, {
             vocabulary,
-            literalValues: literalSizes.sourceKey === sourceKey ? literalSizes.values : undefined,
             nameValues: nameSizes.sourceKey === sourceKey ? nameSizes.values : undefined,
             collapse: foldByDefault,
             collapseAll,
@@ -1453,7 +1441,7 @@ function App() {
             if (!stale) setNote(l10n.t("Graph layout failed: {0}", reason instanceof Error ? reason.message : String(reason)));
         });
         return () => { stale = true; request.cancel(); };
-    }, [reply, view, foldByDefault, collapseAll, annotationBoxes, folds, scale, viewWidth, vocabulary, literalSizes, nameSizes, sourceKey, layoutClient]);
+    }, [reply, view, foldByDefault, collapseAll, annotationBoxes, folds, scale, viewWidth, vocabulary, nameSizes, sourceKey, layoutClient]);
 
     // What the bar's button says and does, both from the picture itself. One
     // definition still folded is enough to make the press an unfold: the way
@@ -1963,7 +1951,7 @@ function App() {
         <RenameProvider value={{ sourceKey, version: laidSourceKey === sourceKey ? version : undefined,
             sizes: nameSizes.sourceKey === sourceKey ? nameSizes.values : {}, resize: resizeName,
             post: message => vscode.postMessage(message) }}>
-        <LiteralEditProvider sourceKey={sourceKey} onCommit={commitLiteral}>
+        <LiteralEditProvider sourceKey={sourceKey} version={version} post={message => vscode.postMessage(message)}>
         <TypeProvider value={{ version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <StatementProvider value={{ tree: reply, uri, version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <InterpolationProvider value={{ sourceKey, version: laidSourceKey === sourceKey ? version : undefined, post }}>
@@ -2026,7 +2014,6 @@ function App() {
                     title={view?.path.map(step => titleOf(step, reply?.source ?? "", vocabulary)).join(" / ") || uri}
                     post={post} />
                 <span id="status">{note}</span>
-                <LiteralEditStatus />
             </div>
             {view !== undefined && view.path.length > 0 && reply !== undefined && (
                 <div id="trail">

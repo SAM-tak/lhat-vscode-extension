@@ -90,12 +90,10 @@
     "Unfold this node": "Unfold this node",
     "Fold this node": "Fold this node",
     "Graph layout failed: {0}": "Graph layout failed: {0}",
-    "Graph-only edits. Not saved to source; cleared when source changes or this view reloads.": "Graph-only edits. Not saved to source; cleared when source changes or this view reloads.",
-    "Graph only · {0}": "Graph only · {0}",
     "Number literal": "Number literal",
     "Text literal": "Text literal",
     "Enter a number (for example 42, -0.5, 1e3 or 0xFF). Escape cancels.": "Enter a number (for example 42, -0.5, 1e3 or 0xFF). Escape cancels.",
-    "Edit in graph only (not saved to source). Enter finishes; Escape cancels. Shift+Enter adds a text line.": "Edit in graph only (not saved to source). Enter finishes; Escape cancels. Shift+Enter adds a text line.",
+    "Enter saves to source; Escape cancels. Shift+Enter adds a text line.": "Enter saves to source; Escape cancels. Shift+Enter adds a text line.",
     "Text fragment": "Text fragment",
     "Format specifier": "Format specifier",
     "Interpolation expression": "Interpolation expression",
@@ -274,5 +272,12 @@
     "Enumeration member": "Enumeration member",
     "Error kind": "Error kind",
     "Variable binding": "Variable binding",
-    "Default argument": "Default argument"
+    "Default argument": "Default argument",
+    "Change expression": "Change expression",
+    "Filter choices or enter a reference name": "Filter choices or enter a reference name",
+    "Call this value": "Call this value",
+    "Index this value": "Index this value",
+    "Add to this value": "Add to this value",
+    "Negate condition": "Negate condition",
+    "Negate number": "Negate number"
 }
