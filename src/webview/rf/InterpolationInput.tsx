@@ -1,3 +1,5 @@
+import type { TextField, TextSite } from "../../graphTextFields";
+import type { InterpolationSite } from "../../graphInterpolation";
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import * as l10n from "@vscode/l10n";
 import type { FromWebview, ToWebview } from "../../protocol";
@@ -5,19 +7,20 @@ import type { InterpolationField } from "../../graphInterpolation";
 import { LiteralFrame } from "./LiteralInput";
 import { InsertionButton, useStatementActions } from "./StatementMenu";
 
-const Edits = createContext<{ sourceKey: string; version?: number; post: (message: FromWebview) => void }>({
+const Edits = createContext<{ sourceKey: string; fields?: TextField[]; version?: number; post: (message: FromWebview) => void }>({
     sourceKey: "", post: () => {},
 });
 export const InterpolationProvider = Edits.Provider;
+export const useTextField = (start?: number, end?: number) => useContext(Edits).fields?.find(f => f.site.start === start && f.site.end === end);
 let sequence = 0;
 
-export function InterpolationInput({ field }: { field: InterpolationField }) {
+export function InterpolationInput({ field }: { field: InterpolationField | TextField }) {
     const context = useContext(Edits);
     return <Editor key={`${context.sourceKey}:${field.site.start}:${field.site.part?.start}:${field.site.field}`}
         field={field} context={context} />;
 }
 
-function Editor({ field, context }: { field: InterpolationField; context: React.ContextType<typeof Edits> }) {
+function Editor({ field, context }: { field: InterpolationField | TextField; context: React.ContextType<typeof Edits> }) {
     const actions = useStatementActions();
     const [value, setValue] = useState(field.value), [focused, setFocused] = useState(false);
     const [pending, setPending] = useState(false), [error, setError] = useState("");
@@ -34,14 +37,17 @@ function Editor({ field, context }: { field: InterpolationField; context: React.
         if (request.current || context.version === undefined) return;
         const id = `interpolation-${++sequence}`;
         request.current = id; setPending(true); setError("");
-        context.post({ type: "editInterpolation", id, site: field.site, value: next, version: context.version });
+        if (["comment", "module", "import", "require"].includes(field.site.field))
+            context.post({ type: "editTextField", id, site: field.site as TextSite, value: next, version: context.version });
+        else context.post({ type: "editInterpolation", id, site: field.site as InterpolationSite, value: next, version: context.version });
     };
     const stop = (event: React.SyntheticEvent) => event.stopPropagation();
     const kind = field.site.field;
-    const label = kind === "text" ? l10n.t("Text fragment") : kind === "format" ? l10n.t("Format specifier") : l10n.t("Interpolation expression");
+    const label = kind === "comment" ? l10n.t("Comment text") : kind === "module" ? l10n.t("Module name")
+        : kind === "import" ? l10n.t("Imported module") : kind === "require" ? l10n.t("Required file") : kind === "text" ? l10n.t("Text fragment") : kind === "format" ? l10n.t("Format specifier") : l10n.t("Interpolation expression");
     if (kind === "append") return <InsertionButton title={l10n.t("Add interpolation part")}
         style={{ width: "calc(15.4px * var(--lhat-scale, 1))", height: "calc(15.4px * var(--lhat-scale, 1))" }}
-        disabled={context.version === undefined} onOpen={anchor => actions.interpolation(field.site, anchor)} />;
+        disabled={context.version === undefined} onOpen={anchor => actions.interpolation(field.site as InterpolationSite, anchor)} />;
     const input = <textarea className={`${kind === "text" ? "literal-input " : ""}interpolation-input nodrag nopan nowheel nokey`} rows={1}
             value={field.compact && !focused && value === field.value ? "⋯" : value}
             placeholder={kind === "format" ? l10n.t("None") : undefined} aria-label={label}

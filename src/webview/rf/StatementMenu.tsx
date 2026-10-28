@@ -1,4 +1,6 @@
-import { expressionSites, expressionTemplates, validReference, type ExpressionSite } from "../../graphExpressions";
+import { structureSites, structureTemplates, type StructureSite } from "../../graphStructure";
+import { deleteSites, type DeleteSite } from "../../graphDelete";
+import { expressionSites, expressionTemplates, validReference, validMember, type ExpressionSite } from "../../graphExpressions";
 import type { AnnotationOwner } from "../../graphAnnotations";
 import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -11,13 +13,17 @@ import type { InterpolationSite } from "../../graphInterpolation";
 type Host = { tree?: AstReply; uri: string; version?: number; post: (message: FromWebview) => void };
 type FoldContext = { foldable: boolean; foldKey?: string };
 type Picker = { id: string; site?: InsertionSite; operator?: OperatorSite; anchor: HTMLElement; version: number;
-    interpolation?: InterpolationSite; expression?: ExpressionSite;
+    structure?: StructureSite; interpolation?: InterpolationSite; expression?: ExpressionSite;
     choices: StatementTemplate[]; saving?: boolean; error?: string };
 const Statements = createContext({
     version: undefined as number | undefined,
     context: (_site?: StatementSite, _fold?: FoldContext, _annotation?: AnnotationOwner): string | undefined => undefined,
     open: (_site: InsertionSite, _anchor: HTMLElement) => {},
     operator: (_site: OperatorSite, _anchor: HTMLElement) => {},
+    structures: [] as StructureSite[],
+    structure: (_site: StructureSite, _anchor: HTMLElement) => {},
+    deletions: [] as DeleteSite[],
+    remove: (_site: DeleteSite) => {},
     expressions: [] as ExpressionSite[],
     expression: (_site: ExpressionSite, _anchor: HTMLElement) => {},
     interpolation: (_site: InterpolationSite, _anchor: HTMLElement) => {},
@@ -26,6 +32,8 @@ let sequence = 0;
 export const useStatementActions = () => useContext(Statements);
 
 export function StatementProvider({ value, children }: { value: Host; children: React.ReactNode }) {
+    const structures = useMemo(() => value.tree ? structureSites(value.tree).filter(site => structureTemplates(value.tree!, site).length) : [], [value.tree]);
+    const deletions = useMemo(() => value.tree ? deleteSites(value.tree) : [], [value.tree]);
     const expressions = useMemo(() => value.tree ? expressionSites(value.tree) : [], [value.tree]);
     const [picker, setPicker] = useState<Picker>();
     const active = useRef(picker); active.current = picker;
@@ -62,7 +70,8 @@ export function StatementProvider({ value, children }: { value: Host; children: 
         if (!current || current.saving || host.current.version !== current.version) return;
         setPicker({ ...current, saving: true, error: undefined });
         const common = { id: current.id, version: current.version };
-        if (current.expression) host.current.post({ ...common, type: "replaceExpression", site: current.expression, template });
+        if (current.structure) host.current.post({ ...common, type: "editStructure", site: current.structure, action: template });
+        else if (current.expression) host.current.post({ ...common, type: "replaceExpression", site: current.expression, template });
         else if (current.interpolation) host.current.post({ ...common, type: "editInterpolation", site: current.interpolation, value: template });
         else if (current.operator) host.current.post({ ...common, type: "replaceOperator",
             start: current.operator.start, end: current.operator.end, operator: template });
@@ -84,7 +93,16 @@ export function StatementProvider({ value, children }: { value: Host; children: 
         setPicker({ id: `expression-${++sequence}`, expression: site, anchor, version,
             choices: expressionTemplates(tree, site) });
     };
-    return <Statements.Provider value={{ version: value.version, open, operator, interpolation, expression, expressions,
+    const structure = (site: StructureSite, anchor: HTMLElement) => {
+        const { tree, version } = host.current;
+        if (!tree || version === undefined) return;
+        setPicker({ id: `structure-${++sequence}`, structure: site, anchor, version, choices: structureTemplates(tree, site) });
+    };
+    const remove = (site: DeleteSite) => {
+        const { version } = host.current;
+        if (version !== undefined) host.current.post({ type: "deleteElement", id: `delete-${++sequence}`, site, version });
+    };
+    return <Statements.Provider value={{ structures, structure, deletions, remove, version: value.version, open, operator, interpolation, expression, expressions,
         context: (site, fold, annotation) => JSON.stringify({ webviewSection: "statement", lhatStatement: !!site && value.version !== undefined,
             lhatGraphUri: value.uri, lhatGraphVersion: value.version, lhatStatementStart: site?.start, lhatStatementEnd: site?.end,
             lhatFoldable: !!fold?.foldable && !!fold.foldKey && value.version !== undefined, lhatFoldKey: fold?.foldKey,
@@ -129,9 +147,9 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
     const menu = useRef<HTMLDivElement>(null), input = useRef<HTMLInputElement>(null);
     const [query, setQuery] = useState(""), [index, setIndex] = useState(0);
     const [position, setPosition] = useState({ left: 0, top: 0 });
-    const title = picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
+    const title = picker.structure ? l10n.t("Edit branches and sections") : picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
         ? l10n.t("Choose an element template") : l10n.t("Choose a statement template");
-    const choices = picker.expression && validReference(query.trim()) && !picker.choices.some(c => c.id === `reference:${query.trim()}`)
+    const choices = picker.expression && (picker.expression.memberKey ? validMember : validReference)(query.trim()) && !picker.choices.some(c => c.id === `reference:${query.trim()}`)
         ? [...picker.choices, { id: `reference:${query.trim()}`, label: query.trim(), text: query.trim() }] : picker.choices;
     const words = query.toLocaleLowerCase().trim().split(/\s+/);
     const filtered = choices.filter(choice => words.every(word =>
@@ -206,4 +224,27 @@ export function ExpressionButton({ start, end }: { start?: number; end?: number 
         aria-label={l10n.t("Change expression")} disabled={actions.version === undefined}
         onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
         onClick={event => { event.stopPropagation(); actions.expression(site, event.currentTarget); }}>✎</button>;
+}
+
+
+export function DeleteButton({ start, end, declaration }: { start?: number; end?: number; declaration?: StatementSite }) {
+    const actions = useStatementActions();
+    const site = actions.deletions.find(site => site.start === start && site.end === end)
+        ?? (declaration && actions.deletions.find(site => site.category === "statement" && site.start === declaration.start && site.end === declaration.end));
+    if (!site) return null;
+    return <button type="button" className="element-delete nodrag nopan nokey" title={l10n.t("Delete element")}
+        aria-label={l10n.t("Delete element")} disabled={actions.version === undefined}
+        onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
+        onClick={event => { event.stopPropagation(); actions.remove(site); }}>×</button>;
+}
+
+
+export function StructureButton({ start, end }: { start?: number; end?: number }) {
+    const actions = useStatementActions();
+    const site = actions.structures.find(site => site.start === start && site.end === end);
+    if (!site) return null;
+    return <button type="button" className="structure-edit nodrag nopan nokey" title={l10n.t("Edit branches and sections")}
+        aria-label={l10n.t("Edit branches and sections")} disabled={actions.version === undefined}
+        onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
+        onClick={event => { event.stopPropagation(); actions.structure(site, event.currentTarget); }}>⋯</button>;
 }

@@ -1,3 +1,6 @@
+import { editTextField } from "./graphTextFields";
+import { editStructure } from "./graphStructure";
+import { deleteFromGraph } from "./graphDelete";
 import { replaceExpression } from "./graphExpressions";
 import { editLiteral } from "./graphLiterals";
 import { editAnnotation } from "./graphAnnotations";
@@ -8,7 +11,7 @@ import { insertStatementEdit, statementSites } from "./graphStatements";
 import { insertListEdit, replaceOperatorEdit } from "./graphLists";
 import { editInterpolation } from "./graphInterpolation";
 
-type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" | "editInterpolation" | "editAnnotation" | "editLiteral" | "replaceExpression" }>;
+type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" | "editInterpolation" | "editAnnotation" | "editLiteral" | "replaceExpression" | "deleteElement" | "editStructure" | "editTextField" }>;
 
 /** Every graph statement edit is validated against the displayed source and has one undo step. */
 export async function editStatementFromGraph(document: vscode.TextDocument, tree: AstReply,
@@ -22,6 +25,9 @@ export async function editStatementFromGraph(document: vscode.TextDocument, tree
     if (message.type !== "toggleStatement") {
         const change = message.type === "insertStatement" ? insertStatementEdit(tree, message.site, message.template)
              : message.type === "insertElement" ? insertListEdit(tree, message.site, message.template)
+            : message.type === "editTextField" ? editTextField(tree, message.site, message.value)
+            : message.type === "editStructure" ? editStructure(tree, message.site, message.action)
+            : message.type === "deleteElement" ? deleteFromGraph(tree, message.site)
             : message.type === "replaceExpression" ? replaceExpression(tree, message.site, message.template)
             : message.type === "editLiteral" ? editLiteral(tree, message.key, message.value)
             : message.type === "editAnnotation" ? editAnnotation(tree, message)

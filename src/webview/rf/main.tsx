@@ -1,3 +1,4 @@
+import { textFields } from "../../graphTextFields";
 // L^ (lhat) -- the graph webview on React Flow (06 の 8.4, the V14 spike).
 //
 // What this exists to prove or disprove:
@@ -34,7 +35,7 @@ import type { LiteralValue } from "../literals";
 import { LiteralEditProvider, LiteralInput } from "./LiteralInput";
 import { NameInput, RenameProvider } from "./NameInput";
 import { TypeLabel, TypeProvider } from "./TypeLabel";
-import { StatementProvider, StatementButton, ExpressionButton, useStatementActions } from "./StatementMenu";
+import { StatementProvider, StatementButton, ExpressionButton, DeleteButton, StructureButton, useStatementActions } from "./StatementMenu";
 import { CommentLink } from "./CommentLink";
 import { AnnotationProvider, AnnotationList, AddAnnotation, useAnnotationOwner } from "./AnnotationEditor";
 import { annotationOwners, annotationOwnerKey, type AnnotationOwner } from "../../graphAnnotations";
@@ -45,7 +46,7 @@ import { DEFAULT_MINIMAP_SIZE, fitMinimapSize } from "../minimap";
 import { MinimapResizeHandles } from "./MinimapResizeHandles";
 import { SvgExport } from "./SvgExport";
 import { loopDirectionArrows } from "./loopDirection";
-import { InterpolationInput, InterpolationProvider } from "./InterpolationInput";
+import { InterpolationInput, InterpolationProvider, useTextField } from "./InterpolationInput";
 import type { InterpolationField } from "../../graphInterpolation";
 import { changedHandles } from "./handleUpdates";
 import { LayoutClient } from "./layoutClient";
@@ -825,6 +826,7 @@ function ReorderHandle({ site, label, onDrop }: {
 
 function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
     const statements = useStatementActions();
+    const textField = useTextField(data.start, data.sourceEnd);
     const annotationOwner = useAnnotationOwner({ start: data.start, end: data.sourceEnd, kind: data.drillTarget?.kind,
         owner: data.annotationList, statement: data.statement });
     const { getZoom } = useReactFlow();
@@ -983,7 +985,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         data-vscode-context={statements.context(undefined, data, data.annotationList ? annotationOwner : undefined)}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove}
         onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onAuxClick={onAuxClick}
-    ><CommentLink points={data.commentLink} /><span className="comment-text">{data.label}</span>{foldButton}</div>;
+    ><CommentLink points={data.commentLink} />{textField && !data.collapsed ? <InterpolationInput field={textField} /> : <span className="comment-text">{data.label}</span>}{foldButton}</div>;
 
     // Match arms share their FOR's box. The invisible grouping still owns
     // the branch junction, unlike a declaration row with no handles at all.
@@ -1068,6 +1070,9 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                 {data.reorder !== undefined && <ReorderHandle site={data.reorder} label={data.label}
                     onDrop={data.onReorder} />}
                 {foldButton}
+                {!data.disabled && !data.operator && <StructureButton start={data.start} end={data.sourceEnd} />}
+                {!data.operator && <DeleteButton start={data.start} end={data.sourceEnd}
+                    declaration={data.definitionRole === "declaration" ? data.statement : undefined} />}
                 {!data.disabled && !data.operator && <ExpressionButton start={data.start} end={data.sourceEnd} />}
                 {data.isRangeArrow ? (
                     <svg className="range-arrow-icon" viewBox="0 0 40 30" aria-label="Range" role="img">
@@ -1090,7 +1095,11 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                     <span key={i} className={part.role ? "semantic-label" : undefined} data-role={part.role}
                         data-category={part.category} title={part.source}>{part.text}</span>) ?? data.label}</div>
                 : data.ioGroup ? <fieldset className="io-frame"><legend>{data.label}</legend></fieldset>
-                : data.inline && data.isContainer ? null : data.interpolation ? <>
+                : textField ? <div className="source-text-field">
+                    <div className="source-text-caption">{data.labelParts?.filter(part => part.category === "module").map((part, i) =>
+                        <span key={i} className="semantic-label" data-role={part.role} data-category={part.category}>{part.text}</span>)}</div>
+                    <InterpolationInput field={textField} />
+                </div> : data.inline && data.isContainer ? null : data.interpolation ? <>
                     {data.literalTypeLabel && <div className="literal-type-label"><TypeLabel label={data.literalTypeLabel} /></div>}
                     <InterpolationInput field={data.interpolation} />
                 </> : data.literal !== undefined ? <>
@@ -1286,6 +1295,7 @@ function App() {
     const [uri, setUri] = useState("");
     const [version, setVersion] = useState<number>();
     const sourceKey = `${uri}\0${reply?.source ?? ""}`;
+    const sourceTextFields = useMemo(() => reply ? textFields(reply) : [], [reply]);
     const [nameSizes, setNameSizes] = useState({ sourceKey: "", values: {} as Record<string, string> });
     if (nameSizes.sourceKey !== sourceKey) setNameSizes({ sourceKey, values: {} });
     const resizeName = useCallback((name: RenameTarget, value: string) => {
@@ -1954,7 +1964,7 @@ function App() {
         <LiteralEditProvider sourceKey={sourceKey} version={version} post={message => vscode.postMessage(message)}>
         <TypeProvider value={{ version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <StatementProvider value={{ tree: reply, uri, version: laidSourceKey === sourceKey ? version : undefined, post }}>
-        <InterpolationProvider value={{ sourceKey, version: laidSourceKey === sourceKey ? version : undefined, post }}>
+        <InterpolationProvider value={{ sourceKey, fields: sourceTextFields, version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <AnnotationProvider value={{ tree: reply, version: laidSourceKey === sourceKey ? version : undefined, post,
             boxes: annotationBoxes, show: showAnnotationBox }}>
         <div id="app" data-graph-version={laidSourceKey === sourceKey ? version : undefined}>

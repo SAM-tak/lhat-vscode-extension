@@ -14,6 +14,10 @@ export const STATEMENT_TEMPLATE_LABELS = {
     function: "Function definition", procedure: "Procedure definition",
     if: "Conditional statement", repeat: "Repeat statement", for: "Counting loop", block: "Scoped block",
     return: "Return statement", break: "Exit loop", next: "Next iteration",
+    match: "Pattern matching statement", comment: "Comment", call: "Call statement", assign: "Assignment statement", with: "Resource block",
+    handled: "Exception handling block", yield: "Yield statement", await: "Await statement",
+    type: "Type definition", tableDefinition: "Table definition", enumeration: "Enumeration definition",
+    error: "Error definition", module: "Module declaration", import: "Import module", require: "Require file",
 } as const;
 interface Context { callable?: "function" | "procedure"; loop: boolean }
 interface StatementList {
@@ -96,7 +100,23 @@ export function statementTemplates(tree: AstReply, site: StatementInsertion): St
         template("for", `for^ ${name("i")} from^ 1 to^ 10 {\n}`),
         template("block", "do^{\n}"),
         template("return", list.context.callable === "procedure" ? "return^" : "return^ 0"),
+        template("match", "for^nil^ {\n    when^0:\n    other^:\n}"),
+        template("comment", "# comment"),
+        template("call", "print(nil^)"),
+        template("assign", "value := 0"),
+        template("with", `with^ ${name("resource")} = nil^ {\n}`),
+        template("handled", "do^{\ncatch^:\n}"),
+        template("type", `let^ ${name("Type")} = t^{}`),
+        template("tableDefinition", `let^ ${name("Item")} = def^{}`),
+        template("enumeration", `enum^ ${name("Kind")} { Item }`),
+        template("error", `errordef^ ${name("Problem")} { Failure {} }`),
     ];
+    if (list.context.callable === "procedure") choices.push(template("yield", "yield^ 0"), template("await", "await^ nil^"));
+    if (list.node === tree.root) {
+        choices.push(template("import", "import^std.io"), template("require", 'require^"./module.lh"'));
+        if (!list.items.some(item => item.kind === "module") && (!list.items.length || site.before === list.items[0].start))
+            choices.push(template("module", `module^${name("example")}`));
+    }
     if (list.context.loop) choices.push(template("break", "break^"), template("next", "next^"));
     return choices;
 }

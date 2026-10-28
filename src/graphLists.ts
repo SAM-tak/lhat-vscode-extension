@@ -203,18 +203,29 @@ function insertAt(source: string, list: CommaList, index: number, text: string):
 
 export interface OperatorSite extends SourceSpan { owner: SourceSpan; text: string; choices: string[]; members?: SourceSpan[] }
 const numeric = ["+", "-", "*", "/", "//", "%", "**"];
-const comparison = ["==", "!=", "<", "<=", ">", ">="];
+const comparison = ["=", "!=", "<", "<=", ">", ">=", "is^"];
+const bitwise = ["bitand^", "bitor^", "bitxor^", "bitshift^"];
+const products = ["cross^", "dot^", "×", "⋅"];
 export function operatorSites(tree: AstReply): OperatorSite[] {
     const sites: OperatorSite[] = [];
     const visit = (node: AstNode) => {
         if (node.kind === "disabled") return;
+
+        if (node.kind === "unary") {
+            const operand = one(node, "operand") ?? one(node, "value");
+            const token = operand && syntaxTokens(tree.source, node.start, operand.start).find(t => ["-", "!", "bitnot^"].includes(t.text));
+            if (token) sites.push({ ...token, owner: { start: node.start, end: node.end }, choices: ["-", "!", "bitnot^"] });
+        }
         const left = one(node, "left"), right = one(node, "right");
         const operands = array(node.fields?.operands);
         const pairs = left && right && node.kind === "binary" ? [[left, right]] : operands.slice(1).map((r, i) => [operands[i], r]);
         for (const [a, b] of pairs) {
             const token = syntaxTokens(tree.source, a.end, b.start).find(t => !["(", ")"].includes(t.text));
             if (!token) continue;
-            const choices = numeric.includes(token.text) ? numeric : comparison.includes(token.text) ? comparison
+            const choices = numeric.includes(token.text) || token.text === ".." || token.text === "<=>" ? [...numeric, "..", "<=>"]
+                : comparison.includes(token.text) || ["==", "=/", "≠", "≤", "≥", "≦", "≧"].includes(token.text) ? comparison
+                : bitwise.includes(token.text) ? bitwise : products.includes(token.text) ? products
+                : ["??", "catch^"].includes(token.text) ? ["??", "catch^"]
                 : ["and^", "or^"].includes(token.text) ? ["and^", "or^"] : [token.text];
             sites.push({ ...token, owner: { start: node.start, end: node.end }, choices });
         }

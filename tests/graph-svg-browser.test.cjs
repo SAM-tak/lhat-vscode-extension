@@ -42,7 +42,7 @@ const html = (reply, acknowledgeEdits = true) => `<!doctype html><meta charset="
 --vscode-input-foreground:#ddd;--vscode-focusBorder:#58a;--vscode-descriptionForeground:#999;
 }</style><link rel="stylesheet" href="/graph.css"><link rel="stylesheet" href="/bundle.css"><div id="root" data-layout-worker="/layout-worker.js"></div><script nonce="test">
 window.exports=[];window.edits=[];window.acquireVsCodeApi=()=>({getState(){},setState(){},postMessage(m){
-if(m.type==='replaceExpression'||m.type==='editLiteral'||m.type==='editInterpolation'||m.type==='editAnnotation'){window.edits.push(m);${acknowledgeEdits ? "window.postMessage({type:'statementResult',id:m.id},'*');" : ''}}
+if(m.type==='replaceOperator'||m.type==='editTextField'||m.type==='insertStatement'||m.type==='editStructure'||m.type==='deleteElement'||m.type==='replaceExpression'||m.type==='editLiteral'||m.type==='editInterpolation'||m.type==='editAnnotation'){window.edits.push(m);${acknowledgeEdits ? "window.postMessage({type:'statementResult',id:m.id},'*');" : ''}}
 if(m.type==='saveSvg'){window.exports.push(m);window.postMessage({type:'svgResult',id:m.id},'*');}
 if(m.type==='ready'){window.postMessage({type:'localization',language:'ja',bundle:${JSON.stringify(ja)}},'*');window.postMessage({type:'tree',reply:${JSON.stringify(reply)},uri:'file:///svg-example.lh',version:1},'*');}
 }});</script><script nonce="test" src="/bundle.js"></script>`;
@@ -433,8 +433,8 @@ test('AST comments render above their owner as separate multiline boxes', { time
             const rect=e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height}};
             const owner=document.querySelector('.box.folded[data-source-start="${owner.start}"]');
             return {owner:rect(owner),comments:[...document.querySelectorAll('.comment-box')].map(e=>({
-                ...rect(e),text:e.querySelector('.comment-text').textContent,title:e.title,handles:e.parentElement.querySelectorAll('.react-flow__handle').length,
-                overflow:e.querySelector('.comment-text').getBoundingClientRect().bottom>e.getBoundingClientRect().bottom}))};
+                ...rect(e),text:(e.querySelector('textarea')?.value ?? e.querySelector('.comment-text')?.textContent),title:e.title,handles:e.parentElement.querySelectorAll('.react-flow__handle').length,
+                overflow:e.querySelector('.comment-text, textarea').getBoundingClientRect().bottom>e.getBoundingClientRect().bottom}))};
         })()`);
         assert.equal(result.comments[0].text, 'function comment');
         assert.equal(result.comments[1].text, '日本語のコメント\nsecond line');
@@ -463,11 +463,11 @@ test('AST comments render above their owner as separate multiline boxes', { time
         };
         await toggle();
         await until(`document.querySelectorAll('.comment-box .foldbtn')[1].getAttribute('aria-expanded')==='false' && !document.querySelector('.svg-export>button').disabled`);
-        assert.equal(await evaluate(`document.querySelectorAll('.comment-text')[1].textContent`), '日本語のコメント…');
+        assert.equal(await evaluate(`(document.querySelectorAll('.comment-box')[1].querySelector('textarea')?.value ?? document.querySelectorAll('.comment-box')[1].querySelector('.comment-text')?.textContent)`), '日本語のコメント…');
         assert(await evaluate(`document.querySelectorAll('.comment-box')[1].getBoundingClientRect().height`) < result.comments[1].h);
         await toggle();
         await until(`document.querySelectorAll('.comment-box .foldbtn')[1].getAttribute('aria-expanded')==='true' && !document.querySelector('.svg-export>button').disabled`);
-        assert.equal(await evaluate(`document.querySelectorAll('.comment-text')[1].textContent`), result.comments[1].text);
+        assert.equal(await evaluate(`(document.querySelectorAll('.comment-box')[1].querySelector('textarea')?.value ?? document.querySelectorAll('.comment-box')[1].querySelector('.comment-text')?.textContent)`), result.comments[1].text);
         assert.equal(await evaluate(`document.querySelectorAll('.comment-box')[1].getBoundingClientRect().height`), result.comments[1].h);
         await inspectLinks();
         await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='A+').click()`);
@@ -1430,5 +1430,249 @@ test('expression menu changes a value reference and wraps it in a call without r
         }
         assert.equal(await evaluate(`document.querySelector('.box[data-source-start="5"] .expression-edit')`), null);
         assert.deepEqual(errors, []);
+    });
+});
+
+
+test('delete control removes a statement and the graph redraws as an empty editable document', { timeout: 60000 }, async () => {
+    const source = 'let^ value = 1';
+    const n = (kind, start, end, fields) => ({ kind, start, end, line: 1, column: start + 1, fields });
+    const tree = { source, root: n('block', 0, source.length, { items: [n('define', 0, source.length, {
+        targets: [n('ident', 5, 10)], values: [n('int', 13, 14)] })] }) };
+    const entry = path.resolve(__dirname, '../src/graphStatementEditor.ts'), mod = new (require('node:module'))(entry);
+    let text = source;
+    const document = { uri: 'file:delete', version: 1, getText: () => text, positionAt: character => ({ line: 0, character }) };
+    const vscode = { l10n: { t: value => value },
+        Range: class { constructor(start, end) { Object.assign(this, { start, end }); } },
+        WorkspaceEdit: class { changes = []; replace(uri, range, text) { this.changes.push({ uri, range, text }); } },
+        workspace: { applyEdit: async edit => {
+            assert.equal(edit.changes.length, 1);
+            const change = edit.changes[0];
+            text = text.slice(0, change.range.start.character) + change.text + text.slice(change.range.end.character);
+            return true;
+        } } };
+    mod.require = name => name === 'vscode' ? vscode : require(name);
+    mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', external: ['vscode'], write: false }).outputFiles[0].text, entry);
+    await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async ({ evaluate, until, errors }) => {
+        await until(`document.querySelector('.element-delete') && !document.querySelector('.svg-export>button').disabled`);
+        assert.equal(await evaluate(`document.querySelector('.literal-node .element-delete')`), null, 'a scalar value does not delete its enclosing statement');
+        await evaluate(`document.querySelector('.element-delete').click()`);
+        await until(`window.edits.length===1`);
+        const message = await evaluate(`window.edits[0]`);
+        assert.equal(message.type, 'deleteElement'); assert.equal(message.site.category, 'statement');
+        await mod.exports.editStatementFromGraph(document, tree, message, undefined, () => true);
+        assert.equal(text, '');
+        await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify({ source: '', root: n('block', 0, 0, { items: [] }) })},uri:'file:///svg-example.lh',version:2},'*')`);
+        await until(`document.querySelector('#app')?.dataset.graphVersion==='2' && !document.querySelector('.element-delete') && document.querySelector('.append-statement')`);
+        await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(tree)},uri:'file:///svg-example.lh',version:3},'*')`);
+        await until(`document.querySelector('#app')?.dataset.graphVersion==='3' && document.querySelector('.element-delete')`);
+        assert.deepEqual(errors, []);
+    });
+});
+
+
+test('branch menu updates a real parsed document and displays new branch conditions', { timeout: 60000 }, async () => {
+    const { withLhatServer } = require('./lhat-server.cjs');
+    await withLhatServer(async parse => {
+        let tree = await parse('if^true^ { print(1) }');
+        const entry = path.resolve(__dirname, '../src/graphStructure.ts'), mod = new (require('node:module'))(entry);
+        mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree) } }, async ({ evaluate, until, errors }) => {
+            const ready = `document.querySelector('.structure-edit') && !document.querySelector('.svg-export>button').disabled`;
+            await until(ready);
+            for (const [index, action, count] of [[0, 'branch', 2], [1, 'else', 3], [2, 'remove-branch:1', 2]]) {
+                await evaluate(`document.querySelector('.structure-edit').click()`);
+                await until(`document.querySelector('.statement-menu [role=option]')`);
+                const choice = mod.exports.structureTemplates(tree, mod.exports.structureSites(tree)[0]).findIndex(c => c.id === action);
+                assert(choice >= 0);
+                await evaluate(`document.querySelector('.statement-menu [data-template-index="${choice}"]').click()`);
+                await until(`window.edits.length===${index + 1}`);
+                const message = await evaluate(`window.edits[${index}]`);
+                assert.equal(message.type, 'editStructure');
+                const change = mod.exports.editStructure(tree, message.site, message.action);
+                tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
+                assert.equal(tree.root.fields.items[0].fields.items.length, count);
+                await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(tree)},uri:'file:///svg-example.lh',version:${index + 2}},'*')`);
+                await until(`document.querySelector('#app')?.dataset.graphVersion==='${index + 2}' && ${ready}`);
+                assert.equal(await evaluate(`document.querySelectorAll('.condition-node').length`), tree.root.fields.items[0].fields.items.filter(branch => branch.fields?.condition).length);
+            }
+            assert.deepEqual(errors, []);
+        });
+    });
+});
+
+
+test('loop structure menu switches modes and preserves the real parsed body', { timeout: 60000 }, async () => {
+    const { withLhatServer } = require('./lhat-server.cjs');
+    await withLhatServer(async parse => {
+        const body = '{ print(1) }';
+        let tree = await parse('repeat^3 ' + body);
+        const entry = path.resolve(__dirname, '../src/graphStructure.ts'), mod = new (require('node:module'))(entry);
+        mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree) } }, async ({ evaluate, until, errors }) => {
+            const ready = `document.querySelector('.structure-edit') && !document.querySelector('.svg-export>button').disabled`;
+            await until(ready);
+            for (const [index, action] of ['mode:while', 'mode:until', 'mode:range'].entries()) {
+                await evaluate(`document.querySelector('.structure-edit').click()`);
+                await until(`document.querySelector('.statement-menu [role=option]')`);
+                const choice = mod.exports.structureTemplates(tree, mod.exports.structureSites(tree)[0]).findIndex(c => c.id === action);
+                await evaluate(`document.querySelector('.statement-menu [data-template-index="${choice}"]').click()`);
+                await until(`window.edits.length===${index + 1}`);
+                const message = await evaluate(`window.edits[${index}]`);
+                assert.equal(message.type, 'editStructure'); assert.equal(message.action, action);
+                const change = mod.exports.editStructure(tree, message.site, message.action);
+                tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
+                const loop = tree.root.fields.items[0];
+                assert.equal(tree.source.slice(loop.fields.body.start, loop.fields.body.end), body);
+                await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(tree)},uri:'file:///svg-example.lh',version:${index + 2}},'*')`);
+                await until(`document.querySelector('#app')?.dataset.graphVersion==='${index + 2}' && ${ready}`);
+            }
+            assert.equal(tree.root.fields.items[0].kind, 'for');
+            assert.deepEqual(errors, []);
+        });
+    });
+});
+
+
+test('empty document UI creates new statement families with real server ASTs', { timeout: 60000 }, async () => {
+    const { withLhatServer } = require('./lhat-server.cjs');
+    await withLhatServer(async parse => {
+        const empty = await parse('');
+        const entry = path.resolve(__dirname, '../src/graphStatements.ts'), mod = new (require('node:module'))(entry);
+        mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(empty) } }, async ({ evaluate, until, errors }) => {
+            let version = 1;
+            const choices = mod.exports.statementTemplates(empty, mod.exports.statementInsertions(empty)[0]);
+            for (const [index, id] of ['call', 'assign', 'with', 'handled', 'type', 'tableDefinition', 'enumeration', 'error', 'module', 'import', 'require'].entries()) {
+                await until(`document.querySelector('.append-statement') && !document.querySelector('.svg-export>button').disabled`);
+                await evaluate(`document.querySelector('.append-statement').click()`);
+                await until(`document.querySelector('.statement-menu [role=option]')`);
+                const choice = choices.findIndex(c => c.id === id);
+                assert(choice >= 0, id);
+                await evaluate(`document.querySelector('.statement-menu [data-template-index="${choice}"]').click()`);
+                await until(`window.edits.length===${index + 1}`);
+                const message = await evaluate(`window.edits[${index}]`);
+                assert.equal(message.type, 'insertStatement'); assert.equal(message.template, id);
+                const change = mod.exports.insertStatementEdit(empty, message.site, message.template);
+                const tree = await parse(change.text);
+                assert.equal(tree.root.fields.items.length, 1, id);
+                await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(tree)},uri:'file:///svg-example.lh',version:${++version}},'*')`);
+                await until(`document.querySelector('#app')?.dataset.graphVersion==='${version}' && !document.querySelector('.svg-export>button').disabled`);
+                await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(empty)},uri:'file:///svg-example.lh',version:${++version}},'*')`);
+                await until(`document.querySelector('#app')?.dataset.graphVersion==='${version}' && document.querySelector('.append-statement') && !document.querySelector('.svg-export>button').disabled`);
+            }
+            assert.deepEqual(errors, []);
+        });
+    });
+});
+
+
+test('inline module and comment fields write source then survive real AST refresh', { timeout: 60000 }, async () => {
+    const { withLhatServer } = require('./lhat-server.cjs');
+    await withLhatServer(async parse => {
+        let tree = await parse('# old\nmodule^example.old\nimport^std.io\nlet^m = require^"./old.lh"');
+        const entry = path.resolve(__dirname, '../src/graphTextFields.ts'), mod = new (require('node:module'))(entry);
+        mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree) } }, async ({ evaluate, until, call, errors }) => {
+            for (const [index, [kind, value]] of [['module', 'example.changed'], ['import', 'std.thread'], ['require', './日本語.lh'], ['comment', 'changed comment']].entries()) {
+                const selector = `.interpolation-field.${kind} textarea`;
+                await until(`document.querySelector(${JSON.stringify(selector)}) && !document.querySelector('.svg-export>button').disabled`);
+                await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus();document.querySelector(${JSON.stringify(selector)}).select()`);
+                await call('Input.insertText', { text: value });
+                await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+                await until(`window.edits.length===${index + 1}`);
+                const message = await evaluate(`window.edits[${index}]`);
+                assert.equal(message.type, 'editTextField'); assert.equal(message.value, value);
+                const change = mod.exports.editTextField(tree, message.site, message.value);
+                tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
+                await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(tree)},uri:'file:///svg-example.lh',version:${index + 2}},'*')`);
+                await until(`document.querySelector('#app')?.dataset.graphVersion==='${index + 2}' && document.querySelector(${JSON.stringify(selector)}) && !document.querySelector('.svg-export>button').disabled`);
+                assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).value`), value);
+            }
+            assert.deepEqual(errors, []);
+        });
+    });
+});
+
+
+test('unary operator context menu replaces the prefix and redraws the real AST', { timeout: 60000 }, async () => {
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        let tree = await parse('let^value = !true^');
+        const entry = path.resolve(__dirname, '../src/graphLists.ts'), mod = new (require('node:module'))(entry);
+        mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree) } }, async ({ evaluate, until, errors }) => {
+            await until(`document.querySelector('.operator-box') && !document.querySelector('.svg-export>button').disabled`);
+            await evaluate(`document.querySelector('.operator-box').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}))`);
+            await until(`document.querySelector('.statement-menu [role=option]')`);
+            await evaluate(`[...document.querySelectorAll('.statement-menu [role=option]')].find(e=>e.textContent.trim()==='bitnot^').click()`);
+            await until(`window.edits.length===1`);
+            const message = await evaluate(`window.edits[0]`);
+            assert.equal(message.type, 'replaceOperator');
+            const change = mod.exports.replaceOperatorEdit(tree, message, message.operator);
+            tree = await parse(tree.source.slice(0, change.start)+change.text+tree.source.slice(change.end));
+            assert.equal(tree.source, 'let^value = bitnot^true^');
+            await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(tree)},uri:'file:///svg-example.lh',version:2},'*')`);
+            await until(`document.querySelector('#app')?.dataset.graphVersion==='2' && document.querySelector('.operator-box') && !document.querySelector('.svg-export>button').disabled`);
+            assert.deepEqual(errors, []);
+        });
+    });
+});
+
+
+test('pattern structure menu changes a pattern and adds a branch using real ASTs', { timeout: 60000 }, async () => {
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        let tree = await parse('for^1 { when^0: print(1) other^: print(2) }');
+        const entry = path.resolve(__dirname, '../src/graphStructure.ts'), mod = new (require('node:module'))(entry);
+        mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree) } }, async ({ evaluate, until, errors }) => {
+            const ready = `document.querySelector('.structure-edit') && !document.querySelector('.svg-export>button').disabled`;
+            await until(ready);
+            for (const [index, action] of ['pattern:0:range', 'match-branch', 'remove-match:0'].entries()) {
+                await evaluate(`document.querySelector('.structure-edit').click()`);
+                await until(`document.querySelector('.statement-menu [role=option]')`);
+                const site = mod.exports.structureSites(tree).find(s => s.kind === 'for');
+                const choice = mod.exports.structureTemplates(tree, site).findIndex(c => c.id === action);
+                await evaluate(`document.querySelector('.statement-menu [data-template-index="${choice}"]').click()`);
+                await until(`window.edits.length===${index + 1}`);
+                const message = await evaluate(`window.edits[${index}]`);
+                assert.equal(message.type, 'editStructure'); assert.equal(message.action, action);
+                const change = mod.exports.editStructure(tree, message.site, message.action);
+                tree = await parse(tree.source.slice(0, change.start)+change.text+tree.source.slice(change.end));
+                await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(tree)},uri:'file:///svg-example.lh',version:${index + 2}},'*')`);
+                await until(`document.querySelector('#app')?.dataset.graphVersion==='${index + 2}' && ${ready}`);
+            }
+            assert.equal(tree.root.fields.items[0].fields.body.fields.items.length, 2);
+            assert.deepEqual(errors, []);
+        });
+    });
+});
+
+
+test('expression picker builds qualified member references through the UI', { timeout: 60000 }, async () => {
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        let tree = await parse('let^value = 0');
+        const entry = path.resolve(__dirname, '../src/graphExpressions.ts'), mod = new (require('node:module'))(entry);
+        mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree) } }, async ({ evaluate, until, call, errors }) => {
+            for (const [index, name] of ['self^.count', 'Item.new', 'items.length^', 'values.0'].entries()) {
+                const value = tree.root.fields.items[0].fields.values[0];
+                const selector = `.box[data-source-start="${value.start}"][data-source-end="${value.end}"] > .expression-edit`;
+                await until(`document.querySelector(${JSON.stringify(selector)}) && !document.querySelector('.svg-export>button').disabled`);
+                await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+                await until(`document.querySelector('.statement-menu input')`);
+                await call('Input.insertText', { text: name });
+                await until(`document.querySelector('.statement-menu [role=option]')`);
+                await evaluate(`document.querySelector('.statement-menu [role=option]').click()`);
+                await until(`window.edits.length===${index + 1}`);
+                const message = await evaluate(`window.edits[${index}]`);
+                assert.equal(message.type, 'replaceExpression'); assert.equal(message.template, `reference:${name}`);
+                const change = mod.exports.replaceExpression(tree, message.site, message.template);
+                tree = await parse(tree.source.slice(0, change.start)+change.text+tree.source.slice(change.end));
+                assert.equal(tree.source, `let^value = ${name}`);
+                await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(tree)},uri:'file:///svg-example.lh',version:${index + 2}},'*')`);
+                await until(`document.querySelector('#app')?.dataset.graphVersion==='${index + 2}' && !document.querySelector('.svg-export>button').disabled`);
+            }
+            assert.deepEqual(errors, []);
+        });
     });
 });
