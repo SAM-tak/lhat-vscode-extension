@@ -3007,6 +3007,22 @@ test('with bindings and callback interpolations are reconstructed through live c
     });
 });
 
+test('zero-based-indices sample is reconstructed entirely through live UI controls', { timeout: 1800000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    const { reconstruction } = require('./graph-reconstruct.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = fs.readFileSync(path.join(__dirname, '../testing/zero-based-indices.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const blueprint = await parse(source), expected = normalizedAst(blueprint), host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), builder = reconstruction(ui, host, client, blueprint);
+            try { await builder.statements(() => host.tree.root, blueprint.root.fields.items); }
+            catch (error) { throw new Error(`${error.message}\nSource: ${host.tree.source}`, { cause: error }); }
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('dispatch sample is reconstructed through nested branches, disabled declarations and named types', { timeout: 300000 }, async () => {
     const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs');
     const literals = load('webview/literals.ts'), syntax = load('graphSyntax.ts');
