@@ -2907,6 +2907,106 @@ test('native statement context disables and restores a UI-created enum through t
     });
 });
 
+test('return type delete buttons remove one result annotation and then restore inference', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'let^f=f^ -> (number^,string^){return^1,"s"}');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), fn = () => host.tree.root.fields.items[0].fields.values[0];
+            await client.until(`document.querySelector('.svg-export>button') && !document.querySelector('.svg-export>button').disabled`);
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            await ui.remove(fn().fields.return_type.fields.items[0]);
+            assert.equal(fn().fields.return_type.kind, 'type-name');
+            await ui.remove(fn().fields.return_type);
+            assert(!fn().fields.return_type);
+            assert.equal(fn().fields.body.fields.items[0].fields.value.length, 2);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('computed member receivers keep their member-key expression control during construction', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'let^items={1}\nlet^result=items[0]??0');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), get = () => host.tree.root.fields.items[1].fields.values[0];
+            await ui.expression(get(), 'member');
+            await ui.expression(get().fields.argument[0], 'reference:tostring');
+            await ui.expression(get(), 'call');
+            assert.equal(get().kind, 'call');
+            assert(host.tree.source.includes('.tostring'));
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('reassignment index targets expose editable index and receiver expressions', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'let^items={}\nlet^i=1\nitems[0]:=7');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), target = () => host.tree.root.fields.items[2].fields.targets[0];
+            await ui.expression(target().fields.argument[0], 'reference:i');
+            await ui.expression(target().fields.target, 'reference:items');
+            const expected = normalizedAst(await parse('let^items={}\nlet^i=1\nitems[i]:=7'));
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('an overloaded call grows from one to two arguments through its live addition control', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'let^values={1,2,3}\nlet^part=values.slice^(0)');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), call = () => host.tree.root.fields.items[1].fields.values[0];
+            await ui.addElement('default', call(), 'argument');
+            await ui.input(`.box[data-source-start="${call().fields.argument[1].start}"] .literal-input`, '2');
+            assert.equal(call().callable.inputs.length, 2);
+            assert.equal(call().fields.argument.length, 2);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('unresolved calls retain argument insertion before and after existing values', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'let^value=missing()');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), call = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.addElement('default', call(), 'argument');
+            await ui.expression(call().fields.argument[0], 'string');
+            await ui.input(`.box[data-source-start="${call().fields.argument[0].start}"] .literal-input`, 'first');
+            await ui.addElement('default', call(), 'argument');
+            assert.equal(call().fields.argument.length, 2);
+            await ui.remove(call().fields.argument[0]);
+            assert.equal(call().fields.argument.length, 1);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('with bindings and callback interpolations are reconstructed through live controls', { timeout: 120000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    const { reconstruction } = require('./graph-reconstruct.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = fs.readFileSync(path.join(__dirname, '../testing/zero-based-indices.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const original = await parse(source), block = original.root.fields.items.find(n => n.kind === 'with');
+        const blueprint = await parse(source.slice(block.start, block.end));
+        const expected = normalizedAst(blueprint), host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), builder = reconstruction(ui, host, client, blueprint);
+            try { await builder.statements(() => host.tree.root, blueprint.root.fields.items); }
+            catch (error) { throw new Error(`${error.message}\nSource: ${host.tree.source}`, { cause: error }); }
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+        });
+    });
+});
+
 test('dispatch sample is reconstructed through nested branches, disabled declarations and named types', { timeout: 300000 }, async () => {
     const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs');
     const literals = load('webview/literals.ts'), syntax = load('graphSyntax.ts');

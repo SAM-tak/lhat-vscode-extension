@@ -331,7 +331,7 @@ test('every standard hat has a bilingual label and registered graph-specific col
 test('module declarations and table definitions have distinct labels from def references, including nested/folded views', async () => {
     const source = 'module^demo\nlet^T = def^ { foo = 1, ref = def^.foo, outer = def^^.foo, inner = def^ { text = "def^.foo" } }';
     const n = fixture(source);
-    const member = spelling => n('member', spelling, { target: n('hat-ident', spelling.split('.')[0]), argument: [n('ident', 'foo', undefined, source.indexOf(spelling))] });
+    const member = spelling => n('member', spelling, { target: n('hat-ident', spelling.split('.')[0], undefined, source.indexOf(spelling)), argument: [n('ident', 'foo', undefined, source.indexOf(spelling))] });
     const nested = n('def', 'def^ { text = "def^.foo" }', { items: [n('table-entry', 'text = "def^.foo"', {
         key: n('ident', 'text'), value: n('string', '"def^.foo"'),
     })] });

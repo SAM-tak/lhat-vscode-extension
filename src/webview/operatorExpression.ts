@@ -54,6 +54,16 @@ export function expressionCells(node: AstNode, source: string): ExpressionCell[]
         }
         return [{ operand: child, inline: !grouped && isInlineValue(child, source) }];
     };
+    if (node.kind === "member") {
+        const target = one(node, "target"), key = one(node, "argument") ?? one(node, "key");
+        if (!target || !key) return [];
+        const at = tokens.findIndex(token => token.start >= target.end && token.end <= key.start && token.text === ".");
+        const dot = tokens[at];
+        if (!dot) return [];
+        const optional = tokens[at - 1]?.text === "?" ? tokens[at - 1] : undefined;
+        return [...operand(target, false), { token: optional ? { start: optional.start, end: dot.end, text: "?." } : dot,
+            delimiter: true }, { operand: key, inline: true }];
+    }
     if (node.kind === "index") {
         const target = one(node, "target"), argument = node.fields?.argument;
         if (!target) return [];

@@ -745,11 +745,10 @@ test('compound RHS expressions remain intact without duplicating indexed write t
         const reply = { source, root }, before = JSON.stringify(reply);
         assert.equal(assignmentValues(root, source)[0], right);
         const graph = stackWideDefinitions(await new ELK().layout(toElk(reply)), 5000), all = flatten(graph);
-        const targets = all.filter(node => node.lhat?.kind === 'index' && node.lhat?.definitionRole === 'declaration');
+        const targets = all.filter(node => node.lhat?.drillTarget?.kind === 'index' && node.lhat?.definitionRole === 'declaration');
         assert.equal(targets.length, 1);
-        assert.equal(targets[0].labels[0].text, 'items[next()]');
-        assert.equal(all.filter(node => node.lhat?.invocation).length, 0, 'the written RHS addition is an inline expression');
-        assert.equal(all.filter(node => node.lhat?.operatorExpression).length, 1);
+        assert.equal(all.filter(node => node.lhat?.invocation).length, 1, 'the index call is drawn once and the RHS addition stays inline');
+        assert.equal(all.filter(node => node.lhat?.operatorExpression).length, 2);
         assert.equal(all.find(node => node.lhat?.operator).lhat.operator.text, '+');
         assert.equal(JSON.stringify(reply), before);
     }

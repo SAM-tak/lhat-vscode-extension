@@ -12,7 +12,7 @@ function removableLists(tree: AstReply) {
     const lists = commaLists(tree);
     return lists.filter(list => !["define", "reassign"].includes(list.node.kind)
         && (list.node.kind !== "pattern-list" || list.items.length > 1)
-        && !list.implicit && list.field !== "return_type" && list.node.kind !== "type-tuple"
+        && !list.implicit && list.node.kind !== "type-tuple"
         && !(list.node.kind === "tuple" && lists.some(parent => ["define", "reassign"].includes(parent.node.kind)
             && parent.field === "values" && parent.items[0] === list.node
             && Array.isArray(parent.node.fields?.targets) && parent.node.fields.targets.length > 1)));
@@ -55,6 +55,33 @@ export function deleteFromGraph(tree: AstReply, site: DeleteSite): SourceEdit | 
     }
     const list = removableLists(tree).find(list => list.items.some(item => item.start === site.start && item.end === site.end))!;
     const index = list.items.findIndex(item => item.start === site.start && item.end === site.end);
+    if (list.field === "return_type") {
+        const annotation = list.node.fields!.return_type;
+        if (Array.isArray(annotation)) return undefined;
+        const arrow = syntaxTokens(tree.source, list.node.start, annotation.start).filter(t => t.text === "->").slice(-1)[0];
+        if (!arrow) return undefined;
+        let start = arrow.end, end = annotation.end;
+        for (const token of syntaxTokens(tree.source, end, list.node.end)) {
+            if (token.text !== ")") break;
+            end = token.end;
+        }
+        if (list.items.length === 1) {
+            // Keep comments before the type, but discard its grouping punctuation.
+            let gap = tree.source.slice(start, annotation.start);
+            for (const token of syntaxTokens(tree.source, start, annotation.start).reverse())
+                gap = gap.slice(0, token.start - start) + gap.slice(token.end - start);
+            return { start: arrow.start, end, text: gap };
+        }
+        let tokens = syntaxTokens(tree.source, start, end);
+        // A group around the whole result list belongs to the remaining types.
+        while (tokens[0]?.text === "(" && tokens[tokens.length - 1]?.text === ")") {
+            let depth = 0;
+            const close = tokens.findIndex(t => { if (t.text === "(") depth++; else if (t.text === ")") depth--; return depth === 0; });
+            if (close !== tokens.length - 1) break;
+            start = tokens[0].end; end = tokens[tokens.length - 1].start; tokens = tokens.slice(1, -1);
+        }
+        return deleteItem(tree.source, { ...list, start, end }, index);
+    }
     return deleteItem(tree.source, list, index);
 }
 

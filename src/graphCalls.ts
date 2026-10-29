@@ -85,6 +85,29 @@ export function callInfo(node: AstNode): CallableInfo | undefined {
     return info;
 }
 
+/** Keep alternative arities available while an overloaded call is being built. */
+export function callSignatures(node: AstNode): CallableInfo[] {
+    const current = callInfo(node), target = nodes(node.fields?.target)[0], text = target?.inferredType;
+    const result = current ? [current] : [];
+    if (!text || !target) return result;
+    let depth = 0, start = 0;
+    const parts: string[] = [];
+    for (const token of syntaxTokens(text)) {
+        if (token.text === "&" && depth === 0) { parts.push(text.slice(start, token.start)); start = token.end; }
+        else if (["f^", "p^", "(", "[", "{"].includes(token.text)) depth++;
+        else if ([";", ")", "]", "}"].includes(token.text)) depth--;
+    }
+    parts.push(text.slice(start));
+    if (parts.length < 2) return result;
+    for (const part of parts) {
+        const alternative = callInfo({ ...node, callable: undefined, inferredType: undefined,
+            fields: { ...node.fields, target: { ...target, inferredType: part.trim() } } });
+        if (alternative && !result.some(info => info.signature === alternative.signature))
+            result.push({ ...alternative, receiver: current?.receiver ?? alternative.receiver });
+    }
+    return result;
+}
+
 /** A union covering a tuple is one unresolved alternative, never comma-split. */
 export function outputTypes(type: string | undefined): string[] {
     return resultTypes(type);

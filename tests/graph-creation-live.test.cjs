@@ -12,6 +12,90 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('grouped expressions inside interpolations remain replaceable without touching surrounding text', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    for (const value of ['(items)[0]', '(items[0]) + 1']) {
+        const tree = await parse(`let^items={1} let^text=$"before{${value}}after"`);
+        const interpolation = tree.root.fields.items[1].fields.values[0], hole = interpolation.fields.items.find(n => n.kind === 'interp-hole');
+        const site = expressions.expressionSites(tree).find(s => s.kind === hole.fields.value.kind && s.start === hole.fields.value.start && s.end === hole.fields.value.end);
+        const edit = expressions.replaceExpression(tree, site, 'fallback');
+        assert(edit);
+        const changed = await parse(apply(tree.source, edit)), result = changed.root.fields.items[1].fields.values[0];
+        assert.equal(result.kind, 'interp');
+        assert.equal(result.fields.items.filter(n => n.kind === 'interp-hole').length, 1);
+        assert(changed.source.includes('$"before{'));
+        assert(changed.source.endsWith('}after"'));
+        assert.equal(result.fields.items.find(n => n.kind === 'interp-hole').fields.value.kind, 'binary');
+    }
+}));
+
+test('AST comparison preserves interpolation operators and text while ignoring expression layout', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { normalizedAst } = require('./graph-browser-host.cjs');
+    const original = normalizedAst(await parse('let^x=$"start{(1 + 2)}:{(3 + 4)}"'));
+    assert.deepEqual(normalizedAst(await parse('let^x=$"start{((1)+ 2)}:{((3)+4)}"')), original);
+    assert.notDeepEqual(normalizedAst(await parse('let^x=$"start{(1 - 2)}:{(3 + 4)}"')), original);
+    assert.notDeepEqual(normalizedAst(await parse('let^x=$"changed{(1 + 2)}:{(3 + 4)}"')), original);
+}));
+
+test('AST comparison treats else keyword aliases equally while preserving body and literal differences', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { normalizedAst } = require('./graph-browser-host.cjs');
+    const original = normalizedAst(await parse('if^true^{print(1) else^:print("else^")}'));
+    assert.deepEqual(normalizedAst(await parse('if^true^{print(1) el^:print("else^")}')), original);
+    assert.notDeepEqual(normalizedAst(await parse('if^true^{print(2) el^:print("else^")}')), original);
+    assert.notDeepEqual(normalizedAst(await parse('if^true^{print(1) el^:print("el^")}')), original);
+}));
+
+test('computed member rows retain optional access punctuation and their single receiver', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { expressionCells } = load('webview/operatorExpression.ts');
+    for (const optional of ['', '?']) {
+        const tree = await parse(`let^x=(read())${optional}.value`), member = tree.root.fields.items[0].fields.values[0];
+        const cells = expressionCells(member, tree.source);
+        assert.equal(cells.filter(cell => cell.operand?.kind === 'call').length, 1);
+        assert.equal(cells.find(cell => cell.delimiter).token.text, `${optional}.`);
+        assert.equal(cells.at(-1).operand, member.fields.argument[0]);
+    }
+}));
+
+test('overloaded calls can grow to another declared arity without permitting extra fixed inputs', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const lists = load('graphLists.ts');
+    let tree = await parse('let^values={1,2,3}\nlet^part=values.slice^(0)');
+    const call = () => tree.root.fields.items[1].fields.values[0];
+    assert.equal(call().callable.inputs.length, 1);
+    const site = lists.listInsertions(tree).find(s => s.kind === 'call');
+    assert(site);
+    tree = await parse(apply(tree.source, lists.insertListEdit(tree, site, 'default')));
+    assert.equal(call().fields.argument.length, 2);
+    assert.equal(call().callable.inputs.length, 2);
+    assert(!lists.listInsertions(tree).some(s => s.kind === 'call'));
+}));
+
+test('explicit return types delete individually and the last deletion restores inference', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const deletion = load('graphDelete.ts');
+    for (const source of ['let^f=f^ -> number^, string^{return^1,"s"}', 'let^f=f^ -> (number^), #[keep]# string^{return^1,"s"}',
+        'let^f=f^ -> (number^,string^){return^1,"s"}', 'let^f=f^ -> ((number^,string^)){return^1,"s"}']) {
+        let tree = await parse(source);
+        const fn = () => tree.root.fields.items[0].fields.values[0];
+        const first = fn().fields.return_type.fields.items[0];
+        const site = deletion.deleteSites(tree).find(s => s.category === 'element' && s.start === first.start && s.end === first.end);
+        assert(site, source);
+        tree = await parse(apply(tree.source, deletion.deleteFromGraph(tree, site)));
+        assert.equal(fn().fields.return_type.kind, 'type-name');
+        const { normalizedAst } = require('./graph-browser-host.cjs');
+        const normalized = normalizedAst(tree);
+        const expected = normalizedAst(await parse('let^f=f^ -> string^{return^1,"s"}'));
+        if (source.includes('#[keep]#')) {
+            const stripComments = node => { if (node && typeof node === 'object') { delete node.comments; Object.values(node).forEach(stripComments); } };
+            stripComments(normalized);
+        }
+        assert.deepEqual(normalized, expected, tree.source);
+        const remaining = fn().fields.return_type;
+        tree = await parse(apply(tree.source, deletion.deleteFromGraph(tree, { ...remaining, category: 'element' })));
+        assert(!fn().fields.return_type);
+        assert(!tree.source.includes('->'));
+        assert.equal(fn().fields.body.fields.items[0].fields.value.length, 2);
+        if (source.includes('#[keep]#')) assert(tree.source.includes('#[keep]#'));
+    }
+}));
+
 test('variadic parameters can be appended once and their values remain referenceable and indexable', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const lists = load('graphLists.ts');
     let tree = await parse('let^first=f^head:number^{return^0}');

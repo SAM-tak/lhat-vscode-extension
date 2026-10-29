@@ -13,7 +13,8 @@ function fixture(options = {}) {
     const other = { version: 1 };
     const calls = [], applied = [];
     const range = { start: document.positionAt(4), end: document.positionAt(9) };
-    const edit = { size: 2, entries: () => [['test:rename', [{ newText: '経路' }]], ['test:other', [{ newText: '経路' }]]] };
+    const change = { range, newText: '経路' };
+    const edit = { size: 2, entries: () => [['test:rename', options.duplicates ? [change, change] : [change]], ['test:other', [change]]] };
     const vscode = { Range: class { constructor(start, end) { this.start = start; this.end = end; } },
         WorkspaceEdit: class { changes = []; replace(uri, range, newText) { this.changes.push({ uri, range, newText }); } },
         l10n: { t: text => text }, workspace: {
@@ -38,6 +39,14 @@ test('one committed rename prepares the exact name and applies the entire provid
     assert.deepEqual(f.calls.map(c => c[0]), ['vscode.prepareRename', 'vscode.executeDocumentRenameProvider']);
     assert.equal(f.calls[1][3], '経路');
     assert.deepEqual(f.applied, [f.edit], 'all references are kept, not only the declaration');
+});
+
+test('identical provider edits are applied once per URI while preserving all renamed references', async () => {
+    const f = fixture({ duplicates: true });
+    await f.run();
+    assert.equal(f.applied.length, 1);
+    assert.deepEqual(f.applied[0].changes.map(c => ({ uri: c.uri, range: c.range, newText: c.newText })),
+        ['test:rename', 'test:other'].map(uri => ({ uri, ...f.edit.entries()[0][1][0] })));
 });
 
 test('unchanged, empty, stale and mismatched spans never write source', async () => {

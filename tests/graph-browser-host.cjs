@@ -23,6 +23,14 @@ async function graphHost(parse, server, initial = '') {
         changes = [];
         replace(uri, range, text) { this.changes.push({ uri, range, text }); }
         get size() { return this.changes.length; }
+        entries() {
+            const entries = new Map();
+            for (const { uri, range, text } of this.changes) {
+                if (!entries.has(uri)) entries.set(uri, []);
+                entries.get(uri).push({ range, newText: text });
+            }
+            return [...entries];
+        }
     }
     const vscode = {
         l10n: { t: text => text },
@@ -108,7 +116,25 @@ function normalizedAst(tree) {
     };
     // AST responses omit operator/modifier tokens. Grouping is already represented
     // by the tree shape, so extra parentheses must not make equivalent trees fail.
-    const tokens = syntaxTokens(tree.source).map(t => t.text);
+    const interpolations = [];
+    const collect = node => {
+        if (node.kind === 'interp') interpolations.push(node);
+        Object.values(node.fields ?? {}).flat().forEach(collect);
+    };
+    collect(tree.root);
+    interpolations.sort((a, b) => a.start - b.start || b.end - a.end);
+    const lexical = (start, end) => {
+        let cursor = start, tokens = [];
+        for (const interpolation of interpolations) {
+            if (interpolation.start < cursor || interpolation.end > end) continue;
+            tokens.push(...syntaxTokens(tree.source, cursor, interpolation.start));
+            for (const part of interpolation.fields?.items ?? []) if (part.kind === 'interp-hole')
+                tokens.push(...lexical(part.start + 1, part.fields.format?.start ?? part.end - 1));
+            cursor = interpolation.end;
+        }
+        return [...tokens, ...syntaxTokens(tree.source, cursor, end)];
+    };
+    const tokens = lexical(0, tree.source.length).map(t => t.text === 'else^' ? 'el^' : t.text);
     return { root: visit(tree.root), tokens: tokens.filter((t, i) => t !== '(' && t !== ')'
         && !(t === ',' && ['}', ']', ')'].includes(tokens[i + 1]))) };
 }
@@ -174,6 +200,10 @@ async function graphUi(host, { evaluate, until, call }) {
         },
         async structure(node, id) {
             await choose(`.box[data-source-start="${node.start}"] > .structure-edit`, structures.structureTemplates(host.tree, node), id);
+        },
+        async interpolationPart(node, id) {
+            await choose(`[data-id^="interpolation-add-"] .box[data-source-start="${node.start}"][data-source-end="${node.end}"] .statement-button`,
+                [{ id: 'text' }, { id: 'expression' }], id);
         },
         async operator(node, operator) {
             const site = lists.groupedOperatorSites(host.tree).find(s => s.owner.start === node.start && s.owner.end === node.end);

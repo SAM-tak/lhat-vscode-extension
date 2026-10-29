@@ -1377,11 +1377,14 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         if (!targets?.items.length || !values?.items.length) return undefined;
         const permitsUnpack = node.kind !== "reassign" || assignmentOperator(node, source)?.base === ":=";
         if (permitsUnpack && targets.items.length > 1 && values.items.length === 1 && values.items[0].kind === "tuple") values = commaList(values.items[0], "items") ?? values;
-        const declarations = targets.items.map(target => leaf(target, makeLabel(target, [], MAX_LABEL, true)));
         const reassignment = node.kind === "reassign";
+        const declarations = targets.items.map(target => reassignment && !["ident", "hat-ident"].includes(target.kind)
+            ? build(target, "expr", unfold, avail) : leaf(target, makeLabel(target, [], MAX_LABEL, true)));
         const heading = reassignment ? labelFor(node, []) : makeLabel({ ...node, end: targets.items[0].start }, [], MAX_LABEL);
-        const declarationWidth = Math.max(...declarations.map(declaration => declaration.width ?? 0));
-        declarations.forEach(declaration => { declaration.width = declarationWidth; });
+        if (declarations.every(declaration => declaration.width !== undefined)) {
+            const declarationWidth = Math.max(...declarations.map(declaration => declaration.width!));
+            declarations.forEach(declaration => { declaration.width = declarationWidth; });
+        }
         declarations.forEach(memberHandles);
         const rowKind = reassignment ? "reassign-row" : "define-row";
         const id = nextId(rowKind);
@@ -1609,6 +1612,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             }
         }
         if (["binary", "compare-chain", "index"].includes(node.kind)) return operatorExpression(node, unfold, avail);
+        if (node.kind === "member" && !isInlineValue(node, source)) return operatorExpression(node, unfold, avail);
         if (node.kind === "unary" && literalOf(node, source) === undefined) {
             const value = field("value") ?? field("operand");
             if (value) return operatorExpression(node, unfold, avail);

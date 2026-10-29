@@ -69,19 +69,30 @@ export const validExpressionReference = (site: ExpressionSite, text: string) => 
     : (site.memberKey ? validMember : validReference)(text);
 
 /** Grouping has no AST node. A binary span may start inside a grouped left operand. */
-function replacementSpan(source: string, site: SourceSpan): SourceSpan | undefined {
+function replacementSpan(tree: AstReply, site: SourceSpan): SourceSpan | undefined {
+    const source = tree.source;
     let start = site.start, end = site.end, opens = 0, closes = 0;
     for (const token of syntaxTokens(source, start, end)) {
         if (token.text === "(") opens++;
         else if (token.text === ")") { if (opens) opens--; else closes++; }
     }
+    let lower = 0, upper = source.length;
+    if (opens || closes) {
+        const visit = (node: AstNode) => {
+            if (node.kind === "interp-hole" && node.start <= site.start && node.end >= site.end) {
+                lower = node.start + 1; upper = node.end - 1;
+            }
+            Object.values(node.fields ?? {}).flat().filter(child => child.start <= site.start && child.end >= site.end).forEach(visit);
+        };
+        visit(tree.root);
+    }
     while (closes-- > 0) {
-        const previous = syntaxTokens(source, 0, start).slice(-1)[0];
+        const previous = syntaxTokens(source, lower, start).slice(-1)[0];
         if (previous?.text !== "(") return undefined;
         start = previous.start;
     }
     while (opens-- > 0) {
-        const next = syntaxTokens(source, end)[0];
+        const next = syntaxTokens(source, end, upper)[0];
         if (next?.text !== ")") return undefined;
         end = next.end;
     }
@@ -91,7 +102,7 @@ function replacementSpan(source: string, site: SourceSpan): SourceSpan | undefin
 export function expressionTemplates(tree: AstReply, site: ExpressionSite): StatementTemplate[] {
     const currentSite = expressionSites(tree).find(s => s.kind === site.kind && s.start === site.start && s.end === site.end);
     if (!currentSite) return [];
-    const span = replacementSpan(tree.source, site);
+    const span = replacementSpan(tree, site);
     if (!span) return [];
     const current = tree.source.slice(span.start, span.end);
     const choices: [string, string, string][] = [
@@ -140,7 +151,7 @@ export function replaceExpression(tree: AstReply, site: ExpressionSite, template
     const name = template.startsWith("reference:") ? template.slice(10) : undefined;
     const currentSite = expressionSites(tree).find(s => s.kind === site.kind && s.start === site.start && s.end === site.end)!;
     const text = name !== undefined && validExpressionReference(currentSite, name) ? name : choices.find(c => c.id === template)?.text;
-    const span = replacementSpan(tree.source, currentSite);
+    const span = replacementSpan(tree, currentSite);
     // Bare ellipsis after return^ is parsed as a separate statement.
     return text === undefined || !span ? undefined : { ...span, text: text === "..." ? "(...)" : text };
 }

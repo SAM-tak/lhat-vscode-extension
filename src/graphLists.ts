@@ -2,7 +2,7 @@ import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import type { StatementInsertion, StatementTemplate } from "./graphStatements";
 import { resultTypes, syntaxTokens } from "./graphSyntax";
-import { callInfo, canInsertBinding } from "./graphCalls";
+import { callSignatures, canInsertBinding } from "./graphCalls";
 import { assignmentOperator, assignmentValues } from "./graphAssignments";
 import { patternLists, patternExpressions } from "./graphPatterns";
 import { iteratorNames } from "./graphLoops";
@@ -118,11 +118,11 @@ function editableList(list: CommaList, site: ListInsertion, lists: CommaList[], 
         parent.node.kind === "reassign" && assignmentOperator(parent.node, source)?.base === ":=") && parent.field === "values" &&
         parent.items.length === 1 && parent.items[0] === list.node && array(parent.node.fields?.targets).length > 1)) return false;
     if (list.node.kind === "call" && list.field === "argument") {
-        const info = callInfo(list.node);
-        if (!info) return false;
+        const signatures = callSignatures(list.node);
+        if (!signatures.length) return true;
         const index = site.before === undefined ? list.items.length : list.items.findIndex(item => item.start === site.before);
-        return index >= info.inputs.length ? info.variadic !== undefined
-            : index === list.items.length && list.items.length < info.inputs.length;
+        return signatures.some(info => index >= info.inputs.length ? info.variadic !== undefined
+            : index === list.items.length && list.items.length < info.inputs.length);
     }
     return true;
 }
@@ -153,8 +153,8 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
     if (list.node.kind === "define") return [choice("binding", "_^ = nil^")];
     if (list.node.kind === "reassign") return [choice("binding", name("value"))];
     if (list.node.kind === "call") {
-        const info = callInfo(list.node);
         const index = site.before === undefined ? list.items.length : list.items.findIndex(item => item.start === site.before);
+        const info = callSignatures(list.node).find(info => info.inputs[index] || info.variadic);
         const input = info?.inputs[index] ?? info?.variadic;
         if (input?.default !== undefined) return [choice("default", input.default)];
         const initial = input?.type === "number^" ? "0" : input?.type === "string^" ? '""'

@@ -40,5 +40,16 @@ export async function renameFromGraph(document: vscode.TextDocument,
         "vscode.executeDocumentRenameProvider", document.uri, position, message.newName);
     if (!unchanged() || [...versions].some(([doc, version]) => doc.version !== version)) throw stale();
     if (!edit || edit.size === 0) throw new Error(vscode.l10n.t("The language server did not accept this name."));
-    if (!await vscode.workspace.applyEdit(edit)) throw new Error(vscode.l10n.t("Could not apply the rename."));
+    // Lowered bindings can report the same declaration more than once.
+    const unique = new vscode.WorkspaceEdit();
+    let duplicated = false;
+    for (const [uri, changes] of edit.entries()) {
+        const seen = new Set<string>();
+        for (const change of changes) {
+            const key = JSON.stringify([change.range.start, change.range.end, change.newText]);
+            if (seen.has(key)) duplicated = true;
+            else { seen.add(key); unique.replace(uri, change.range, change.newText); }
+        }
+    }
+    if (!await vscode.workspace.applyEdit(duplicated ? unique : edit)) throw new Error(vscode.l10n.t("Could not apply the rename."));
 }
