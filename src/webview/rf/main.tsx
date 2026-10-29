@@ -137,6 +137,7 @@ interface BoxData extends Record<string, unknown>, SlideData {
     literalTypeLabel?: string;
     literalTypeSite?: TypeSite;
     elementOwner?: SourceSpan;
+    sectionDelete?: { site: SourceSpan; label: string };
     depth: number;
     isContainer: boolean;
     layoutOnly: boolean;
@@ -468,6 +469,7 @@ function toFlow(
                     literalTypeLabel: c.lhat?.literalTypeLabel,
                     literalTypeSite: c.lhat?.literalTypeSite,
                     elementOwner: c.lhat?.elementOwner,
+                    sectionDelete: c.lhat?.sectionDelete,
                     inline: c.lhat?.inline,
                     operator: c.lhat?.operator,
                     decoration: ["signature-title", "signature-arrow", "range-arrow", "delimiter", "binding-keyword", "interpolation-add"].includes(c.lhat?.kind ?? ""),
@@ -1002,7 +1004,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
     // Match arms share their FOR's box. The invisible grouping still owns
     // the branch junction, unlike a declaration row with no handles at all.
     if (data.layoutOnly && !data.scrollSurface && !data.insertion && data.definitionRole === undefined &&
-        data.branchOffset === undefined && data.definitionBranchOffset === undefined && data.operandOutputY === undefined) return null;
+        data.branchOffset === undefined && data.definitionBranchOffset === undefined && data.operandOutputY === undefined && !data.sectionDelete) return null;
 
     const classes = ["box"];
     if (data.interpolation && !data.literal) classes.push("interpolation-box");
@@ -1031,6 +1033,10 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
 
     return (
         <>
+            {data.sectionDelete && <div className="section-delete" data-source-start={data.sectionDelete.site.start} data-source-end={data.sectionDelete.site.end}>
+                <span className="semantic-label" data-category="control">{data.sectionDelete.label}</span>
+                <DeleteButton start={data.sectionDelete.site.start} end={data.sectionDelete.site.end} />
+            </div>}
             {data.scrollSurface && <div className="call-tree-surface"
                 data-source-start={data.start} data-source-end={data.sourceEnd}
                 data-vscode-context={statements.context(data.statement, data, annotationOwner)}

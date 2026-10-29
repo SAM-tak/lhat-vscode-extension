@@ -216,7 +216,7 @@ async function graphUi(host, { evaluate, until, call }) {
             await accept();
         },
         async remove(node) {
-            const selector = `.box[data-source-start="${node.start}"] > .element-delete`;
+            const selector = `.box[data-source-start="${node.start}"] > .element-delete, .section-delete[data-source-start="${node.start}"][data-source-end="${node.end}"] > .element-delete`;
             await until(`document.querySelector(${JSON.stringify(selector)}) && ${ready}`);
             await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
             await accept();

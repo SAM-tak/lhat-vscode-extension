@@ -2907,6 +2907,52 @@ test('native statement context disables and restores a UI-created enum through t
     });
 });
 
+test('every loop section can be added, edited and deleted through common UI controls', { timeout: 180000 }, async () => {
+    const { graphHost, graphUi, load } = require('./graph-browser-host.cjs');
+    const { structuralDeletions } = load('graphDelete.ts');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), loop = () => host.tree.root.fields.items.at(-1);
+            for (const section of ['prolog^', 'pre^', 'first^', 'main^', 'last^', 'epilog^', 'finally^']) {
+                await ui.add('repeat');
+                await ui.structure(loop(), `section:${section}`);
+                const body = () => loop().fields.body;
+                const target = () => section === 'main^' ? body() : body().fields.extra.find(n => host.tree.source.slice(n.start, n.end).startsWith(section));
+                await ui.add('call', target());
+                assert.equal(section === 'main^' ? target().fields.items.length : target().fields.body.length, 1);
+                const deletion = structuralDeletions(host.tree).find(entry => entry.owner.start === loop().start && entry.action === `remove-section:${section}`);
+                assert(deletion, section);
+                await ui.remove(deletion.site);
+                assert.equal(body().fields?.items?.length ?? 0, 0);
+                assert.equal(body().fields?.extra?.length ?? 0, 0);
+            }
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('branch and loop-clause delete buttons update the source through common controls', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'if^true^{print(1) el^false^:print(2) el^:print(3)}\nrepeat^2{pre^:print(4) main^:print(5) epilog^:print(6)}');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), items = () => host.tree.root.fields.items;
+            await client.until(`document.querySelector('.svg-export>button') && !document.querySelector('.svg-export>button').disabled`);
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.remove(items()[0].fields.items[1]);
+            await ui.remove(items()[1].fields.body.fields.extra[0]);
+            const { structuralDeletions } = require('./graph-browser-host.cjs').load('graphDelete.ts');
+            const main = structuralDeletions(host.tree).find(entry => entry.action === 'remove-section:main^');
+            await ui.remove(main.site);
+            await ui.add('call', items()[1].fields.body);
+            const expected = await parse('if^true^{print(1) el^:print(3)}\nrepeat^2{main^:print(nil^) epilog^:print(6)}');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(expected));
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('return type delete buttons remove one result annotation and then restore inference', { timeout: 60000 }, async () => {
     const { graphHost, graphUi } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
@@ -2999,10 +3045,44 @@ test('with bindings and callback interpolations are reconstructed through live c
         const blueprint = await parse(source.slice(block.start, block.end));
         const expected = normalizedAst(blueprint), host = await graphHost(parse, server);
         await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
-            const ui = await graphUi(host, client), builder = reconstruction(ui, host, client, blueprint);
+            const ui = await graphUi(host, client), builder = reconstruction(ui, host, client, blueprint, message => process.stdout.write(`${message}\n`));
             try { await builder.statements(() => host.tree.root, blueprint.root.fields.items); }
             catch (error) { throw new Error(`${error.message}\nSource: ${host.tree.source}`, { cause: error }); }
             assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+        });
+    });
+});
+
+test('inventory definitions are reconstructed with constructors, receivers, errors and focused conditions', { timeout: 600000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    const { reconstruction } = require('./graph-reconstruct.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = fs.readFileSync(path.join(__dirname, '../testing/inventory.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const original = await parse(source), definitions = original.root.fields.items.filter(n => n.kind === 'errordef' || n.kind === 'define' && source.slice(n.fields.targets[0].start, n.fields.targets[0].end) === 'Item');
+        const blueprint = await parse(definitions.map(n => source.slice(n.start, n.end)).join('\n'));
+        const expected = normalizedAst(blueprint), host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), builder = reconstruction(ui, host, client, blueprint, message => process.stdout.write(`${message}\n`));
+            try { await builder.statements(() => host.tree.root, blueprint.root.fields.items); }
+            catch (error) { throw new Error(`${error.message}\nSource: ${host.tree.source}`, { cause: error }); }
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('inventory sample is reconstructed entirely through live UI controls', { timeout: 2400000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    const { reconstruction } = require('./graph-reconstruct.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = fs.readFileSync(path.join(__dirname, '../testing/inventory.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const blueprint = await parse(source), expected = normalizedAst(blueprint), host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), builder = reconstruction(ui, host, client, blueprint, message => process.stdout.write(`${message}\n`));
+            try { await builder.statements(() => host.tree.root, blueprint.root.fields.items); }
+            catch (error) { throw new Error(`${error.message}\nSource: ${host.tree.source}`, { cause: error }); }
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
         });
     });
 });
@@ -3014,7 +3094,7 @@ test('zero-based-indices sample is reconstructed entirely through live UI contro
         const source = fs.readFileSync(path.join(__dirname, '../testing/zero-based-indices.lh'), 'utf8').replace(/\r\n/g, '\n');
         const blueprint = await parse(source), expected = normalizedAst(blueprint), host = await graphHost(parse, server);
         await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
-            const ui = await graphUi(host, client), builder = reconstruction(ui, host, client, blueprint);
+            const ui = await graphUi(host, client), builder = reconstruction(ui, host, client, blueprint, message => process.stdout.write(`${message}\n`));
             try { await builder.statements(() => host.tree.root, blueprint.root.fields.items); }
             catch (error) { throw new Error(`${error.message}\nSource: ${host.tree.source}`, { cause: error }); }
             assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);

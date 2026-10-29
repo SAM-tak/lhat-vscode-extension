@@ -220,8 +220,10 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         branches.forEach((branch, index) => {
             if (index === 0) {
                 const next = branches[1], nextBody = next && one(next, "body"), condition = next && one(next, "condition");
-                if (!next && !expression) add("remove-branch:0", "Remove first branch", { start: node!.start, end: node!.end, text: "" });
-                else if (nextBody) {
+                if (!next && !expression) {
+                    const owner = parent?.kind === "for" && one(parent, "body") === node ? parent : node!;
+                    add("remove-branch:0", "Remove first branch", { start: owner.start, end: owner.end, text: "" });
+                } else if (nextBody) {
                     if (expression && !condition) add("remove-branch:0", "Remove first branch",
                         { start: node!.start, end: node!.end, text: `(${source.slice(nextBody.start, nextBody.end)})` });
                     else add("remove-branch:0", "Remove first branch", { start: node!.start,
@@ -281,7 +283,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
                 headers.push({ name: token.text, start: token.start, end: tokens[index + 1].end });
         });
         const implicit = !headers.some(h => h.name === "main^") && array(body.fields?.items).length > 0;
-        for (const name of order.slice(0, -1)) {
+        for (const name of order) {
             if (headers.some(h => h.name === name) || name === "main^" && implicit) continue;
             const next = headers.find(h => order.indexOf(h.name) > order.indexOf(name));
             let at = next?.start ?? close.start, text = `${newline}${name}:${newline}`;

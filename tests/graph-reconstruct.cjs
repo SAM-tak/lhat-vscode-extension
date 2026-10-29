@@ -3,7 +3,7 @@ const { load } = require('./graph-browser-host.cjs');
 
 // A blueprint supplies desired names, literal values and structural choices.
 // Every change still goes through a rendered control and the real editing host.
-function reconstruction(ui, host, client, blueprint) {
+function reconstruction(ui, host, client, blueprint, progress = () => {}) {
     const source = blueprint.source, text = node => source.slice(node.start, node.end);
     const { syntaxTokens } = load('graphSyntax.ts'), { literalOf } = load('webview/literals.ts');
     const { iteratorNames } = load('graphLoops.ts'), { assignmentValues, assignmentOperator } = load('graphAssignments.ts');
@@ -37,6 +37,9 @@ function reconstruction(ui, host, client, blueprint) {
     };
     const parameters = async (get, models) => {
         for (const [i, model] of models.entries()) {
+            if (one(model, 'name') && text(one(model, 'name')) === 'self^') {
+                await ui.addElement('receiver', get(), 'params'); continue;
+            }
             const variadic = !one(model, 'name');
             await ui.addElement(variadic ? 'variadic' : 'parameter', get(), 'params');
             const param = () => get().fields.params[i];
@@ -94,12 +97,30 @@ function reconstruction(ui, host, client, blueprint) {
             for (const [i, argument] of args.entries()) await expression(() => array(get(), 'argument')[i], argument);
             return;
         }
-        if (model.kind === 'table') {
-            await ui.expression(get(), 'table');
-            for (const [i, entry] of array(model, 'items').entries()) {
-                assert(!one(entry, 'key'));
-                await ui.addElement('number', get());
-                await expression(() => one(array(get(), 'items')[i], 'value'), one(entry, 'value'));
+        if (['table', 'def', 'self-table', 'error-new'].includes(model.kind)) {
+            await ui.expression(get(), { table: 'table', def: 'definition', 'self-table': 'selfTable', 'error-new': 'error' }[model.kind]);
+            await unfold();
+            if (model.kind === 'error-new') await ui.expression(one(get(), 'name'), `reference:${text(one(model, 'name'))}`);
+            const field = model.kind === 'error-new' ? 'members' : 'items';
+            for (const [i, entry] of array(model, field).entries()) {
+                const key = one(entry, 'key'), member = () => array(get(), field)[i];
+                const head = syntaxTokens(source, entry.start, one(entry, 'value').start);
+                const template = model.kind === 'def' && one(entry, 'value').kind === 'self-table' ? 'self'
+                    : head.some(t => t.text === 'op^') ? 'operator' : key && text(key) === 'new' && model.kind === 'def' ? 'constructor'
+                    : key ? 'member' : 'number';
+                await ui.addElement(template, get(), field);
+                if (key && !['operator', 'constructor'].includes(template)) await rename(one(member(), 'key'), text(key));
+                await expression(() => one(member(), 'value'), one(entry, 'value'));
+            }
+            return;
+        }
+        if (model.kind === 'if-expr') {
+            await ui.expression(get(), 'conditional');
+            const branches = array(model, 'items');
+            for (let i = 1; i < branches.filter(b => one(b, 'condition')).length; i++) await ui.structure(get(), 'branch');
+            for (const [i, branch] of branches.entries()) {
+                if (one(branch, 'condition')) await expression(() => one(array(get(), 'items')[i], 'condition'), one(branch, 'condition'));
+                await expression(() => one(array(get(), 'items')[i], 'body'), one(branch, 'body'));
             }
             return;
         }
@@ -153,19 +174,26 @@ function reconstruction(ui, host, client, blueprint) {
     };
     const statements = async (owner, models) => {
         for (const model of models) {
+            if (owner() === host.tree.root) progress(`Building ${text(model).split('\n')[0].slice(0, 100)}`);
             await addComments(owner, model.comments);
             const index = array(owner(), 'items').length;
             const get = () => array(owner(), 'items')[index];
             const append = async id => { await ui.add(id, owner()); assert(get(), `Append ${id}`); };
-            if (model.kind === 'import-stmt') {
+            if (model.kind === 'module') {
+                await append('module');
+                await ui.input('.interpolation-field.module textarea', text(one(model, 'name')));
+            } else if (model.kind === 'import-stmt') {
                 await append('import');
-                await ui.input(`.box[data-source-start="${get().start}"] .interpolation-field.import textarea`, text(one(model, 'value') ?? one(model, 'name')));
+                const value = text(one(model, 'value') ?? one(model, 'name'));
+                if (written(one(get(), 'value') ?? one(get(), 'name')) !== value)
+                    await ui.input(`.box[data-source-start="${get().start}"] .interpolation-field.import textarea`, value);
             } else if (model.kind === 'define') {
                 const mutable = syntaxTokens(source, model.start, model.end)[0].text === 'var^';
                 await append(mutable ? 'var' : 'let');
                 assert.equal(array(model, 'targets').length, 1);
                 await rename(name(one(get(), 'targets')), text(name(one(model, 'targets'))));
                 await expression(() => one(get(), 'values'), one(model, 'values'));
+                if (syntaxTokens(source, model.start, one(model, 'targets').start).some(t => t.text === 'public^')) await ui.structure(get(), 'public');
                 const annotation = one(one(model, 'targets'), 'type');
                 if (annotation) {
                     await ui.type(name(one(get(), 'targets')), 't^{}');
@@ -196,6 +224,15 @@ function reconstruction(ui, host, client, blueprint) {
                     await statements(() => one(current(), 'body'), array(one(arm, 'body'), 'items'));
                 }
             } else if (model.kind === 'for') {
+                if (one(model, 'body').kind === 'if-stmt') {
+                    await append('focusedIf');
+                    await rename(one(one(get(), 'focus'), 'targets'), text(one(one(model, 'focus'), 'targets')));
+                    await expression(() => one(one(get(), 'focus'), 'values'), one(one(model, 'focus'), 'values'));
+                    const condition = () => one(get(), 'body');
+                    await expression(() => one(one(condition(), 'items'), 'condition'), one(one(one(model, 'body'), 'items'), 'condition'));
+                    await statements(() => one(one(condition(), 'items'), 'body'), array(one(one(one(model, 'body'), 'items'), 'body'), 'items'));
+                    continue;
+                }
                 await append('for');
                 const names = iteratorNames(model, source);
                 if (names.length) {
@@ -209,6 +246,22 @@ function reconstruction(ui, host, client, blueprint) {
                 }
                 await expression(() => one(get(), 'bound'), one(model, 'bound'));
                 await statements(() => one(get(), 'body'), array(one(model, 'body'), 'items'));
+            } else if (model.kind === 'errordef') {
+                await append('error'); await unfold();
+                await rename(one(get(), 'name'), text(one(model, 'name')));
+                for (const [i, kind] of array(model, 'members').entries()) {
+                    if (i) await ui.addElement('error', get(), 'members');
+                    const current = () => array(get(), 'members')[i];
+                    await rename(one(current(), 'name'), text(one(kind, 'name')));
+                    for (const [j, field] of array(kind, 'members').entries()) {
+                        await ui.addElement('parameter', current(), 'members');
+                        const param = () => array(current(), 'members')[j];
+                        await rename(one(param(), 'name'), text(one(field, 'name')));
+                        await ui.structure(param(), 'default:add');
+                        await expression(() => one(param(), 'fallback'), one(field, 'fallback'));
+                        await ui.type(one(param(), 'name'), undefined);
+                    }
+                }
             } else if (model.kind === 'enumdef') {
                 await append('enumeration'); await unfold();
                 await rename(one(get(), 'name'), text(one(model, 'name')));

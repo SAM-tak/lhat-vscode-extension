@@ -743,6 +743,8 @@ textarea.literal-input {
     cursor: pointer; opacity: 0;
 }
 .box:hover > .expression-edit, .box:focus-within > .expression-edit, .element-delete, .structure-edit { opacity: 1; }
+.section-delete { position: absolute; right: 10px; top: 2px; z-index: 5; display: flex; align-items: center; gap: 4px; font-size: calc(10px * var(--lhat-scale, 1)); pointer-events: auto; }
+.section-delete > .element-delete { position: static; }
 
 .source-text-field { display: flex; gap: 4px; align-items: center; min-width: 0; width: 100%; }
 .source-text-caption { white-space: nowrap; }

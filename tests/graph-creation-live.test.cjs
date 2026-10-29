@@ -12,6 +12,32 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('branch and loop-section deletion reuses structural edits and preserves the remaining source structure', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { structuralDeletions, deleteFromGraph, deleteSites } = load('graphDelete.ts');
+    const { normalizedAst } = require('./graph-browser-host.cjs');
+    for (const [source, action, expected] of [
+        ['if^true^{print(1) el^false^:print(2) el^:print(3)}', 'remove-branch:0', 'if^false^{print(2) el^:print(3)}'],
+        ['if^true^{print(1) el^false^:print(2) el^:print(3)}', 'remove-branch:1', 'if^true^{print(1) el^:print(3)}'],
+        ['let^x=(if^true^:1 el^false^:2 el^:3;)', 'remove-branch:1', 'let^x=(if^true^:1 el^:3;)'],
+        ['for^n{when^0:print(1) when^1:print(2) other^:print(3)}', 'remove-match:0', 'for^n{when^1:print(2) other^:print(3)}'],
+        ['for^let^d=1 if^d>0{print(d)}', 'remove-branch:0', ''],
+        ['repeat^2{pre^:print(1) main^:print(2) epilog^:print(3)}', 'remove-section:pre^', 'repeat^2{main^:print(2) epilog^:print(3)}'],
+        ['repeat^2{pre^:print(1) main^:print(2) epilog^:print(3)}', 'remove-section:main^', 'repeat^2{pre^:print(1) epilog^:print(3)}'],
+        ['repeat^2{main^:print(2)}', 'remove-section:main^', 'repeat^2{main^:}'],
+        ['for^var^i=0 while^i<2 next^i+=1 {print(i)}', 'next:remove', 'for^var^i=0 while^i<2 {print(i)}'],
+    ]) {
+        const tree = await parse(source), before = JSON.stringify(tree);
+        const deletion = structuralDeletions(tree).find(entry => entry.action === action);
+        assert(deletion, `${action}: ${source}`);
+        assert(deleteSites(tree).some(site => site.category === 'element' && site.start === deletion.site.start && site.end === deletion.site.end));
+        const result = await parse(apply(source, deleteFromGraph(tree, deletion.site)));
+        assert.deepEqual(normalizedAst(result), normalizedAst(await parse(expected)), result.source);
+        assert.equal(JSON.stringify(tree), before);
+    }
+    const expression = await parse('let^x=(if^true^:1 el^:2;)');
+    assert(!structuralDeletions(expression).some(entry => entry.action === 'remove-branch:1'));
+}));
+
 test('grouped expressions inside interpolations remain replaceable without touching surrounding text', { timeout: 30000 }, async () => withLhatServer(async parse => {
     for (const value of ['(items)[0]', '(items[0]) + 1']) {
         const tree = await parse(`let^items={1} let^text=$"before{${value}}after"`);

@@ -28,6 +28,7 @@ import { interpolationFields, interpolationParts, type InterpolationField } from
 import { patternLists } from "../graphPatterns";
 import { iteratorNames } from "../graphLoops";
 import { expressionCells, isInlineValue } from "./operatorExpression";
+import { structuralDeletions } from "../graphDelete";
 
 const CH = 7.2; // mono advance at 12px
 const LEAF_H = 30;
@@ -207,6 +208,7 @@ export interface ElkNode {
         appendInsertion?: ListInsertion;
         insertionAxis?: "horizontal" | "vertical";
         appendInsertionAxis?: "horizontal" | "vertical";
+        sectionDelete?: { site: SourceSpan; label: string };
         operator?: OperatorSite;
         /** Children form the header/expression itself, without a duplicate label strip. */
         inline?: boolean;
@@ -597,6 +599,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     };
     collectIterators(reply.root);
     const editableLists = listInsertions(reply);
+    let structuralDeletes: ReturnType<typeof structuralDeletions> | undefined;
     const commaList = (node: AstNode, field: string) => lists.find(list => listIdentity(list.node, list.field) === listIdentity(node, field))
         ?? commaLists({ source, root: node }).find(list => list.node === node && list.field === field);
     const listSite = (list: CommaList, before?: number): ListInsertion => ({ category: "list", kind: list.node.kind,
@@ -2170,6 +2173,16 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             if (execution.stopsMain(node)) next.lhat!.unreachable = true;
         }
         const iteration = group("loop-main", [...firstLane ? [firstLane] : [], ...main, ...next ? [next] : []]);
+        const writtenMain = source.indexOf("main^", node.start);
+        const mainDeletion = writtenMain >= node.start && writtenMain < node.end
+            ? (structuralDeletes ??= structuralDeletions(reply)).find(entry => entry.owner.start === owner.start && entry.owner.end === owner.end && entry.action === "remove-section:main^") : undefined;
+        if (mainDeletion) {
+            const label = vocabulary.hats?.main ?? ENGLISH_VOCABULARY.hats!.main;
+            iteration.lhat!.sectionDelete = { site: mainDeletion.site, label };
+            iteration.lhat!.noExecutionHandles = true;
+            iteration.layoutOptions!["elk.padding"] = `[top=${Math.max(20, px(26))},left=${px(PAD)},bottom=${px(PAD)},right=${px(PAD)}]`;
+            iteration.layoutOptions!["elk.nodeSize.minimum"] = `(${widthFor(label) + px(24)}, 0)`;
+        }
         const conditional = loopConditions.get(owner);
         const predicate = conditional ? conditionBox(owner, conditional.predicate, unfold, avail, conditional.mode) : undefined;
         const gate = group("loop-test", [...predicate ? [predicate] : [], iteration]);

@@ -5,7 +5,7 @@ const Module = require('node:module');
 const { withLhatServer } = require('./lhat-server.cjs');
 const entry = path.resolve(__dirname, '../src/graphStructure.ts'), mod = new Module(entry);
 mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
-const { structureSites, editStructure } = mod.exports;
+const { structureSites, structureTemplates, editStructure } = mod.exports;
 const nodes = node => [node, ...Object.values(node.fields ?? {}).flat().flatMap(nodes)];
 
 test('real parser preserves branch bodies when adding and removing conditional and else arms', { timeout: 30000 }, async () => withLhatServer(async parse => {
@@ -28,7 +28,7 @@ test('real parser preserves branch bodies when adding and removing conditional a
 
 test('real parser keeps implicit loop main statements while adding earlier and later sections', { timeout: 30000 }, async () => withLhatServer(async parse => {
     let tree = await parse('repeat^3 { print(1) }');
-    for (const action of ['section:pre^', 'section:first^', 'section:last^', 'section:epilog^', 'remove-section:first^']) {
+    for (const action of ['section:pre^', 'section:first^', 'section:last^', 'section:epilog^', 'section:finally^', 'remove-section:first^']) {
         const change = editStructure(tree, structureSites(tree)[0], action);
         assert(change, action);
         tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
@@ -58,6 +58,30 @@ test('loop mode changes retain the complete body and all sections through real r
     }
 }));
 
+
+test('every offered loop mode preserves all body sections across counted, conditional, range and iterator forms', { timeout: 60000 }, async () => withLhatServer(async parse => {
+    const body = '{ pre^:print("pre") main^:print("body") last^:print("last") epilog^:print("end") finally^:print("cleanup") }';
+    const offered = new Set();
+    for (const header of ['repeat^3', 'repeat^', 'repeat^while^true^', 'repeat^until^false^',
+        'for^i from^0 downto^3 step^2', 'for^var^i=0 while^i<3 next^i+=1',
+        'for^var^i=0 until^i>=3 next^i+=1', 'for^i in^{1,2}', 'for^key,value in^{1,2}']) {
+        const tree = await parse(header + ' ' + body), site = structureSites(tree)[0];
+        const choices = structureTemplates(tree, site).filter(choice => choice.id.startsWith('mode:'));
+        assert(choices.length, header);
+        for (const choice of choices) {
+            offered.add(choice.id);
+            const edit = editStructure(tree, site, choice.id);
+            const changed = await parse(tree.source.slice(0, edit.start) + edit.text + tree.source.slice(edit.end));
+            const loop = changed.root.fields.items[0];
+            assert(['for', 'repeat'].includes(loop.kind), `${header}: ${choice.id}`);
+            assert.equal(changed.source.slice(loop.fields.body.start, loop.fields.body.end), body, `${header}: ${choice.id}`);
+            assert(!nodes(changed.root).some(n => n.kind === 'error'), `${header}: ${choice.id}`);
+            if (choice.id === 'mode:iterator') assert(changed.source.includes('in^'));
+            if (choice.id === 'mode:range') assert(changed.source.includes('from^') && changed.source.includes('to^'));
+        }
+    }
+    assert.deepEqual([...offered].sort(), ['mode:count', 'mode:forever', 'mode:iterator', 'mode:range', 'mode:until', 'mode:while']);
+}));
 
 test('removing the first branch promotes the next arm without losing its body', { timeout: 30000 }, async () => withLhatServer(async parse => {
     for (const source of ['if^true^ { print(1) el^false^: print(2) el^: print(3) }',

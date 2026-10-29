@@ -1,12 +1,48 @@
-import type { AstReply, SourceSpan } from "./protocol";
+import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import { statementSites } from "./graphStatements";
 import { commaLists, type CommaList } from "./graphLists";
 import { canInsertBinding } from "./graphCalls";
 import { syntaxTokens } from "./graphSyntax";
 import { annotationOwners } from "./graphAnnotations";
+import { structureTemplates, editStructure, type StructureSite } from "./graphStructure";
 
 export interface DeleteSite extends SourceSpan { category: "statement" | "element" }
+
+/** Use the same source-preserving operations as the structure menu. */
+export function structuralDeletions(tree: AstReply): { site: DeleteSite; owner: StructureSite; action: string }[] {
+    const result: { site: DeleteSite; owner: StructureSite; action: string }[] = [];
+    const one = (node: AstNode, field: string) => {
+        const value = node.fields?.[field]; return Array.isArray(value) ? value[0] : value;
+    };
+    const visit = (node: AstNode) => {
+        if (node.kind === "disabled") return;
+        if (["if-stmt", "if-expr", "for", "repeat"].includes(node.kind)) {
+            const body = one(node, "body"), owner = { start: node.start, end: node.end, kind: node.kind };
+            for (const choice of structureTemplates(tree, owner)) {
+                let element: SourceSpan | undefined;
+                const branch = /^remove-(?:branch|match):(\d+)$/.exec(choice.id);
+                if (branch) {
+                    const branches = (node.kind === "for" ? body : node)?.fields?.items;
+                    if (Array.isArray(branches)) element = branches[Number(branch[1])];
+                } else if (choice.id.startsWith("remove-section:")) {
+                    const name = choice.id.slice("remove-section:".length), extra = body?.fields?.extra;
+                    if (Array.isArray(extra)) element = extra.find(clause => syntaxTokens(tree.source, clause.start, clause.end)[0]?.text === name);
+                    if (!element && name === "main^") {
+                        const edit = editStructure(tree, owner, choice.id);
+                        if (edit && edit.text.trim() !== tree.source.slice(edit.start, edit.end).trim()) element = edit;
+                    }
+                } else if (choice.id === "next:remove") {
+                    const advance = node.fields?.advance, edit = editStructure(tree, owner, choice.id);
+                    if (Array.isArray(advance) && advance.length && edit) element = { start: edit.start, end: advance[advance.length - 1].end };
+                }
+                if (element) result.push({ site: { start: element.start, end: element.end, category: "element" }, owner, action: choice.id });
+            }
+        }
+        Object.values(node.fields ?? {}).flat().forEach(visit);
+    };
+    visit(tree.root); return result;
+}
 
 function removableLists(tree: AstReply) {
     const lists = commaLists(tree);
@@ -31,7 +67,8 @@ function bindingPairs(tree: AstReply): [CommaList, CommaList][] {
 
 export function deleteSites(tree: AstReply): DeleteSite[] {
     return [...statementSites(tree).map(site => ({ start: site.start, end: site.end, category: "statement" as const })),
-        ...[...removableLists(tree), ...bindingPairs(tree).flat()].flatMap(list => list.items.map(item => ({ start: item.start, end: item.end, category: "element" as const })))];
+        ...[...removableLists(tree), ...bindingPairs(tree).flat()].flatMap(list => list.items.map(item => ({ start: item.start, end: item.end, category: "element" as const }))),
+        ...structuralDeletions(tree).map(deletion => deletion.site)];
 }
 
 export function deleteFromGraph(tree: AstReply, site: DeleteSite): SourceEdit | undefined {
@@ -43,6 +80,8 @@ export function deleteFromGraph(tree: AstReply, site: DeleteSite): SourceEdit | 
         const end = next?.text === ";" ? next.end : site.end;
         return { start, end, text: end > site.end ? tree.source.slice(site.end, end - 1) : "" };
     }
+    const structural = structuralDeletions(tree).find(deletion => deletion.site.start === site.start && deletion.site.end === site.end);
+    if (structural) return editStructure(tree, structural.owner, structural.action);
     const pair = bindingPairs(tree).find(pair => pair.some(list => list.items.some(item => item.start === site.start && item.end === site.end)));
     if (pair) {
         const index = pair.flatMap(list => list.items.map((item, index) => ({ item, index })))
