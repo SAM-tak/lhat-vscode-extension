@@ -75,7 +75,7 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
 }
 
 export const validMember = (text: string) => /^(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+)$/u.test(text);
-export const validReference = (text: string) => text === "..." || /^(?:(?:\$+|\$\^+)?[\p{L}_][\p{L}\p{N}_]*|self\^|it\^)(?:\.(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+))*$/u.test(text);
+export const validReference = (text: string) => text === "..." || /^(?:[\p{L}_][\p{L}\p{N}_]*|(?:\$+|\$\^+)[\p{L}_][\p{L}\p{N}_]*\^?|(?:self|it|this|def)\^+|(?:super|L|t)\^)(?:\.(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+))*$/u.test(text);
 export const validExpressionReference = (site: ExpressionSite, text: string) => site.delegateName
     ? /^(?:self\^\.)?[\p{L}_][\p{L}\p{N}_]*$/u.test(text)
     : site.errorName
@@ -167,7 +167,7 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         const name = current.replace(/^\$(?:\^+|\$*)/, "");
         choices.push(["scope:file", "Reference the unit scope", `$${name}`], ["scope:outer", "Reference the enclosing scope", `$^${name}`]);
     }
-    const references = new Set<string>(currentSite.errorName ? ["Problem.Failure"] : currentSite.delegateName ? ["value", "self^.value"] : currentSite.memberKey ? ["value", "0"] : ["self^", "it^"]);
+    const references = new Set<string>(currentSite.errorName ? ["Problem.Failure"] : currentSite.delegateName ? ["value", "self^.value"] : currentSite.memberKey ? ["value", "0"] : ["self^", "it^", "this^", "super^", "def^", "L^"]);
     const names = (node: AstNode) => {
         if (["ident", "hat-ident", "member", "scope"].includes(node.kind)) {
             const name = tree.source.slice(node.start, node.end);

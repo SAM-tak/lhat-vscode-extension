@@ -50,6 +50,80 @@ const routes = { '/': { type: 'text/html', body: html({source,root}) } };
 for (const [url, file, type] of [['/graph.css', 'media/graph.css', 'text/css'], ['/bundle.css', 'media/rf/bundle.css', 'text/css'], ['/bundle.js', 'media/rf/bundle.js', 'text/javascript'], ['/layout-worker.js', 'media/rf/layout-worker.js', 'text/javascript']]) {
     routes[url] = { type, body: fs.readFileSync(path.resolve(__dirname, '..', file)) };
 }
+test('language AST cases render and export in normal, folded and drilled views without broken geometry', { timeout: 600000 }, async () => {
+    const { languageCases, declaredKinds } = require('./graph-language-cases.cjs');
+    const artifactDirectory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'lhat-ast-audit-'));
+    const cases = languageCases(), seen = new Set(), manifest = [];
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const trees = [];
+        for (const item of cases) {
+            const tree = await parse(item.source);
+            const visit = node => { seen.add(node.kind); if (!item.recovery) assert.notEqual(node.kind, 'error', item.name); Object.values(node.fields ?? {}).flat().forEach(visit); };
+            visit(tree.root); trees.push(tree);
+        }
+        assert.deepEqual(declaredKinds().filter(kind => !seen.has(kind)), ['annotation'], 'annotations are recovered from source instead of the AST response');
+        for (const [index, item] of cases.entries()) await browser({ ...routes, '/': { type: 'text/html', body: html(trees[index]) } }, async client => {
+            const { evaluate, until, call, errors } = client;
+            const ready = `!document.querySelector('.svg-export>button').disabled`;
+            const snapshot = async (item, index, mode) => {
+                await until(ready);
+                const geometry = await evaluate(`(()=>({nodes:document.querySelectorAll('.react-flow__node').length,
+                    invalid:[...document.querySelectorAll('.react-flow__node')].filter(e=>{const r=e.getBoundingClientRect();return ![r.x,r.y,r.width,r.height].every(Number.isFinite)||r.width<0||r.height<0}).length,
+                    badEdges:[...document.querySelectorAll('.react-flow__edge-path')].filter(e=>/NaN|undefined|Infinity/.test(e.getAttribute('d'))).length}))()`);
+                assert(geometry.nodes > 0, `${item.name}: ${mode}`);
+                assert.equal(geometry.invalid + geometry.badEdges, 0, `${item.name}: ${mode}`);
+                const previous = await evaluate(`window.exports.length`);
+                await evaluate(`document.querySelector('.svg-export>button').click()`);
+                await until(`document.querySelector('.svg-export-menu>button')`);
+                await evaluate(`(()=>{const inputs=document.querySelectorAll('.svg-export-menu input');if(!inputs[1].checked)inputs[1].click()})()`);
+                await evaluate(`document.querySelector('.svg-export-menu>button').click()`);
+                await until(`window.exports.length>${previous}`);
+                const exported = await evaluate(`(()=>{const svg=window.exports.at(-1).svg,doc=new DOMParser().parseFromString(svg,'image/svg+xml');return {svg,error:doc.querySelector('parsererror')?.textContent,
+                    viewBox:doc.documentElement.getAttribute('viewBox').split(' ').map(Number),
+                    broken:[...doc.querySelectorAll('[marker-end]')].filter(e=>!doc.getElementById(e.getAttribute('marker-end').slice(5,-1))).length,
+                    badPaths:[...doc.querySelectorAll('path')].filter(e=>/NaN|undefined|Infinity/.test(e.getAttribute('d'))).length}})()`);
+                assert(!exported.error, `${item.name}: ${mode}`);
+                assert(exported.viewBox.every(Number.isFinite) && exported.viewBox[2] > 0 && exported.viewBox[3] > 0, `${item.name}: ${mode}`);
+                assert.equal(exported.broken + exported.badPaths, 0, `${item.name}: ${mode}`);
+                const file = `${index}-${mode}.svg`;
+                fs.writeFileSync(path.join(artifactDirectory, file), exported.svg);
+                manifest.push({ name: item.name, mode, file, ...geometry, viewBox: exported.viewBox });
+            };
+                await until(`document.querySelector('#app')?.dataset.graphVersion==='1' && ${ready}`);
+                await snapshot(item, index, 'normal');
+                await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await until(ready);
+                await snapshot(item, index, 'expanded');
+                if (['annotation','callable-modifiers','coroutine'].includes(item.name)) {
+                    if (item.name === 'annotation') assert(await evaluate(`!!document.querySelector('.annotation-box')`));
+                    const screenshot = await call('Page.captureScreenshot', { format: 'png' });
+                    fs.writeFileSync(path.join(artifactDirectory, `${index}-expanded.png`), Buffer.from(screenshot.data, 'base64'));
+                }
+                await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Fold All')?.click()`);
+                await until(ready);
+                await snapshot(item, index, 'folded');
+                const selector = '.box.folded:not(.comment-box):not(.annotation-box)';
+                const target = await evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector)});if(e){const r=e.getBoundingClientRect();return {x:r.left,y:r.top,width:r.width,height:r.height}}})()`);
+                if (target) {
+                    if (target.y < 80 || target.y > 600 || target.x < 0 || target.x > 950) {
+                        await call('Input.dispatchMouseEvent', { type: 'mouseWheel', x:500, y:350, deltaY:target.y - 180, deltaX:target.x < 0 || target.x > 950 ? target.x - 200 : 0 });
+                        await evaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+                    }
+                    const point = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:Math.max(8,r.left+8),y:r.top+8}})()`);
+                    assert(point.x > 0 && point.x < 1000 && point.y > 60 && point.y < 690, `${item.name}: folded node is not reachable`);
+                    for (const type of ['mousePressed','mouseReleased']) await call('Input.dispatchMouseEvent', { type, ...point, button:'left', clickCount:1 });
+                    await until(`document.querySelector('#trail') && ${ready}`);
+                    await snapshot(item, index, 'drilled');
+                    await evaluate(`document.querySelector('#trail button').click()`);
+                    await until(`!document.querySelector('#trail') && ${ready}`);
+                }
+                assert.deepEqual(errors, [], item.name);
+        });
+    });
+    fs.writeFileSync(path.join(artifactDirectory, 'coverage.json'), JSON.stringify({ kinds: [...seen].sort(), views: manifest }, null, 2));
+    console.log(`AST audit artifacts: ${artifactDirectory}`);
+});
+
 test('drilling a condition preserves its expression editors instead of opening the same-start clause', { timeout: 60000 }, async () => {
     const source = 'if^"aaaaa" = "aaaaa" { break^ }';
     const n = (kind, start, end, fields) => ({ kind, start, end, line: 1, column: start + 1, fields });
@@ -2932,6 +3006,24 @@ test('a typed variadic function is constructed through parameter, reference and 
             await ui.expression(returned().fields.value[0], 'index');
             await ui.structure(returned(), 'return:implicit');
             assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('contextual references and stacked focus names are selectable and retain their edited spelling', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), value = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('let');
+            for (const reference of ['this^','this^^','it^^','def^','super^','L^','$^it^']) {
+                await ui.expression(value(), `reference:${reference}`);
+                assert.equal(host.tree.source.slice(value().start, value().end), reference);
+            }
+            await ui.expression(value(), 'nil');
+            assert.equal(value().kind, 'hat-ident');
             assert.deepEqual(client.errors, []);
         });
     });

@@ -12,6 +12,17 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('contextual and enclosing-body references are editable without admitting structural keywords', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    for (const reference of ['this^','this^^','self^^','it^^','def^','def^^','super^','L^','t^','$^it^','$$self^']) {
+        const tree = await parse('let^value=nil^'), value = tree.root.fields.items[0].fields.values[0];
+        assert(expressions.validReference(reference), reference);
+        const changed = await parse(apply(tree.source, expressions.replaceExpression(tree, value, `reference:${reference}`)));
+        assert(!flat(changed.root).some(n => n.kind === 'error'), changed.source);
+        assert.equal(changed.source.slice(changed.root.fields.items[0].fields.values[0].start, changed.root.fields.items[0].fields.values[0].end), reference);
+    }
+    for (const reference of ['if^','for^','f^','foo^^','super^^','this^;print(1)']) assert(!expressions.validReference(reference), reference);
+}));
+
 test('callable templates toggle and remain whole expressions when replaced, deleted or reordered', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structures = load('graphStructure.ts'), deletion = load('graphDelete.ts'), reorder = load('graphReorder.ts');
     for (const source of ['let^fn=f^{0}', 'let^fn=p^{}']) {
