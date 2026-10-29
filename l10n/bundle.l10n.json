@@ -445,5 +445,12 @@
     "Use nil-checked access": "Use nil-checked access",
     "Chained comparisons": "Chained comparisons",
     "Add a comparison": "Add a comparison",
-    "Remove last comparison": "Remove last comparison"
+    "Remove last comparison": "Remove last comparison",
+    "Callable template": "Callable template",
+    "Use an ordinary callable": "Use an ordinary callable",
+    "Use a callable template": "Use a callable template",
+    "Use an immutable receiver": "Use an immutable receiver",
+    "Use a mutable receiver": "Use a mutable receiver",
+    "Remove fresh result promise": "Remove fresh result promise",
+    "Promise a fresh result": "Promise a fresh result"
 }

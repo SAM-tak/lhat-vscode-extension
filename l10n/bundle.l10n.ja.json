@@ -445,5 +445,12 @@
     "Use nil-checked access": "nil を確認するアクセスにする",
     "Chained comparisons": "比較を連鎖させる",
     "Add a comparison": "比較を追加",
-    "Remove last comparison": "最後の比較を削除"
+    "Remove last comparison": "最後の比較を削除",
+    "Callable template": "呼び出し可能なテンプレート",
+    "Use an ordinary callable": "通常の関数・手続きにする",
+    "Use a callable template": "呼び出し可能なテンプレートにする",
+    "Use an immutable receiver": "変更しないレシーバーにする",
+    "Use a mutable receiver": "変更可能なレシーバーにする",
+    "Remove fresh result promise": "新規の戻り値の指定を外す",
+    "Promise a fresh result": "新規の戻り値を指定"
 }

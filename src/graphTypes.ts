@@ -1,8 +1,16 @@
 import type { AstNode, AstReply, TypeSite } from "./protocol";
-import { resultTypes } from "./graphSyntax";
+import { resultTypes, syntaxTokens } from "./graphSyntax";
 
 const one = (value: AstNode | AstNode[] | undefined): AstNode | undefined => Array.isArray(value) ? value[0] : value;
 const list = (value: AstNode | AstNode[] | undefined): AstNode[] => value === undefined ? [] : Array.isArray(value) ? value : [value];
+
+/** Ignore modifiers on nested parameter signatures. */
+export function freshMarker(node: AstNode, source: string) {
+    const annotation = one(node.fields?.return_type);
+    if (!annotation) return undefined;
+    const parameters = list(node.fields?.params);
+    return syntaxTokens(source, parameters[parameters.length - 1]?.end ?? node.start, annotation.start).find(token => token.text === "fresh^");
+}
 
 /** Find punctuation between AST children without mistaking comments for syntax. */
 function punctuation(source: string, start: number, end: number): { char: string; offset: number }[] {
@@ -60,9 +68,9 @@ export function typeSites({ root, source }: AstReply): TypeSite[] {
         const annotation = one(owner.fields?.return_type);
         const body = one(owner.fields?.body);
         const limit = body?.start ?? owner.end;
-        const symbols = punctuation(source, owner.start, limit);
-        const arrowAt = symbols.findIndex((token, index) => token.char === "-" && symbols[index + 1]?.char === ">");
-        const operator = arrowAt < 0 ? undefined : { start: symbols[arrowAt].offset, end: symbols[arrowAt + 1].offset + 1 };
+        const parameters = list(owner.fields?.params);
+        const arrow = syntaxTokens(source, parameters[parameters.length - 1]?.end ?? owner.start, annotation?.start ?? limit).find(token => token.text === "->");
+        const operator = arrow && { start: arrow.start, end: arrow.end };
         const marker = /[fp]\^/.exec(source.slice(owner.start, limit));
         const markerStart = owner.start + (marker?.index ?? 0);
         const anchor = operator ?? { start: markerStart, end: markerStart + (marker?.[0].length ?? 0) };
@@ -116,7 +124,7 @@ export function typeSites({ root, source }: AstReply): TypeSite[] {
                 if (!one(node.fields?.fallback)) sites[sites.length - 1].parameter = true;
             } else if (!name) {
                 const annotation = one(node.fields?.type);
-                if (annotation) sites.push({ start: annotation.start, end: annotation.end, name: "parameter type",
+                if (annotation && source.slice(annotation.start, annotation.end) !== "self^") sites.push({ start: annotation.start, end: annotation.end, name: "parameter type",
                     insert: annotation.start, annotation: { start: annotation.start, end: annotation.end },
                     explicit: true, required: true, typeText: source.slice(annotation.start, annotation.end) });
             }

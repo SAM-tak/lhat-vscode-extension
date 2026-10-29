@@ -1,7 +1,7 @@
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { StatementTemplate } from "./graphStatements";
 import type { SourceEdit } from "./graphReorder";
-import { syntaxTokens } from "./graphSyntax";
+import { syntaxTokens, templateMarker } from "./graphSyntax";
 import { callInfo } from "./graphCalls";
 import { assignmentValues } from "./graphAssignments";
 import { patternLists, patternExpressions } from "./graphPatterns";
@@ -85,7 +85,7 @@ export const validExpressionReference = (site: ExpressionSite, text: string) => 
 /** Grouping has no AST node. A binary span may start inside a grouped left operand. */
 export function replacementSpan(tree: AstReply, site: SourceSpan): SourceSpan | undefined {
     const source = tree.source;
-    let start = site.start, end = site.end, opens = 0, closes = 0;
+    let start = templateMarker(source, site)?.start ?? site.start, end = site.end, opens = 0, closes = 0;
     for (const token of syntaxTokens(source, start, end)) {
         if (token.text === "(") opens++;
         else if (token.text === ")") { if (opens) opens--; else closes++; }

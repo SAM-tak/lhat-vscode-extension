@@ -12,7 +12,7 @@
 // Element lists (5.3.1) obey neither: they wrap into rows of a set width.
 
 import type { AstNode, AstReply, TypeSite, SourceSpan } from "../protocol.js";
-import { declaredEntry, typeSites } from "../graphTypes";
+import { declaredEntry, typeSites, freshMarker } from "../graphTypes";
 import { commaLists, listIdentity, listInsertions, groupedOperatorSites, type CommaList, type InsertionSite, type ListInsertion, type OperatorSite } from "../graphLists";
 import { callInfo, callReceiver, accessOperator, canInsertBinding, outputTypes } from "../graphCalls";
 import { reorderSites, type ReorderSite } from "../graphReorder";
@@ -23,7 +23,7 @@ import { arrangeCallTrees, alignCallPorts } from "./callLayout";
 import { definitionSource } from "./definitionSource";
 import { analyzeExecution } from "./execution";
 import { assignmentOperator } from "../graphAssignments";
-import { syntaxTokens } from "../graphSyntax";
+import { syntaxTokens, templateMarker } from "../graphSyntax";
 import { interpolationFields, interpolationParts, type InterpolationField } from "../graphInterpolation";
 import { patternLists } from "../graphPatterns";
 import { iteratorNames, forExpression } from "../graphLoops";
@@ -993,7 +993,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
 
     function signature(node: AstNode, unfold: boolean, avail: number): ElkNode {
         const params = commaList(node, "params")!, returns = commaList(node, "return_type")!;
-        const keyword = makeLabel({ ...node, end: node.start + 2 }, [], MAX_LABEL);
+        const keyword = makeLabel({ ...node, start: templateMarker(source, node)?.start ?? node.start, end: node.start + 2 }, [], MAX_LABEL);
         const name = node === viewRoot ? callableNames.get(node) : undefined;
         if (name) keyword.parts.push({ text: ` ${source.slice(name.start, name.end)}`, symbol: { start: name.start, end: name.end } });
         const title = leaf({ ...node, kind: "signature-title", end: node.start + 2 }, keyword);
@@ -1001,8 +1001,10 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             ? build(param, "expr", unfold, avail) : leaf(param, labelFor(param, []))));
         const resultSites = sites.filter(site => site.name.startsWith("return value") &&
             (site.result?.owner === node.start || (site.start === (returns.items[0]?.start ?? node.start) && site.end <= node.end)));
+        const fresh = freshMarker(node, source);
         const cells = resultSites.map(site => leaf({ ...node, kind: "result-type", start: site.start, end: site.end },
-            { text: "", parts: [{ text: "", typeSite: site, typeLabel: displayType(site.typeText, vocabulary, true) }] }));
+            { text: "", parts: [...fresh ? [{ text: `${vocabulary.hats?.fresh ?? "Fresh"} `, role: "fresh", category: "modifier" as const }] : [],
+                { text: "", typeSite: site, typeLabel: displayType(site.typeText, vocabulary, true) }] }));
         const results = listContent(returns, unfold, avail, cells);
         const inputs = ioGroup(node, "input", [parameters], "RIGHT");
         const outputs = ioGroup(node, "output", [results], "RIGHT");

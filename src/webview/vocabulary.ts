@@ -54,6 +54,7 @@ export const HAT_GROUPS: readonly (readonly [string, LabelCategory, string])[] =
     ["public", "modifier", "Public"],
     ["mutable", "modifier", "Mutable"],
     ["fresh", "modifier", "Fresh"],
+    ["template", "modifier", "Callable template"],
     ["abstract", "modifier", "Abstract"],
     ["override", "modifier", "Override"],
     ["overload", "modifier", "Overload"],

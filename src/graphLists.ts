@@ -1,7 +1,8 @@
+import { freshMarker } from "./graphTypes";
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import type { StatementInsertion, StatementTemplate } from "./graphStatements";
-import { resultTypes, syntaxTokens } from "./graphSyntax";
+import { resultTypes, syntaxTokens, templateMarker } from "./graphSyntax";
 import { callSignatures, canInsertBinding } from "./graphCalls";
 import { assignmentOperator, assignmentValues } from "./graphAssignments";
 import { patternLists, patternExpressions } from "./graphPatterns";
@@ -113,6 +114,7 @@ function editableList(list: CommaList, site: ListInsertion, lists: CommaList[], 
     if (["func", "type-func"].includes(list.node.kind) && list.field === "params" && site.before === undefined &&
         list.items.some(item => syntaxTokens(source, item.start, item.end)[0]?.text === "...")) return false;
     if (list.node.kind === "for" && list.field === "focus" && iteratorNames(list.node, source).length) return false;
+    if (list.field === "return_type" && freshMarker(list.node, source)) return false;
     if (["define", "reassign"].includes(list.node.kind)) return list.field === "targets" && canInsertBinding(list.node, source);
     if (list.node.kind === "tuple" && lists.some(parent => (parent.node.kind === "define" ||
         parent.node.kind === "reassign" && assignmentOperator(parent.node, source)?.base === ":=") && parent.field === "values" &&
@@ -182,7 +184,8 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
     if (list.mode === "type") {
         const types = [choice("number", "number^"), choice("string", "string^"), choice("boolean", "bool^"), choice("any", "any^")];
         return list.node.kind === "type-table" ? [choice("typeMember", `${name("value")}: number^`), ...types]
-            : list.node.kind === "type-func" && list.field === "params" && site.before === undefined ? [...types, choice("variadic", "...:any^")] : types;
+            : list.node.kind === "type-func" && list.field === "params" && site.before === undefined ? [...types, choice("variadic", "...:any^"),
+                ...list.items.some(param => { const type = one(param, "type"); return type && sourceText(type) === "self^"; }) ? [] : [choice("receiver", "self^")]] : types;
     }
     const values = [choice("number", "0"), choice("string", '""'), choice("boolean", "false^"), choice("nil", "nil^"),
         choice("table", "{}"), choice("function", "f^{ return^ 0 }"), choice("procedure", "p^{}")];
@@ -356,11 +359,12 @@ export function removeListItem(source: string, list: CommaList, index: number): 
     const item = list.items[index];
     const next = list.items[index + 1], previous = list.items[index - 1];
     // AST spans omit grouping parentheses. Remove the written slot, including its groups.
-    const leading = syntaxTokens(source, previous?.end ?? list.start, item.start);
+    const writtenStart = templateMarker(source, item)?.start ?? item.start;
+    const leading = syntaxTokens(source, previous?.end ?? list.start, writtenStart);
     const trailing = syntaxTokens(source, item.end, next?.start ?? list.end);
     const before = leading.filter(t => t.text === ",").slice(-1)[0];
     const after = trailing.find(t => t.text === ",");
-    let start = item.start, end = item.end;
+    let start = writtenStart, end = item.end;
     for (const token of leading.slice().reverse()) {
         if (token.text !== "(") break;
         start = token.start;

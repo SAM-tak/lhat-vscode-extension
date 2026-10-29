@@ -4,10 +4,10 @@ import { commaLists, insertListEdit, removeListElement, comparison } from "./gra
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import type { StatementTemplate } from "./graphStatements";
-import { syntaxTokens } from "./graphSyntax";
+import { syntaxTokens, templateMarker, resultTypes } from "./graphSyntax";
 import { literalOf, quoteString } from "./webview/literals";
 import { assignmentOperator, ASSIGNMENT_LABELS } from "./graphAssignments";
-import { typeSites } from "./graphTypes";
+import { typeSites, freshMarker } from "./graphTypes";
 import { iteratorNames, freshFocus } from "./graphLoops";
 
 export const validTypeMemberName = (name: string) => /^[\p{L}_][\p{L}\p{N}_]*$/u.test(name);
@@ -16,11 +16,31 @@ export interface StructureSite extends SourceSpan { kind: string }
 interface Action extends StatementTemplate { edit: SourceEdit }
 const array = (value: AstNode | AstNode[] | undefined): AstNode[] => value ? Array.isArray(value) ? value : [value] : [];
 const one = (node: AstNode, field: string) => array(node.fields?.[field])[0];
+function receiverMutation(param: AstNode, source: string) {
+    const receiver = one(param, "name") ?? one(param, "type");
+    if (!receiver || source.slice(receiver.start, receiver.end) !== "self^") return undefined;
+    const marker = syntaxTokens(source, param.start, receiver.start).find(token => token.text === "mutable^");
+    return { label: marker ? "Use an immutable receiver" : "Use a mutable receiver", edit: marker
+        ? { start: marker.start, end: marker.end, text: "" } : { start: param.start, end: param.start, text: "mutable^" } };
+}
+
+function freshness(node: AstNode, source: string) {
+    const annotation = one(node, "return_type"), marker = freshMarker(node, source), body = one(node, "body");
+    if (marker) return { label: "Remove fresh result promise", edit: { start: marker.start, end: marker.end, text: "" } };
+    if (annotation?.kind === "type-tuple") return undefined;
+    const inferred = resultTypes(node.inferredReturnType);
+    if (!annotation && (!body || !node.inferredReturnType || inferred.length !== 1)) return undefined;
+    const parameters = array(node.fields?.params), at = parameters[parameters.length - 1]?.end ?? node.start;
+    const arrow = syntaxTokens(source, at, annotation?.start ?? body?.start ?? node.end).find(token => token.text === "->");
+    return arrow ? { label: "Promise a fresh result", edit: { start: arrow.end, end: arrow.end, text: " fresh^" } }
+        : body ? { label: "Promise a fresh result", edit: { start: body.start, end: body.start, text: ` -> fresh^${inferred[0] === "?" ? "any^" : inferred[0]} ` } } : undefined;
+}
+
 export function structureSites(tree: AstReply): StructureSite[] {
     const sites: StructureSite[] = [];
     const visit = (node: AstNode) => {
         if (node.kind === "disabled") return;
-        if (node.kind.startsWith("type-") || ["if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string", "scope", "box", "member", "index", "call", "compare-chain", "binary"].includes(node.kind))
+        if (node.kind.startsWith("type-") || ["if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string", "scope", "box", "member", "index", "call", "compare-chain", "binary", "func"].includes(node.kind))
             sites.push({ start: node.start, end: node.end, kind: node.kind });
         Object.values(node.fields ?? {}).flat().forEach(visit);
     };
@@ -82,6 +102,14 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         if (body?.kind === "for") add("focus:unwrap", "Remove the outer local scope", { start: node.start, end: body.start, text: "" });
     }
 
+    if (node.kind === "func") {
+        const marker = templateMarker(source, node);
+        add("function:template", marker ? "Use an ordinary callable" : "Use a callable template", marker
+            ? { start: marker.start, end: marker.end, text: "" } : { start: node.start, end: node.start, text: "template^" });
+        const fresh = freshness(node, source);
+        if (fresh) add("function:fresh", fresh.label, fresh.edit);
+        return result;
+    }
     if (node.kind.startsWith("type-")) {
         const names = new Set(["number^", "string^", "bool^", "nil^", "any^", "t^{}"]);
         const owner = typeSites(tree).find(site => site.annotation && site.annotation.start <= node!.start && site.annotation.end >= node!.end);
@@ -106,10 +134,13 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         collect(tree.root);
         const rootSpan = replacementSpan(tree, node) ?? node;
         const original = source.slice(rootSpan.start, rootSpan.end);
-        const targets: AstNode[] = [];
-        const gather = (child: AstNode) => {
+        const targets: AstNode[] = [], freshTypes = new Set<AstNode>();
+        if (parent && one(parent, "return_type") === node && freshMarker(parent, source)) freshTypes.add(node);
+        const gather = (child: AstNode, owner?: AstNode) => {
+            if (owner?.kind === "param" && source.slice(child.start, child.end) === "self^") return;
             if (child.kind.startsWith("type-")) targets.push(child);
-            Object.values(child.fields ?? {}).flat().forEach(gather);
+            if (freshMarker(child, source)) freshTypes.add(one(child, "return_type")!);
+            Object.values(child.fields ?? {}).flat().forEach(part => gather(part, child));
         };
         gather(node);
         const lists = commaLists(tree);
@@ -130,13 +161,17 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
                 ["procedure", "Use procedure type", `p^any^ -> (${current});`],
                 ["coroutine", "Use coroutine type", `c^{f^any^ -> any^ -> (${current})}`],
                 ["apply", "Use type descriptor type", `type^<${current}>`],
-            ]) replace(`type:${id}`, label, text);
+            ]) if (id !== "tuple" || !freshTypes.has(target)) replace(`type:${id}`, label, text);
             for (const list of lists.filter(list => list.node === target)) {
                 const field = ["type-tuple", "type-apply"].includes(target.kind) ? "" : `${list.field}:`;
                 list.items.forEach((item, i) => {
                     if (!["type-tuple", "type-apply"].includes(target.kind) || list.items.length > 1) {
                         const remove = removeListElement(source, list, i);
                         if (remove) change(`type:remove:${field}${i}`, "Remove type element", remove);
+                    }
+                    if (target.kind === "type-func" && list.field === "params") {
+                        const mutable = receiverMutation(item, source);
+                        if (mutable) change(`type:receiver:${i}:mutable`, mutable.label, mutable.edit);
                     }
                     const key = one(item, "key") ?? one(item, "name");
                     if (target.kind === "type-table" && key) {
@@ -150,9 +185,13 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
                 if (target.kind === "type-func" && list.field === "params") {
                     const variadic = insertListEdit(tree, { category: "list", kind: target.kind, start: target.start, end: target.end, field: list.field }, "variadic");
                     if (variadic) change("type:append:variadic", "Variadic parameter", variadic);
+                    const receiver = insertListEdit(tree, { category: "list", kind: target.kind, start: target.start, end: target.end, field: list.field }, "receiver");
+                    if (receiver) change("type:append:receiver", "Receiver parameter", receiver);
                 }
             }
             if (target.kind === "type-func") {
+                const fresh = freshness(target, source);
+                if (fresh) change("function:fresh", fresh.label, fresh.edit);
                 const marker = syntaxTokens(source, target.start, target.end).find(t => ["f^", "p^"].includes(t.text));
                 if (marker) for (const [id, label, text] of [["function", "Use function type", "f^"], ["procedure", "Use procedure type", "p^"]])
                     change(`function:kind:${id}`, label, { start: marker.start, end: marker.end, text });
@@ -214,6 +253,8 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         return result;
     }
     if (node.kind === "param") {
+        const mutable = parent && ["func", "type-func"].includes(parent.kind) && receiverMutation(node, source);
+        if (mutable) { add("receiver:mutable", mutable.label, mutable.edit); return result; }
         const name = one(node, "name"), fallback = one(node, "fallback"), type = one(node, "type");
         if (!parent || !["func", "error-kind"].includes(parent.kind) || !name || /^self\^+$/.test(source.slice(name.start, name.end))) return [];
         if (fallback) {

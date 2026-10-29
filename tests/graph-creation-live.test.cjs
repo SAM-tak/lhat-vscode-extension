@@ -12,6 +12,53 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('callable templates toggle and remain whole expressions when replaced, deleted or reordered', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structures = load('graphStructure.ts'), deletion = load('graphDelete.ts'), reorder = load('graphReorder.ts');
+    for (const source of ['let^fn=f^{0}', 'let^fn=p^{}']) {
+        let tree = await parse(source), fn = () => tree.root.fields.items[0].fields.values[0];
+        tree = await parse(apply(tree.source, structures.editStructure(tree, fn(), 'function:template')));
+        assert(tree.source.includes('template^'));
+        tree = await parse(apply(tree.source, expressions.replaceExpression(tree, fn(), 'nil')));
+        assert(!tree.source.includes('template^'), tree.source);
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    }
+    let tree = await parse('let^items=print(template^f^{0},1)');
+    const args = () => tree.root.fields.items[0].fields.values[0].fields.argument;
+    const fn = args()[0], number = args()[1];
+    const changed = reorder.reorderEdit(tree, { sourceStart: fn.start, sourceEnd: fn.end, targetStart: number.start, targetEnd: number.end, before: false });
+    assert(changed);
+    tree = await parse(apply(tree.source, changed));
+    assert.equal(args()[0].kind, 'int', tree.source);
+    const moved = args()[1];
+    const site = deletion.deleteSites(tree).find(s => s.category === 'element' && s.start === moved.start && s.end === moved.end);
+    assert(site);
+    tree = await parse(apply(tree.source, deletion.deleteFromGraph(tree, site)));
+    assert(!tree.source.includes('template^'), tree.source);
+    assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+}));
+
+test('fresh result and mutable receiver modifiers preserve callable bodies and prohibit tuple promises', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structures = load('graphStructure.ts'), lists = load('graphLists.ts'), types = load('graphTypes.ts');
+    let tree = await parse('let^Item=def^{method=f^self^{return^{}}}');
+    const fn = () => tree.root.fields.items[0].fields.values[0].fields.items[0].fields.value;
+    tree = await parse(apply(tree.source, structures.editStructure(tree, fn().fields.params[0], 'receiver:mutable')));
+    assert(tree.source.includes('mutable^self^'));
+    tree = await parse(apply(tree.source, structures.editStructure(tree, fn(), 'function:fresh')));
+    assert(tree.source.includes('fresh^'));
+    assert(!lists.listInsertions(tree).some(s => s.kind === 'func' && s.field === 'return_type' && s.start === fn().start));
+    const result = fn().fields.return_type;
+    assert(!structures.structureTemplates(tree, result).some(choice => choice.id === 'type:tuple'));
+    tree = await parse(apply(tree.source, structures.editStructure(tree, fn(), 'function:fresh')));
+    assert(!tree.source.includes('fresh^'));
+    assert(tree.source.includes('return^{}'));
+    const nested = await parse('let^f=f^callback:(f^number^ -> string^;) -> fresh^number^{return^0}');
+    const owner = nested.root.fields.items[0].fields.values[0], site = types.typeSites(nested).find(site => site.name === 'return value');
+    assert.equal(nested.source.slice(site.operator.start, site.operator.end), '->');
+    assert(site.operator.start > owner.fields.params[0].end);
+    const tuple = await parse('let^pair=f^{return^1,2}'), pair = tuple.root.fields.items[0].fields.values[0];
+    assert(!structures.structureTemplates(tuple, pair).some(choice => choice.id === 'function:fresh'));
+}));
+
 test('every offered operator reparses while retaining its written operands, including type RHS and unary removal', { timeout: 60000 }, async () => withLhatServer(async parse => {
     const operators = load('graphLists.ts');
     for (const expression of ['a + b', 'a = b', 'a bitand^ b', 'a dot^ b', 'a ?? b', 'a and^ b', 'a fits^ number^', '-a']) {

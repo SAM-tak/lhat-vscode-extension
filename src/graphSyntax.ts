@@ -61,3 +61,10 @@ export function resultTypes(text: string | undefined): string[] {
     parts.push(text.slice(at, to).trim());
     return parts;
 }
+
+/** The parser leaves this modifier outside the callable's own span. */
+export function templateMarker(source: string, node: SourceSpan): SyntaxToken | undefined {
+    if (!["f^", "p^"].includes(source.slice(node.start, node.start + 2))) return;
+    const token = syntaxTokens(source, 0, node.start).slice(-1)[0];
+    return token?.text === "template^" ? token : undefined;
+}

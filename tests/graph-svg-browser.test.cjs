@@ -2937,6 +2937,66 @@ test('a typed variadic function is constructed through parameter, reference and 
     });
 });
 
+test('callable templates and fresh results toggle through live controls and remain replaceable as complete expressions', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^function=template^f^{return^0}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), fn = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('function');
+            await ui.structure(fn(), 'function:template');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await client.until(`document.querySelector('[data-role="template"]')`);
+            await ui.structure(fn(), 'function:template');
+            await ui.structure(fn(), 'function:fresh');
+            await client.until(`document.querySelector('[data-role="fresh"]')`);
+            const site = load('graphTypes.ts').typeSites(host.tree).find(s => s.name === 'return value');
+            await ui.type(site, undefined);
+            assert(!host.tree.source.includes('fresh^'));
+            await ui.structure(fn(), 'function:template');
+            await ui.expression(fn(), 'nil');
+            assert.equal(fn().kind, 'hat-ident');
+            assert(!host.tree.source.includes('template^'));
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('mutable receivers and fresh promises are edited inside both callable bodies and annotated signatures', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, load } = require('./graph-browser-host.cjs'), structure = load('graphStructure.ts');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), items = () => host.tree.root.fields.items;
+            await ui.add('tableDefinition');
+            const def = () => items()[0].fields.values[0];
+            await ui.addElement('member', def());
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.expression(def().fields.items[0].fields.value, 'function');
+            const method = () => def().fields.items[0].fields.value;
+            await ui.addElement('receiver', method(), 'params');
+            await ui.structure(method().fields.params[0], 'receiver:mutable');
+            assert(host.tree.source.includes('mutable^self^'));
+            await ui.structure(method().fields.params[0], 'receiver:mutable');
+            await ui.add('function');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            const fn = () => items()[1].fields.values[0];
+            await ui.addElement('parameter', fn(), 'params');
+            const name = () => fn().fields.params[0].fields.name, type = () => fn().fields.params[0].fields.type;
+            await ui.typeStructure(name(), 'type:function');
+            await ui.typeStructure(name(), 'type:append:receiver');
+            await ui.typeStructure(name(), 'type:receiver:0:mutable');
+            await ui.typeStructure(name(), 'function:fresh');
+            assert(!structure.structureTemplates(host.tree, type()).some(c => c.id === 'type:append:return_type'));
+            await ui.typeStructure(name(), 'function:fresh');
+            await ui.typeStructure(name(), 'type:receiver:0:mutable');
+            assert.equal(type().fields.params.length, 2);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('nil-checked member, index and call forms are constructed through live access controls', { timeout: 90000 }, async () => {
     const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {

@@ -1,3 +1,4 @@
+import { templateMarker } from "./graphSyntax";
 import type { AstNode, AstReply } from "./protocol";
 import { commaLists } from "./graphLists";
 
@@ -119,8 +120,9 @@ export function reorderEdit(tree: AstReply, request: ReorderRequest): SourceEdit
     if (sourceIndex < insertion) insertion--;
     reordered.splice(insertion, 0, moved);
     if (reordered.every((item, index) => item === items[index])) return undefined;
-    const gaps = items.slice(1).map((item, index) => tree.source.slice(items[index].end, item.start));
+    const startOf = (item: AstNode) => templateMarker(tree.source, item)?.start ?? item.start;
+    const gaps = items.slice(1).map((item, index) => tree.source.slice(items[index].end, startOf(item)));
     const text = reordered.map((item, index) =>
-        `${index === 0 ? "" : gaps[index - 1]}${tree.source.slice(item.start, item.end)}`).join("");
-    return { start: first.start, end: last.end, text };
+        `${index === 0 ? "" : gaps[index - 1]}${tree.source.slice(startOf(item), item.end)}`).join("");
+    return { start: startOf(first), end: last.end, text };
 }
