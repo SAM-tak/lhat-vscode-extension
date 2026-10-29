@@ -380,5 +380,10 @@
     "Assign an existing loop variable": "既存のループ変数へ代入する",
     "Declare a mutable loop variable": "可変のループ変数を宣言する",
     "Remove loop advance": "ループの更新処理を削除",
-    "Add loop advance": "ループの更新処理を追加"
+    "Add loop advance": "ループの更新処理を追加",
+    "Add body comment": "本体にコメントを追加",
+    "Use ordinary assignment": "通常の代入にする",
+    "Use nil-checked assignment": "nilを確認する代入にする",
+    "Name the matched value": "照合する値に名前を付ける",
+    "Use an unnamed matched value": "照合する値の名前を外す"
 }

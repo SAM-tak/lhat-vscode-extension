@@ -72,12 +72,20 @@ async function browser(routes, work) {
             assert(!result.exceptionDetails, JSON.stringify(result.exceptionDetails)); return result.result.value;
         };
         const until = async expression => {
-            for (let i = 0; i < 100; i++) { if (await evaluate(`Boolean(${expression})`)) return; await sleep(50); }
+            for (let i = 0; i < 100; i++) {
+                // Headless Edge can background its page on Windows and pause
+                // animation frames. These tests exercise the active editor.
+                if (await evaluate(`document.visibilityState==='hidden'`)) await call('Page.bringToFront');
+                if (await evaluate(`Boolean(${expression})`)) return;
+                await sleep(50);
+            }
             throw Error(`Browser condition timed out: ${expression}${errors.length ? '\n' + JSON.stringify(errors) : ''}`);
         };
         await call('Runtime.enable'); await call('Page.enable');
+        await call('Emulation.setFocusEmulationEnabled', { enabled: true });
         await call('Emulation.setDeviceMetricsOverride', { width: 1000, height: 700, deviceScaleFactor: 1, mobile: false });
         await call('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` });
+        await call('Page.bringToFront');
         await work({ evaluate, until, call, errors });
     } finally {
         // Edge's launcher can exit before the browser it starts. Close the

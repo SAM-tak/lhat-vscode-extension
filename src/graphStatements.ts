@@ -1,5 +1,6 @@
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
+import { syntaxTokens } from "./graphSyntax";
 
 export interface StatementSite extends SourceSpan { disabled: boolean }
 export interface StatementInsertion extends SourceSpan {
@@ -22,6 +23,17 @@ export const STATEMENT_TEMPLATE_LABELS = {
 interface Context { callable?: "function" | "procedure"; loop: boolean }
 interface StatementList {
     node: AstNode; field: string; items: AstNode[]; context: Context;
+}
+
+function mainHeading(source: string, node: AstNode): number | undefined {
+    if (node.kind !== "block") return;
+    const tokens = syntaxTokens(source, node.start, node.end);
+    let depth = 0;
+    for (let i = 0; i < tokens.length; i++) {
+        if (tokens[i].text === "{") depth++;
+        else if (tokens[i].text === "}") depth--;
+        else if (depth === 1 && tokens[i].text === "main^" && tokens[i + 1]?.text === ":") return tokens[i + 1].end;
+    }
 }
 
 /** Only parser-owned statement lists are insertion sites, never expression/member lists. */
@@ -62,7 +74,8 @@ export function statementInsertions(tree: AstReply): StatementInsertion[] {
         const extra = node.fields?.extra;
         // In an explicitly sectioned loop, an empty implicit main has no
         // source position. Its named clauses provide their own append sites.
-        const unnamedEmptyBody = node.kind === "block" && !items.length && (Array.isArray(extra) ? extra.length > 0 : !!extra);
+        const unnamedEmptyBody = node.kind === "block" && !items.length && (Array.isArray(extra) ? extra.length > 0 : !!extra)
+            && mainHeading(tree.source, node) === undefined;
         return [...items.filter(item => item.kind !== "module").map(item => ({ ...base, before: item.start })),
             ...unnamedEmptyBody ? [] : [base]];
     });
@@ -136,7 +149,8 @@ export function insertStatementEdit(tree: AstReply, site: StatementInsertion, te
         .flatMap(value => Array.isArray(value) ? value : value ? [value] : [])
         .sort((a, b) => a.start - b.start);
     const lastItemEnd = list.items[list.items.length - 1]?.end ?? list.node.start;
-    const firstExtra = (Array.isArray(extra) ? extra : extra ? [extra] : []).find(clause => clause.start >= lastItemEnd);
+    const main = mainHeading(source, list.node);
+    const firstExtra = extra.find(clause => clause.start >= (!list.items.length && main !== undefined ? main : lastItemEnd));
     const file = list.node === tree.root && tree.root.kind === "block";
     const closes = !file && list.node.kind === "block" && source[list.node.end - 1] === "}";
     let offset = before?.start ?? firstExtra?.start ?? (file ? source.length : list.node.end - (closes ? 1 : 0));

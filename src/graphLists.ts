@@ -4,6 +4,7 @@ import type { StatementInsertion, StatementTemplate } from "./graphStatements";
 import { resultTypes, syntaxTokens } from "./graphSyntax";
 import { callInfo, canInsertBinding } from "./graphCalls";
 import { assignmentOperator, assignmentValues } from "./graphAssignments";
+import { patternLists, patternExpressions } from "./graphPatterns";
 
 export interface ListInsertion extends StatementInsertion { category: "list" }
 export type InsertionSite = StatementInsertion | ListInsertion;
@@ -24,8 +25,13 @@ export const listIdentity = (node: SourceSpan & { kind: string }, field: string)
 
 /** All source comma lists use the same insertion model, including empty lists. */
 export function commaLists(tree: AstReply): CommaList[] {
-    const result: CommaList[] = [], source = tree.source;
+    const patterns = patternLists(tree), source = tree.source;
+    const result: CommaList[] = patterns.map(list => ({ node: list.node, field: "items", items: list.items,
+        start: list.node.start, end: list.node.end, mode: "value" }));
+    const conditions = new Map(patterns.map(list => [list.condition, list.items]));
     const visit = (node: AstNode) => {
+        const pattern = conditions.get(node);
+        if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(visit); return; }
         if (node.kind === "disabled") return;
         const tokens = syntaxTokens(source, node.start, node.end);
         const add = (field: string, mode: CommaList["mode"], start: number, end: number,
@@ -245,9 +251,15 @@ const bitwise = ["bitand^", "bitor^", "bitxor^", "bitshift^"];
 const products = ["cross^", "dot^", "×", "⋅"];
 export function operatorSites(tree: AstReply): OperatorSite[] {
     const sites: OperatorSite[] = [];
+    const patterns = new Map(patternLists(tree).map(list => [list.condition, list.items]));
     const visit = (node: AstNode) => {
+        const pattern = patterns.get(node);
+        if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(visit); return; }
         if (node.kind === "disabled") return;
-
+        if (node.kind === "reassign") {
+            [...array(node.fields?.targets), ...assignmentValues(node, tree.source)].forEach(visit);
+            return;
+        }
         if (node.kind === "unary") {
             const operand = one(node, "operand") ?? one(node, "value");
             const token = operand && syntaxTokens(tree.source, node.start, operand.start).find(t => ["-", "!", "bitnot^"].includes(t.text));
@@ -305,7 +317,10 @@ export function operatorGroup(node: AstNode, source: string, sites: OperatorSite
 
 export function groupedOperatorSites(tree: AstReply): OperatorSite[] {
     const all = operatorSites(tree), result: OperatorSite[] = [];
+    const patterns = new Map(patternLists(tree).map(list => [list.condition, list.items]));
     const visit = (node: AstNode) => {
+        const pattern = patterns.get(node);
+        if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(visit); return; }
         if (node.kind === "disabled") return;
         if (node.kind === "binary") {
             const group = operatorGroup(node, tree.source, all);

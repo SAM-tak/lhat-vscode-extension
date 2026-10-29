@@ -4,6 +4,7 @@ import type { SourceEdit } from "./graphReorder";
 import { syntaxTokens } from "./graphSyntax";
 import { callInfo } from "./graphCalls";
 import { assignmentValues } from "./graphAssignments";
+import { patternLists, patternExpressions } from "./graphPatterns";
 
 export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean; errorName?: boolean;
     owner?: SourceSpan; callArguments?: string[] }
@@ -13,7 +14,10 @@ const kinds = new Set(["int", "float", "string", "bool", "nil", "ident", "hat-id
 /** Declaration names, type syntax and member keys are not replaceable value expressions. */
 export function expressionSites(tree: AstReply): ExpressionSite[] {
     const sites: ExpressionSite[] = [];
+    const patterns = new Map(patternLists(tree).map(list => [list.condition, list.items]));
     const visit = (node: AstNode, value = true, assignmentTarget = false, memberKey = false) => {
+        const pattern = patterns.get(node);
+        if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(child => visit(child)); return; }
         if (["disabled", "module", "annotation", "import", "import-stmt", "require-stmt"].includes(node.kind) || node.kind.startsWith("type-")) return;
         if (value && kinds.has(node.kind) && node.start < node.end) {
             const info = callInfo({ kind: "call", start: node.start, end: node.end, line: node.line, column: node.column, fields: { target: node } });

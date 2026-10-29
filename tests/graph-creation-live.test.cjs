@@ -415,3 +415,21 @@ test('deleting grouped list items preserves neighboring written groups and comme
         }
     }
 }));
+
+test('written pattern lists edit real values and alternatives without exposing generated comparisons', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const patterns = load('graphPatterns.ts'), lists = load('graphLists.ts'), deletion = load('graphDelete.ts');
+    let tree = await parse('for^n{when^1 to^3,5:print(1) when^"box","carton":print(2) other^:print(3)}');
+    let written = patterns.patternLists(tree);
+    assert.deepEqual(written.map(list => list.items.map(n => n.kind)), [['pattern-range', 'int'], ['string', 'string']]);
+    assert.equal(lists.operatorSites(tree).length, 0);
+    assert(!expressions.expressionSites(tree).some(s => s.kind === 'binary'));
+    const site = lists.listInsertions(tree).find(s => s.kind === 'pattern-list' && s.start === written[0].node.start && s.before === undefined);
+    tree = await parse(apply(tree.source, lists.insertListEdit(tree, site, 'string')));
+    written = patterns.patternLists(tree);
+    assert.deepEqual(written[0].items.map(n => n.kind), ['pattern-range', 'int', 'string']);
+    const selected = written[0].items[0], remove = deletion.deleteSites(tree).find(s => s.category === 'element' && s.start === selected.start && s.end === selected.end);
+    tree = await parse(apply(tree.source, deletion.deleteFromGraph(tree, remove)));
+    assert.deepEqual(patterns.patternLists(tree)[0].items.map(n => n.kind), ['int', 'string']);
+    assert(tree.source.includes('when^5, ""'));
+    assert(!flat(tree.root).some(n => n.kind === 'error'));
+}));

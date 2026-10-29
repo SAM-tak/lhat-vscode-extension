@@ -3,6 +3,7 @@ import type { SourceEdit } from "./graphReorder";
 import type { StatementTemplate } from "./graphStatements";
 import { syntaxTokens } from "./graphSyntax";
 import { literalOf, quoteString } from "./webview/literals";
+import { assignmentOperator, ASSIGNMENT_LABELS } from "./graphAssignments";
 
 export interface StructureSite extends SourceSpan { kind: string }
 interface Action extends StatementTemplate { edit: SourceEdit }
@@ -12,7 +13,7 @@ export function structureSites(tree: AstReply): StructureSite[] {
     const sites: StructureSite[] = [];
     const visit = (node: AstNode) => {
         if (node.kind === "disabled") return;
-        if (["if-stmt", "if-expr", "repeat", "for", "define", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string"].includes(node.kind))
+        if (["if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string"].includes(node.kind))
             sites.push({ start: node.start, end: node.end, kind: node.kind });
         Object.values(node.fields ?? {}).flat().forEach(visit);
     };
@@ -31,6 +32,15 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     const source = tree.source, result: Action[] = [], newline = source.includes("\r\n") ? "\r\n" : "\n";
     const add = (id: string, label: string, edit: SourceEdit, preview = edit.text || label) => result.push({ id, label, text: preview, edit });
     const head = syntaxTokens(source, node.start, node.end);
+    if (node.kind === "reassign") {
+        const operator = assignmentOperator(node, source);
+        if (!operator) return [];
+        for (const [text, label] of Object.entries(ASSIGNMENT_LABELS))
+            add(`assignment:${text}`, label, { start: operator.start, end: operator.end, text: `${operator.nilChecked ? "?" : ""}${text}` });
+        add("assignment:nil-check", operator.nilChecked ? "Use ordinary assignment" : "Use nil-checked assignment", {
+            start: operator.start, end: operator.end, text: `${operator.nilChecked ? "" : "?"}${operator.base}` });
+        return result;
+    }
     if (node.kind === "string") {
         const literal = literalOf(node, source);
         if (!literal) return [];
@@ -121,6 +131,20 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     }
     const match = node.kind === "for" ? one(node, "body") : undefined;
     if (match && ["if-stmt", "if-expr"].includes(match.kind)) {
+        const focus = array(node.fields?.focus), marker = head[0];
+        const binding = focus[0], targets = binding && array(binding.fields?.targets);
+        const header = syntaxTokens(source, node.start, match.start);
+        const introduced = ["let^", "var^"].includes(header[1]?.text);
+        if (focus.length === 1 && binding?.kind === "define" && targets?.length === 1) {
+            if (!introduced) {
+                const used = new Set(syntaxTokens(source).map(t => t.text));
+                let name = "subject", serial = 2; while (used.has(name)) name = `subject${serial++}`;
+                add("match-focus:bind", "Name the matched value", { start: marker.end, end: marker.end, text: `let^${name} = ` });
+            } else {
+                const equal = header.find(t => t.text === "=" && t.start >= targets[0].end);
+                if (equal) add("match-focus:value", "Use an unnamed matched value", { start: marker.end, end: equal.end, text: " " });
+            }
+        }
         const branches = array(match.fields?.items), expression = match.kind === "if-expr";
         const close = syntaxTokens(source, node.start, node.end).slice(-1)[0];
         if (!close || !["}", ";"].includes(close.text)) return [];
@@ -183,6 +207,8 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         if (body?.kind !== "block") return [];
         const tokens = syntaxTokens(source, body.start, body.end), open = tokens[0], close = tokens.slice(-1)[0];
         if (open?.text !== "{" || close?.text !== "}") return [];
+        if (!body.comments?.length) add("body:comment", "Add body comment", {
+            start: open.end, end: open.end, text: ` # comment${newline}` });
         const header = syntaxTokens(source, node.start, body.start);
         const conditional = header.some(t => ["while^", "until^"].includes(t.text));
         const ranged = header.some(t => t.text === "from^");

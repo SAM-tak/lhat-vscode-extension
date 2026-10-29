@@ -380,5 +380,10 @@
     "Assign an existing loop variable": "Assign an existing loop variable",
     "Declare a mutable loop variable": "Declare a mutable loop variable",
     "Remove loop advance": "Remove loop advance",
-    "Add loop advance": "Add loop advance"
+    "Add loop advance": "Add loop advance",
+    "Add body comment": "Add body comment",
+    "Use ordinary assignment": "Use ordinary assignment",
+    "Use nil-checked assignment": "Use nil-checked assignment",
+    "Name the matched value": "Name the matched value",
+    "Use an unnamed matched value": "Use an unnamed matched value"
 }

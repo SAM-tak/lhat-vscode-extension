@@ -138,3 +138,38 @@ test('while and until switching preserves the written header including grouping 
         assert(!nodes((await parse(updated)).root).some(n => n.kind === 'error'), updated);
     }
 }));
+
+test('loop body comments attach to the body and empty explicit main sections accept new statements', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { load } = require('./graph-browser-host.cjs'), statements = load('graphStatements.ts');
+    let tree = await parse('repeat^3{pre^:main^:last^:epilog^:}');
+    let loop = tree.root.fields.items[0];
+    const comment = editStructure(tree, loop, 'body:comment'); assert(comment);
+    tree = await parse(tree.source.slice(0, comment.start) + comment.text + tree.source.slice(comment.end));
+    loop = tree.root.fields.items[0];
+    assert.equal(loop.fields.body.comments.length, 1);
+    const body = loop.fields.body;
+    const site = statements.statementInsertions(tree).find(s => s.kind === 'block' && s.start === body.start && s.before === undefined);
+    assert(site);
+    const change = statements.insertStatementEdit(tree, site, 'call');
+    tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
+    const updated = tree.root.fields.items[0].fields.body;
+    assert.equal(updated.fields.items[0].kind, 'call-stmt');
+    assert.equal(updated.fields.extra.length, 3);
+    assert(!updated.fields.extra.some(c => c.fields?.body?.length));
+    assert.equal(updated.comments.length, 1);
+}));
+
+test('assignment structure controls change the written operator and keep paired RHS expressions', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { load } = require('./graph-browser-host.cjs'), assignments = load('graphAssignments.ts'), lists = load('graphLists.ts');
+    let tree = await parse('var^a=1\nvar^b=2\na,b := (1+2),3');
+    for (const action of ['assignment:+=', 'assignment:nil-check', 'assignment:*=', 'assignment:nil-check', 'assignment::=']) {
+        const node = tree.root.fields.items[2], change = editStructure(tree, node, action); assert(change, action);
+        tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
+        const updated = tree.root.fields.items[2];
+        assert.equal(updated.fields.targets.length, 2);
+        assert.deepEqual(assignments.assignmentValues(updated, tree.source).map(n => tree.source.slice(n.start, n.end)), ['1+2', '3']);
+        assert.equal(lists.groupedOperatorSites(tree).length, 1, tree.source);
+        assert(!nodes(tree.root).some(n => n.kind === 'error'), tree.source);
+    }
+    assert.equal(assignments.assignmentOperator(tree.root.fields.items[2], tree.source).text, ':=');
+}));

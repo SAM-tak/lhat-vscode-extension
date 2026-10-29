@@ -106,7 +106,7 @@ async function graphUi(host, { evaluate, until, call }) {
         try {
             await until(`document.querySelector('#app')?.dataset.graphVersion==='${host.version}' && ${ready}`);
         } catch (error) {
-            const state = await evaluate(`({version:document.querySelector('#app')?.dataset.graphVersion,status:document.querySelector('#status')?.textContent,disabled:document.querySelector('.svg-export>button')?.disabled})`);
+            const state = await evaluate(`({app:{...document.querySelector('#app')?.dataset},status:document.querySelector('#status')?.textContent,disabled:document.querySelector('.svg-export>button')?.disabled,visibility:document.visibilityState,focus:document.hasFocus()})`);
             throw new Error(`${error.message}\nGraph state: ${JSON.stringify(state)}\nSource: ${host.tree.source}`, { cause: error });
         }
     };

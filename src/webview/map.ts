@@ -25,6 +25,7 @@ import { analyzeExecution } from "./execution";
 import { assignmentOperator } from "../graphAssignments";
 import { syntaxTokens } from "../graphSyntax";
 import { interpolationFields, interpolationParts, type InterpolationField } from "../graphInterpolation";
+import { patternLists } from "../graphPatterns";
 import { expressionCells, isInlineValue } from "./operatorExpression";
 
 const CH = 7.2; // mono advance at 12px
@@ -579,6 +580,7 @@ export function stackWideDefinitions(laid: ElkNode, usableWidth: number): ElkNod
 export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     const source = reply.source;
     const lists = commaLists(reply);
+    const patterns = patternLists(reply);
     const editableLists = listInsertions(reply);
     const commaList = (node: AstNode, field: string) => lists.find(list => listIdentity(list.node, list.field) === listIdentity(node, field))
         ?? commaLists({ source, root: node }).find(list => list.node === node && list.field === field);
@@ -1496,6 +1498,13 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
 
     function buildNodeContents(node: AstNode, voice: "stmt" | "expr",
                        unfold: boolean, avail: number): ElkNode {
+        if (node.kind === "pattern-range") {
+            const lower = node.fields!.lower as AstNode, upper = node.fields!.upper as AstNode;
+            const token = syntaxTokens(source, lower.end, upper.start).find(t => ["to^", "downto^"].includes(t.text))!;
+            return inlineBox(node, [build(lower, "expr", unfold, avail),
+                leaf({ ...node, kind: "operator", start: token.start, end: token.end }, makeLabel({ ...node, ...token }, [], MAX_LABEL)),
+                build(upper, "expr", unfold, avail)]);
+        }
         if (catchClauses.has(node)) {
             const text = vocabulary.hats?.catch ?? ENGLISH_VOCABULARY.hats!.catch;
             const header = leaf({ ...node, kind: "catch", end: Math.min(node.end, node.start + 6) },
@@ -1808,7 +1817,11 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 lhat: { ...from(predicate), labelParts: label.parts, foldedSummary: summary },
             };
         } else {
-            const value = build(predicate, "expr", unfold, avail - 2 * px(PAD));
+            const pattern = role === "pattern" ? patterns.find(list => list.condition === predicate ||
+                list.condition.start === predicate.start && list.condition.end === predicate.end) : undefined;
+            const list = pattern && lists.find(list => list.node.kind === "pattern-list" &&
+                list.node.start === pattern.node.start && list.node.end === pattern.node.end);
+            const value = list ? listGroup(list, unfold, avail - 2 * px(PAD)) : build(predicate, "expr", unfold, avail - 2 * px(PAD));
             memberHandles(value);
             built = container(nextId(role), label, "RIGHT", [value], [], predicate);
             built.layoutOptions!["elk.nodeSize.minimum"] = `(${widthFor(label) + px(FOLD_BTN)}, 0)`;

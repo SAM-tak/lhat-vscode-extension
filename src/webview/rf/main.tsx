@@ -1989,7 +1989,8 @@ function App() {
         <InterpolationProvider value={{ sourceKey, fields: sourceTextFields, version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <AnnotationProvider value={{ tree: reply, version: laidSourceKey === sourceKey ? version : undefined, post,
             boxes: annotationBoxes, show: showAnnotationBox }}>
-        <div id="app" data-graph-version={laidSourceKey === sourceKey ? version : undefined}>
+        <div id="app" data-graph-version={laidSourceKey === sourceKey ? version : undefined}
+            data-layout-pending={layoutPending} data-handles-settled={settledNodes === nodes}>
             <div id="bar">
                 <AddAnnotation unit />
                 <button

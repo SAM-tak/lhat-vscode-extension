@@ -11,6 +11,7 @@ export interface DeleteSite extends SourceSpan { category: "statement" | "elemen
 function removableLists(tree: AstReply) {
     const lists = commaLists(tree);
     return lists.filter(list => !["define", "reassign"].includes(list.node.kind)
+        && (list.node.kind !== "pattern-list" || list.items.length > 1)
         && !list.implicit && list.field !== "return_type" && list.node.kind !== "type-tuple"
         && !(list.node.kind === "tuple" && lists.some(parent => ["define", "reassign"].includes(parent.node.kind)
             && parent.field === "values" && parent.items[0] === list.node
