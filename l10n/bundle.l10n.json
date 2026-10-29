@@ -400,5 +400,18 @@
     "Condition with a local value": "Condition with a local value",
     "Expression with a local value": "Expression with a local value",
     "Add an outer local value": "Add an outer local value",
-    "Remove the outer local scope": "Remove the outer local scope"
+    "Remove the outer local scope": "Remove the outer local scope",
+    "Get the type of this value": "Get the type of this value",
+    "Box this value": "Box this value",
+    "Make a constant box": "Make a constant box",
+    "Type value": "Type value",
+    "Identifier value": "Identifier value",
+    "Expand trailing argument": "Expand trailing argument",
+    "Use the inner value": "Use the inner value",
+    "Reference the unit scope": "Reference the unit scope",
+    "Reference the enclosing scope": "Reference the enclosing scope",
+    "Look one more scope outward": "Look one more scope outward",
+    "Look one more scope inward": "Look one more scope inward",
+    "Reduce scope distance": "Reduce scope distance",
+    "Use a mutable box": "Use a mutable box"
 }

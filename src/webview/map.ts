@@ -1890,7 +1890,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         // child covers the whole of it -- 'print(x)' read as "call-stmt".
         if (!clause && !STATEMENT_LIST.has(kind) && !BRANCH.has(kind) &&
             !ELEMENT_LIST.has(kind) && !VOICE_TURN.has(kind) &&
-            !BODY_STATEMENT.has(kind) && !["try", "panic", "await", "pack"].includes(kind) && !holdsExpandedChild(node)) {
+            !BODY_STATEMENT.has(kind) && !["try", "panic", "await", "pack", "typeof", "box", "spread"].includes(kind) && !holdsExpandedChild(node)) {
             return leaf(node, labelFor(node, []));
         }
 

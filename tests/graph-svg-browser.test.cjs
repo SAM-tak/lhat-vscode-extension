@@ -2937,6 +2937,90 @@ test('a typed variadic function is constructed through parameter, reference and 
     });
 });
 
+test('type queries, boxes and type values are created and edited through their shared graph controls', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), value = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('let');
+            await ui.expression(value(), 'typeof');
+            assert.equal(value().kind, 'typeof');
+            await ui.input(`.box[data-source-start="${value().fields.value.start}"] .literal-input`, '7');
+            await ui.expression(value(), 'unwrap');
+            assert.equal(host.tree.source.slice(value().start, value().end), '7');
+            await ui.expression(value(), 'box');
+            await ui.structure(value(), 'box:toggle');
+            assert(host.tree.source.includes('constbox^'));
+            await ui.expression(value().fields.value, 'string');
+            await ui.expression(value(), 'unwrap');
+            assert.equal(value().kind, 'string');
+            await ui.expression(value(), 'typeValue');
+            await ui.structure(value().fields.value, 'type:name:string^');
+            assert.equal(value().kind, 'type');
+            await ui.expression(value(), 'nil');
+            assert.equal(value().kind, 'hat-ident');
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('name values and explicit scope distances edit through live graph inputs without renaming declarations', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), value = () => host.tree.root.fields.items[1].fields.values[0];
+            await ui.add('let');
+            await ui.add('let');
+            await ui.expression(value(), 'reference:value');
+            await ui.expression(value(), 'scope:file');
+            await ui.structure(value(), 'scope:more');
+            assert.equal(host.tree.source.slice(value().start, value().end), '$$value');
+            await ui.structure(value(), 'scope:less');
+            await ui.structure(value(), 'scope:outer');
+            await ui.structure(value(), 'scope:more');
+            assert.equal(host.tree.source.slice(value().start, value().end), '$^^value');
+            await ui.expression(value(), 'reference:$value');
+            assert.equal(value().kind, 'scope');
+            await ui.expression(value(), 'name');
+            await ui.input(`.box[data-source-start="${value().start}"] .interpolation-input`, '日本語^');
+            assert.equal(host.tree.source.slice(value().start, value().end), 'id^日本語^');
+            assert.equal(host.tree.source.slice(host.tree.root.fields.items[0].fields.targets[0].start, host.tree.root.fields.items[0].fields.targets[0].end), 'value');
+            await ui.expression(value(), 'nil');
+            assert.equal(value().kind, 'hat-ident');
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('trailing tuple arguments expand and unwrap through the live UI while retaining inner element editors', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('print((4,0)...)'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), call = () => host.tree.root.fields.items[0].fields.value;
+            const arg = () => call().fields.argument[0];
+            await ui.add('call');
+            await ui.expression(arg(), 'tuple');
+            await ui.expression(arg(), 'spread');
+            assert.equal(arg().kind, 'spread');
+            await ui.input(`.box[data-source-start="${arg().fields.value.fields.items[0].start}"] .literal-input`, '4');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.expression(arg(), 'unwrap');
+            assert.equal(arg().kind, 'tuple');
+            await ui.addElement('default', call(), 'argument');
+            assert.equal(call().fields.argument.length, 2);
+            await ui.expression(call().fields.argument[1], 'tuple');
+            await ui.expression(call().fields.argument[1], 'spread');
+            await ui.remove(call().fields.argument[1]);
+            assert.equal(call().fields.argument.length, 1);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('local expressions are built and nested through focus controls while retaining editable bindings and results', { timeout: 90000 }, async () => {
     const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {

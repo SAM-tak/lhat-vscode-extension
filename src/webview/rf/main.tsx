@@ -1110,7 +1110,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                         data-category={part.category} title={part.source}>{part.text}</span>) ?? data.label}</div>
                 : data.ioGroup ? <fieldset className="io-frame"><legend>{data.label}</legend></fieldset>
                 : textField ? <div className="source-text-field">
-                    <div className="source-text-caption">{data.labelParts?.filter(part => part.category === "module").map((part, i) =>
+                    <div className="source-text-caption">{data.labelParts?.filter(part => (part.category === "module" || textField.site.field === "name" && part.role === "id")).map((part, i) =>
                         <span key={i} className="semantic-label" data-role={part.role} data-category={part.category}>{part.text}</span>)}</div>
                     <InterpolationInput field={textField} />
                 </div> : data.inline && data.isContainer ? null : data.interpolation ? <>

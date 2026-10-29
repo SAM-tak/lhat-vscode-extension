@@ -400,5 +400,18 @@
     "Condition with a local value": "ローカルな値を持つ条件分岐",
     "Expression with a local value": "ローカル値を持つ式",
     "Add an outer local value": "外側にローカル値を追加",
-    "Remove the outer local scope": "外側のローカルスコープを削除"
+    "Remove the outer local scope": "外側のローカルスコープを削除",
+    "Get the type of this value": "値の型を取得",
+    "Box this value": "値をボックスに入れる",
+    "Make a constant box": "読み取り専用のボックスにする",
+    "Type value": "型の値",
+    "Identifier value": "名前の文字列値",
+    "Expand trailing argument": "末尾の引数を展開",
+    "Use the inner value": "内側の値を使う",
+    "Reference the unit scope": "単位のスコープを参照",
+    "Reference the enclosing scope": "外側のスコープを参照",
+    "Look one more scope outward": "さらに1つ外側のスコープを参照",
+    "Look one more scope inward": "さらに1つ内側のスコープを参照",
+    "Reduce scope distance": "スコープの距離を減らす",
+    "Use a mutable box": "変更可能なボックスにする"
 }

@@ -12,6 +12,69 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('typeof, boxes and type values retain editable roots and operands through real parsing', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts');
+    for (const template of ['typeof', 'box', 'constbox']) {
+        let tree = await parse('let^a=1 let^b=2 let^value=((a)+b)');
+        const value = () => tree.root.fields.items[2].fields.values[0];
+        tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value(), template)));
+        assert.equal(value().kind, template === 'typeof' ? 'typeof' : 'box');
+        assert.equal(value().fields.value.kind, 'binary');
+        if (template !== 'typeof') {
+            tree = await parse(apply(tree.source, structure.editStructure(tree, value(), 'box:toggle')));
+            assert(tree.source.includes(template === 'box' ? 'constbox^' : 'box^'));
+        }
+        tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value(), 'unwrap')));
+        assert.equal(value().kind, 'binary');
+        assert(!flat(tree.root).some(n => n.kind === 'error'));
+        tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value(), 'typeValue')));
+        assert.equal(value().kind, 'type');
+        tree = await parse(apply(tree.source, structure.editStructure(tree, value().fields.value, 'type:name:string^')));
+        assert.equal(tree.source.slice(value().start, value().end), 'string^');
+    }
+}));
+
+test('scoped references and name values edit without changing unrelated bindings', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts'), text = load('graphTextFields.ts');
+    let tree = await parse('let^original=1 let^value=original');
+    const value = () => tree.root.fields.items[1].fields.values[0];
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value(), 'scope:file')));
+    assert.equal(value().kind, 'scope');
+    for (const action of ['scope:more', 'scope:less', 'scope:outer', 'scope:more', 'scope:less', 'scope:file']) {
+        tree = await parse(apply(tree.source, structure.editStructure(tree, value(), action)));
+        assert.equal(tree.source.slice(value().fields.name.start, value().fields.name.end), 'original');
+    }
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value(), 'reference:$^original')));
+    assert.equal(value().kind, 'scope');
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value(), 'name')));
+    const field = text.textFields(tree).find(f => f.site.field === 'name');
+    assert(field);
+    for (const invalid of ['bad.name', 'x^^', 'x;print(1)']) assert.equal(text.editTextField(tree, field.site, invalid), undefined);
+    tree = await parse(apply(tree.source, text.editTextField(tree, field.site, '日本語^')));
+    assert.equal(value().kind, 'name');
+    assert(tree.source.endsWith('id^日本語^'));
+    assert(tree.source.startsWith('let^original=1'));
+}));
+
+test('argument expansion is offered only at the end and prevents insertion after the expanded value', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const lists = load('graphLists.ts');
+    let tree = await parse('print(0,(1,2))');
+    const call = () => tree.root.fields.items[0].fields.value;
+    const args = () => call().fields.argument;
+    assert(!expressions.expressionTemplates(tree, args()[0]).some(c => c.id === 'spread'));
+    assert(expressions.expressionTemplates(tree, args()[1]).some(c => c.id === 'spread'));
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, args()[1], 'spread')));
+    assert.equal(args()[1].kind, 'spread');
+    assert(!lists.listInsertions(tree).some(s => s.kind === 'call' && s.start === call().start && s.before === undefined));
+    const before = lists.listInsertions(tree).find(s => s.kind === 'call' && s.before === args()[1].start);
+    assert(before);
+    tree = await parse(apply(tree.source, lists.insertListEdit(tree, before, 'default')));
+    assert.equal(args().length, 3);
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, args()[2], 'unwrap')));
+    assert.equal(args()[2].kind, 'tuple');
+    assert(lists.listInsertions(tree).some(s => s.kind === 'call' && s.start === call().start && s.before === undefined));
+}));
+
 test('type patterns retain their real type nodes for structure and list editing without value-expression controls', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const patterns = load('graphPatterns.ts'), lists = load('graphLists.ts'), structure = load('graphStructure.ts');
     let tree = await parse('for^nil^{when^fits^number^:print(1) other^:print(2)}');

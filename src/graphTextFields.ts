@@ -1,9 +1,10 @@
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
+import { syntaxTokens } from "./graphSyntax";
 import type { SourceEdit } from "./graphReorder";
 import { literalOf, quoteString } from "./webview/literals";
 
 export interface TextSite extends SourceSpan {
-    field: "comment" | "module" | "import" | "require";
+    field: "comment" | "module" | "import" | "require" | "name";
     part?: SourceSpan;
 }
 export interface TextField { site: TextSite; value: string; compact?: boolean }
@@ -16,6 +17,10 @@ export function textFields(tree: AstReply): TextField[] {
             if (raw.startsWith("#[~")) continue;
             result.push({ site: { start: comment.start, end: comment.end, field: "comment" },
                 value: (comment.block ? raw.slice(2, -2) : raw.slice(1)).trim() });
+        }
+        if (node.kind === "name") {
+            const name = syntaxTokens(tree.source, node.start, node.end)[1];
+            if (name) result.push({ site: { start: node.start, end: node.end, field: "name", part: name }, value: name.text });
         }
         const kind = node.kind.replace(/-stmt$/, "");
         if (["module", "import", "require"].includes(kind)) {
@@ -51,6 +56,7 @@ export function editTextField(tree: AstReply, site: TextSite, value: string): So
         }
         return { start: current.start, end: current.end, text: value.split(/\r\n?|\n/).map(line => `# ${line}`).join(newline) };
     }
+    if (site.field === "name") return /^[\p{L}_][\p{L}\p{N}_]*\^?$/u.test(value) ? { ...current.part!, text: value } : undefined;
     if (site.field !== "require" && !/^[\p{L}_][\p{L}\p{N}_]*(?:\.[\p{L}_][\p{L}\p{N}_]*)*$/u.test(value)) return undefined;
     return { ...current.part!, text: site.field === "require" ? quoteString(value) : value };
 }

@@ -118,6 +118,7 @@ function editableList(list: CommaList, site: ListInsertion, lists: CommaList[], 
         parent.node.kind === "reassign" && assignmentOperator(parent.node, source)?.base === ":=") && parent.field === "values" &&
         parent.items.length === 1 && parent.items[0] === list.node && array(parent.node.fields?.targets).length > 1)) return false;
     if (list.node.kind === "call" && list.field === "argument") {
+        if (list.items[list.items.length - 1]?.kind === "spread" && site.before === undefined) return false;
         const signatures = callSignatures(list.node);
         if (!signatures.length) return true;
         const index = site.before === undefined ? list.items.length : list.items.findIndex(item => item.start === site.before);

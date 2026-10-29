@@ -37,14 +37,14 @@ function Editor({ field, context }: { field: InterpolationField | TextField; con
         if (request.current || context.version === undefined) return;
         const id = `interpolation-${++sequence}`;
         request.current = id; setPending(true); setError("");
-        if (["comment", "module", "import", "require"].includes(field.site.field))
+        if (["comment", "module", "import", "require", "name"].includes(field.site.field))
             context.post({ type: "editTextField", id, site: field.site as TextSite, value: next, version: context.version });
         else context.post({ type: "editInterpolation", id, site: field.site as InterpolationSite, value: next, version: context.version });
     };
     const stop = (event: React.SyntheticEvent) => event.stopPropagation();
     const kind = field.site.field;
     const label = kind === "comment" ? l10n.t("Comment text") : kind === "module" ? l10n.t("Module name")
-        : kind === "import" ? l10n.t("Imported module") : kind === "require" ? l10n.t("Required file") : kind === "text" ? l10n.t("Text fragment") : kind === "format" ? l10n.t("Format specifier") : l10n.t("Interpolation expression");
+        : kind === "import" ? l10n.t("Imported module") : kind === "require" ? l10n.t("Required file") : kind === "name" ? l10n.t("Identifier value") : kind === "text" ? l10n.t("Text fragment") : kind === "format" ? l10n.t("Format specifier") : l10n.t("Interpolation expression");
     if (kind === "append") return <InsertionButton title={l10n.t("Add interpolation part")}
         style={{ width: "calc(15.4px * var(--lhat-scale, 1))", height: "calc(15.4px * var(--lhat-scale, 1))" }}
         disabled={context.version === undefined} onOpen={anchor => actions.interpolation(field.site as InterpolationSite, anchor)} />;

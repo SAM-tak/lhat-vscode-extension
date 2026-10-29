@@ -8,9 +8,9 @@ import { patternLists, patternExpressions } from "./graphPatterns";
 import { iteratorNames, forExpression, freshFocus } from "./graphLoops";
 
 export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean; errorName?: boolean;
-    owner?: SourceSpan; callArguments?: string[] }
+    owner?: SourceSpan; callArguments?: string[]; spreadAllowed?: boolean; operand?: SourceSpan }
 const kinds = new Set(["int", "float", "string", "bool", "nil", "ident", "hat-ident", "hole",
-    "binary", "unary", "as", "call", "member", "index", "tuple", "table", "def", "self-table", "func", "interp", "if-expr", "try", "pack", "error-new", "require"]);
+    "typeof", "type", "box", "spread", "scope", "name", "binary", "unary", "as", "call", "member", "index", "tuple", "table", "def", "self-table", "func", "interp", "if-expr", "try", "pack", "error-new", "require"]);
 
 /** Declaration names, type syntax and member keys are not replaceable value expressions. */
 export function expressionSites(tree: AstReply): ExpressionSite[] {
@@ -22,14 +22,17 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
         Object.values(node.fields ?? {}).flat().forEach(collectNames);
     };
     collectNames(tree.root);
-    const visit = (node: AstNode, value = true, assignmentTarget = false, memberKey = false) => {
+    const visit = (node: AstNode, value = true, assignmentTarget = false, memberKey = false, spreadAllowed = false) => {
         if (names.has(node)) return;
         const pattern = patterns.get(node);
         if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(child => visit(child)); return; }
         if (["disabled", "module", "annotation", "import", "import-stmt", "require-stmt"].includes(node.kind) || node.kind.startsWith("type-")) return;
         if (value && (kinds.has(node.kind) || forExpression(node, tree.source)) && node.start < node.end) {
             const info = callInfo({ kind: "call", start: node.start, end: node.end, line: node.line, column: node.column, fields: { target: node } });
+            const operand = ["typeof", "box", "spread", "try", "pack"].includes(node.kind) && node.fields?.value;
             sites.push({ kind: node.kind, start: node.start, end: node.end,
+                ...(operand && !Array.isArray(operand) ? { operand: { start: operand.start, end: operand.end } } : {}),
+                ...(spreadAllowed && node.kind !== "spread" ? { spreadAllowed: true } : {}),
                 ...(info ? { callArguments: info.inputs.map(input => input.default ?? (input.type === "number^" ? "0" : input.type === "string^" ? '\"\"' : input.type === "bool^" ? "false^" : "nil^")) } : {}),
                 ...assignmentTarget ? { assignmentTarget: true } : {}, ...memberKey ? { memberKey: true } : {} });
         }
@@ -54,7 +57,8 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
                 || node.kind === "define" && field === "targets"
                 || node.kind === "func" && field === "params";
             for (const child of Array.isArray(children) ? children : [children]) {
-                if (!declaration) visit(child, true, node.kind === "reassign" && field === "targets", node.kind === "member" && field === "argument" && !node.computed);
+                if (!declaration) visit(child, true, node.kind === "reassign" && field === "targets", node.kind === "member" && field === "argument" && !node.computed,
+                    node.kind === "call" && ["argument", "args"].includes(field) && child === (Array.isArray(children) ? children[children.length - 1] : children));
                 else if (["param", "field", "member-decl"].includes(child.kind)) visit(child, false);
             }
         }
@@ -64,7 +68,7 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
 }
 
 export const validMember = (text: string) => /^(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+)$/u.test(text);
-export const validReference = (text: string) => text === "..." || /^(?:[\p{L}_][\p{L}\p{N}_]*|self\^|it\^)(?:\.(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+))*$/u.test(text);
+export const validReference = (text: string) => text === "..." || /^(?:(?:\$+|\$\^+)?[\p{L}_][\p{L}\p{N}_]*|self\^|it\^)(?:\.(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+))*$/u.test(text);
 export const validExpressionReference = (site: ExpressionSite, text: string) => site.errorName
     ? /^[\p{L}_][\p{L}\p{N}_]*(?:\.[\p{L}_][\p{L}\p{N}_]*)*$/u.test(text)
     : (site.memberKey ? validMember : validReference)(text);
@@ -105,7 +109,9 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
     if (!currentSite) return [];
     const span = replacementSpan(tree, site);
     if (!span) return [];
-    const current = tree.source.slice(span.start, span.end);
+    const valueSpan = currentSite.kind === "spread" && currentSite.operand ? replacementSpan(tree, currentSite.operand) : span;
+    if (!valueSpan) return [];
+    const current = tree.source.slice(valueSpan.start, valueSpan.end);
     const choices: [string, string, string][] = [
         ["match", "Pattern matching expression", "(for^nil^: when^0: 0 other^: 0;)"],
         ["number", "Number", "0"], ["string", "String", '""'], ["true", "True", "true^"],
@@ -119,6 +125,11 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         ["interpolation", "Interpolated string", '$"text{0}"'],
         ["try", "Propagate an error", `try^(${current})`],
         ["pack", "Pack return values", `pack^(${current})`],
+        ["typeof", "Get the type of this value", `typeof^(${current})`],
+        ["box", "Box this value", `box^(${current})`],
+        ["constbox", "Make a constant box", `constbox^(${current})`],
+        ["typeValue", "Type value", "number^"],
+        ["name", "Identifier value", "id^name"],
         ["error", "Error value", "error^Problem.Failure{}"],
         ["require", "Require file", 'require^"./module.lh"'],
         ["member", "Access a member", `(${current}).value`],
@@ -136,9 +147,18 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         ["present", "Check for a non-nil value", `((${current})?)`],
         ["negative", "Negate number", `(-(${current}))`],
     ];
+    if (currentSite.spreadAllowed) choices.push(["spread", "Expand trailing argument", `(${current})...`]);
+    if (currentSite.operand) {
+        const operand = replacementSpan(tree, currentSite.operand);
+        if (operand) choices.push(["unwrap", "Use the inner value", `(${tree.source.slice(operand.start, operand.end)})`]);
+    }
+    if (/^(?:\$+|\$\^+)?[\p{L}_][\p{L}\p{N}_]*$/u.test(current)) {
+        const name = current.replace(/^\$(?:\^+|\$*)/, "");
+        choices.push(["scope:file", "Reference the unit scope", `$${name}`], ["scope:outer", "Reference the enclosing scope", `$^${name}`]);
+    }
     const references = new Set<string>(currentSite.errorName ? ["Problem.Failure"] : currentSite.memberKey ? ["value", "0"] : ["self^", "it^"]);
     const names = (node: AstNode) => {
-        if (["ident", "hat-ident", "member"].includes(node.kind)) {
+        if (["ident", "hat-ident", "member", "scope"].includes(node.kind)) {
             const name = tree.source.slice(node.start, node.end);
             if (validExpressionReference(currentSite, name)) references.add(name);
         }

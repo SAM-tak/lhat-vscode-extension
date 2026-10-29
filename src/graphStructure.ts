@@ -15,7 +15,7 @@ export function structureSites(tree: AstReply): StructureSite[] {
     const sites: StructureSite[] = [];
     const visit = (node: AstNode) => {
         if (node.kind === "disabled") return;
-        if (node.kind.startsWith("type-") || ["if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string"].includes(node.kind))
+        if (node.kind.startsWith("type-") || ["if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string", "scope", "box"].includes(node.kind))
             sites.push({ start: node.start, end: node.end, kind: node.kind });
         Object.values(node.fields ?? {}).flat().forEach(visit);
     };
@@ -34,6 +34,22 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     const source = tree.source, result: Action[] = [], newline = source.includes("\r\n") ? "\r\n" : "\n";
     const add = (id: string, label: string, edit: SourceEdit, preview = edit.text || label) => result.push({ id, label, text: preview, edit });
     const head = syntaxTokens(source, node.start, node.end);
+    if (node.kind === "scope") {
+        const name = one(node, "name");
+        if (!name) return [];
+        const prefix = source.slice(node.start, name.start), relative = prefix.startsWith("$^");
+        for (const [id, label, text] of [["file", "Reference the unit scope", "$"], ["outer", "Reference the enclosing scope", "$^"],
+            ["more", relative ? "Look one more scope outward" : "Look one more scope inward", prefix + (relative ? "^" : "$")]])
+            add(`scope:${id}`, label, { start: node.start, end: name.start, text });
+        if (prefix.length > (relative ? 2 : 1)) add("scope:less", "Reduce scope distance", { start: node.start, end: name.start, text: prefix.slice(0, -1) });
+        return result;
+    }
+    if (node.kind === "box") {
+        const marker = head[0];
+        if (marker) add("box:toggle", marker.text === "constbox^" ? "Use a mutable box" : "Make a constant box", {
+            start: marker.start, end: marker.end, text: marker.text === "constbox^" ? "box^" : "constbox^" });
+        return result;
+    }
     if (node.kind === "for") {
         add("focus:wrap", "Add an outer local value", { start: node.start, end: node.start, text: `for^let^${freshFocus(source)} = 0 ` });
         const body = one(node, "body");
