@@ -8,6 +8,77 @@ mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, 
 const { structureSites, structureTemplates, editStructure } = mod.exports;
 const nodes = node => [node, ...Object.values(node.fields ?? {}).flat().flatMap(nodes)];
 
+test('catch and finally structures preserve main code and enforce the final catch-all across braced scopes', { timeout: 60000 }, async () => withLhatServer(async parse => {
+    const { load } = require('./graph-browser-host.cjs'), deletion = load('graphDelete.ts');
+    for (const source of ['do^{print(1)}', 'if^true^{print(1)}', 'let^f=f^{print(1)}', 'with^x=nil^{print(1)}',
+        'repeat^2{pre^:print(0) main^:print(1) last^:print(2)}']) {
+        let tree = await parse(source);
+        const owner = () => source.startsWith('let^') ? tree.root.fields.items[0].fields.values[0] : tree.root.fields.items[0];
+        const scope = () => ['func','repeat'].includes(owner().kind) ? owner().fields.body : owner().kind === 'with' ? owner().fields.extra[0] : owner();
+        const edit = async (site, action) => {
+            const change = editStructure(tree, site, action); assert(change, action);
+            tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
+            assert(!nodes(tree.root).some(n => n.kind === 'error'), tree.source);
+            assert(tree.source.includes('print(1)'), tree.source);
+        };
+        await edit(owner(), 'catch:all');
+        await edit(owner(), 'catch:add');
+        await edit(scope().fields.arms[0], 'catch:filter:E.First | E.Second');
+        assert.equal(scope().fields.arms[0].fields.condition.kind, 'type-union');
+        assert(!structureTemplates(tree, owner()).some(c => c.id === 'catch:all'));
+        assert.equal(editStructure(tree, scope().fields.arms[0], 'catch:unfiltered'), undefined);
+        for (const value of ['number^','E;print(9)','E|','E..First','f^'])
+            assert.equal(editStructure(tree, scope().fields.arms[0], `catch:filter:${value}`), undefined, value);
+        await edit(owner(), owner().kind === 'repeat' ? 'section:finally^' : 'finally:add');
+        const bare = scope().fields.arms[1];
+        const change = deletion.deleteFromGraph(tree, { ...bare, category: 'element' });
+        assert(change);
+        tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
+        assert(!nodes(tree.root).some(n => n.kind === 'error'), tree.source);
+        assert.equal(scope().fields.arms.length, 1);
+        assert(tree.source.includes('finally^:'));
+        await edit(scope().fields.arms[0], 'catch:unfiltered');
+        assert(!scope().fields.arms[0].fields.condition);
+        await edit(owner(), 'remove-catch:0');
+        assert.equal(scope().fields.arms?.length ?? 0, 0);
+        assert(tree.source.includes('finally^:'));
+        if (source.startsWith('repeat^')) assert(tree.source.includes('last^:print(2)'));
+    }
+}));
+
+test('handler deletion and loop section changes preserve empty boundaries and adjacent comments', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { load } = require('./graph-browser-host.cjs'), deletion = load('graphDelete.ts');
+    let tree = await parse('repeat^2{pre^:print(0) main^:print(1) catch^ #[keep]# E.First: catch^: last^:print(2) finally^:print(3)}');
+    const loop = () => tree.root.fields.items[0];
+    const edit = async action => {
+        const change = editStructure(tree, loop(), action); assert(change, action);
+        tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
+        assert(!nodes(tree.root).some(n => n.kind === 'error'), tree.source);
+    };
+    const arm = loop().fields.body.fields.arms[0];
+    const filtered = editStructure(tree, arm, 'catch:filter:E.Other');
+    tree = await parse(tree.source.slice(0, filtered.start) + filtered.text + tree.source.slice(filtered.end));
+    assert(tree.source.includes('#[keep]# E.Other:'), tree.source);
+    await edit('remove-section:main^');
+    assert.equal(loop().fields.body.fields.arms.length, 2);
+    await edit('remove-section:pre^');
+    await edit('section:first^');
+    assert.equal(loop().fields.body.fields.arms.length, 2);
+    assert(tree.source.includes('last^:print(2)') && tree.source.includes('finally^:print(3)'));
+    tree = await parse('repeat^2{}');
+    assert(!structureTemplates(tree, tree.root.fields.items[0].fields.body).some(c => c.id === 'finally:add'));
+    tree = await parse('if^true^{do^{} el^:print(2)}');
+    const branchBody = tree.root.fields.items[0].fields.items[0].fields.body;
+    assert(!structureTemplates(tree, branchBody).some(c => c.id.startsWith('catch:')));
+    tree = await parse('do^{print(1) catch^: finally^:print(3)}');
+    const block = tree.root.fields.items[0], final = block.fields.extra[0];
+    const change = deletion.deleteFromGraph(tree, { ...final, category: 'element' });
+    assert(change);
+    tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
+    assert(!nodes(tree.root).some(n => n.kind === 'error'), tree.source);
+    assert.equal(tree.root.fields.items[0].fields.arms.length, 1);
+}));
+
 test('real parser preserves branch bodies when adding and removing conditional and else arms', { timeout: 30000 }, async () => withLhatServer(async parse => {
     for (const source of ['if^true^ { print(1) }', 'let^x = if^true^: 1 el^: 2;']) {
         let tree = await parse(source);

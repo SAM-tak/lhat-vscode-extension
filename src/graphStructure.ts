@@ -9,6 +9,7 @@ import { literalOf, quoteString, isNumberLiteral } from "./webview/literals";
 import { assignmentOperator, ASSIGNMENT_LABELS } from "./graphAssignments";
 import { typeSites, freshMarker, isTypeNode } from "./graphTypes";
 import { iteratorNames, freshFocus } from "./graphLoops";
+import { handlerActions, validCatchFilter } from "./graphHandlers";
 
 export const validTypeMemberName = (name: string) => /^[\p{L}_][\p{L}\p{N}_]*\^?$/u.test(name);
 
@@ -16,6 +17,7 @@ export const validTypeReference = (name: string) => /^(?:[\p{L}_][\p{L}\p{N}_]*\
     && !["f^", "p^"].includes(name.split(".")[0]);
 
 export function validStructureInput(input: NonNullable<StatementTemplate["input"]>, value: string): boolean {
+    if (input.kind === "catchType") return validCatchFilter(value);
     if (input.kind === "typeName") return validTypeReference(value);
     if (input.kind !== "count") return validTypeMemberName(value);
     if (!/^[0-9]/.test(value) || !isNumberLiteral(value)) return false;
@@ -48,11 +50,11 @@ function freshness(node: AstNode, source: string) {
 
 export function structureSites(tree: AstReply): StructureSite[] {
     const sites: StructureSite[] = [];
-    const visit = (node: AstNode) => {
+    const visit = (node: AstNode, parent?: AstNode) => {
         if (node.kind === "disabled") return;
-        if (node.kind.startsWith("type-") || ["if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string", "scope", "box", "member", "index", "call", "compare-chain", "binary", "func"].includes(node.kind))
+        if ((["block", "if-clause"].includes(node.kind) && handlerActions(tree, node, parent).length) || node.kind.startsWith("type-") || ["with", "if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string", "scope", "box", "member", "index", "call", "compare-chain", "binary", "func"].includes(node.kind))
             sites.push({ start: node.start, end: node.end, kind: node.kind });
-        Object.values(node.fields ?? {}).flat().forEach(visit);
+        Object.values(node.fields ?? {}).flat().forEach(child => visit(child, node));
     };
     visit(tree.root); return sites;
 }
@@ -69,6 +71,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     const source = tree.source, result: Action[] = [], newline = source.includes("\r\n") ? "\r\n" : "\n";
     const add = (id: string, label: string, edit: SourceEdit, preview = edit.text || label) => result.push({ id, label, text: preview, edit });
     const head = syntaxTokens(source, node.start, node.end);
+    result.push(...handlerActions(tree, node, parent));
     if (parent?.kind === "table-entry" && syntaxTokens(source, parent.start, parent.end)[0]?.text === "delegate^") return [];
     const access = !isTypeNode(node) && accessOperator(node, source);
     if (access) add("access:nil-check", access.optional ? "Use ordinary access" : "Use nil-checked access", access.optional
@@ -502,7 +505,8 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         for (const name of order) {
             if (headers.some(h => h.name === name) || name === "main^" && implicit) continue;
             const next = headers.find(h => order.indexOf(h.name) > order.indexOf(name));
-            let at = next?.start ?? close.start, text = `${newline}${name}:${newline}`;
+            let at = Math.min(next?.start ?? close.start, ...array(body.fields?.arms).filter(() => order.indexOf(name) <= 3).map(arm => arm.start));
+            let text = `${newline}${name}:${newline}`;
             if (order.indexOf(name) < 3 && implicit) {
                 at = open.end;
                 text += `main^:${newline}`;
@@ -510,7 +514,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
             add(`section:${name}`, `Add ${name} section`, { start: at, end: at, text });
         }
         headers.forEach((header, index) => {
-            const end = headers[index + 1]?.start ?? close.start;
+            const end = Math.min(headers[index + 1]?.start ?? close.start, ...array(body.fields?.arms).filter(arm => arm.start > header.start).map(arm => arm.start));
             // Retain a main heading when removing it would absorb following code into another section.
             const keepMain = header.name === "main^" && !headers.some(h => h !== header && ["pre^", "first^", "last^"].includes(h.name));
             const needsMain = !implicit && !headers.some(h => h !== header && ["pre^", "first^", "main^", "last^"].includes(h.name));

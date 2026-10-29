@@ -153,6 +153,8 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
     const [position, setPosition] = useState({ left: 0, top: 0 });
     const inputUi = picker.input?.input?.kind === "count"
         ? { title: l10n.t("Number of positions"), placeholder: l10n.t("Enter position count"), label: "Use position count" }
+        : picker.input?.input?.kind === "catchType"
+        ? { title: l10n.t("Catch filter"), placeholder: l10n.t("Enter an error kind or alternatives"), label: "Use catch filter" }
         : picker.input?.input?.kind === "typeName"
         ? { title: l10n.t("Named type"), placeholder: l10n.t("Enter a type name"), label: "Use type name" }
         : { title: l10n.t("Rename type member"), placeholder: l10n.t("Enter member name"), label: "Use member name" };

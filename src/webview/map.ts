@@ -1537,14 +1537,13 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         }
         if (catchClauses.has(node)) {
             const text = vocabulary.hats?.catch ?? ENGLISH_VOCABULARY.hats!.catch;
-            const header = leaf({ ...node, kind: "catch", end: Math.min(node.end, node.start + 6) },
+            const header = leaf({ ...node, kind: "catch" },
                 { text, parts: [{ text, role: "catch", category: "control" }] });
             const condition = node.fields?.condition;
             if (condition && !Array.isArray(condition)) {
                 // The filter describes this entry point, not a separate step.
                 const typeName = source.slice(condition.start, condition.end).trim();
                 header.lhat!.foldedSummary = typeName;
-                header.lhat!.end = condition.end;
                 header.width = Math.max(widthFor(text) + px(FOLD_BTN), widthFor(typeName));
                 header.height = px(HEAD_H + LEAF_H);
             }

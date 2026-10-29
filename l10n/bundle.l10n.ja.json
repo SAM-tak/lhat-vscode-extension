@@ -464,5 +464,15 @@
     "Use a named type": "名前付きの型を使う",
     "Named type": "名前付きの型",
     "Enter a type name": "型名を入力",
-    "Use type name": "この型名を使う"
+    "Use type name": "この型名を使う",
+    "Filter caught errors": "捕捉するエラーを絞る",
+    "Catch all remaining errors": "残りのすべてのエラーを捕捉",
+    "Add filtered catch": "型を指定するcatchを追加",
+    "Add catch for remaining errors": "残りのエラーを捕捉するcatchを追加",
+    "Remove catch": "catchを削除",
+    "Remove finally section": "finally節を削除",
+    "Add finally section": "finally節を追加",
+    "Catch filter": "catchの型指定",
+    "Enter an error kind or alternatives": "エラー種別または選択肢を入力",
+    "Use catch filter": "この型指定を使う"
 }

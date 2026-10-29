@@ -94,7 +94,7 @@ test('language AST cases render and export in normal, folded and drilled views w
                 await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
                 await until(ready);
                 await snapshot(item, index, 'expanded');
-                if (['annotation','callable-modifiers','coroutine','position-types'].includes(item.name)) {
+                if (['annotation','callable-modifiers','coroutine','position-types','handlers'].includes(item.name)) {
                     if (item.name === 'annotation') assert(await evaluate(`!!document.querySelector('.annotation-box')`));
                     const screenshot = await call('Page.captureScreenshot', { format: 'png' });
                     fs.writeFileSync(path.join(artifactDirectory, `${index}-expanded.png`), Buffer.from(screenshot.data, 'base64'));
@@ -3006,6 +3006,73 @@ test('a typed variadic function is constructed through parameter, reference and 
             await ui.expression(returned().fields.value[0], 'index');
             await ui.structure(returned(), 'return:implicit');
             assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('if, callable, with and loop handler menus remain reachable after real source refreshes', { timeout: 120000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client);
+            for (const template of ['if','function','with','repeat']) {
+                await ui.add(template);
+                const owner = () => template === 'function' ? host.tree.root.fields.items.at(-1).fields.values[0] : host.tree.root.fields.items.at(-1);
+                const scope = () => ['func','repeat'].includes(owner().kind) ? owner().fields.body : owner().kind === 'with' ? owner().fields.extra[0] : owner();
+                await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await ui.structure(owner(), 'catch:all');
+                await ui.structure(owner(), 'catch:add');
+                await ui.structure(scope().fields.arms[0], 'catch:filter:Problem.Failure');
+                await ui.add('call', scope().fields.arms[0].fields.body);
+                await ui.structure(owner(), template === 'repeat' ? 'section:finally^' : 'finally:add');
+                await ui.add('call', scope().fields.extra.at(-1));
+                assert.equal(scope().fields.arms.length, 2, host.tree.source);
+                const descendants = node => [node, ...Object.values(node.fields ?? {}).flat().flatMap(descendants)];
+                assert(descendants(scope().fields.arms[0].fields.body).some(node => node.kind === 'call'), host.tree.source);
+                await ui.remove(scope().fields.arms[0]);
+                await ui.remove(scope().fields.arms[0]);
+                assert.equal(scope().fields.arms?.length ?? 0, 0);
+                await ui.remove(scope().fields.extra.at(-1));
+                assert.equal(scope().fields?.extra?.length ?? 0, 0);
+            }
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('filtered and catch-all handlers with finally are constructed, edited and deleted through live graph controls', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        const expected = normalizedAst(await parse('do^{print(nil^) catch^Problem.First|Problem.Second:print(nil^) catch^: finally^:print(nil^)}'));
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), block = () => host.tree.root.fields.items[0];
+            await ui.add('block');
+            await ui.add('call', block());
+            await ui.structure(block(), 'catch:all');
+            await ui.structure(block(), 'catch:add');
+            await ui.structure(block().fields.arms[0], 'catch:filter:Problem.First|Problem.Second');
+            await ui.structure(block(), 'finally:add');
+            await ui.add('call', block().fields.arms[0].fields.body);
+            await ui.add('call', block().fields.extra[0]);
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            const filter = await client.evaluate(`[...document.querySelectorAll('.fold-summary')].map(e=>e.textContent)`);
+            assert(filter.some(text => text.includes('Problem.First|Problem.Second')), filter.join(' / '));
+            await client.evaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+            const screenshot = await client.call('Page.captureScreenshot', { format: 'png' });
+            fs.writeFileSync(path.join(require('node:os').tmpdir(), 'lhat-handler-edit.png'), Buffer.from(screenshot.data, 'base64'));
+
+            await ui.remove(block().fields.arms[1]);
+            assert.equal(block().fields.arms.length, 1);
+            assert(host.tree.source.includes('finally^:'));
+            await ui.structure(block().fields.arms[0], 'catch:unfiltered');
+            assert(!block().fields.arms[0].fields.condition);
+            await ui.remove(block().fields.arms[0]);
+            assert.equal(block().fields.arms?.length ?? 0, 0);
+            await ui.remove(block().fields.extra[0]);
+            assert(!host.tree.source.includes('catch^') && !host.tree.source.includes('finally^'));
             assert.deepEqual(client.errors, []);
         });
     });

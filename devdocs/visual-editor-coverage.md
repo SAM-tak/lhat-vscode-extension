@@ -12,14 +12,14 @@ npm run bundle:rf
 node --test --test-name-pattern="language AST cases render" tests/graph-svg-browser.test.cjs
 ```
 
-出力の `AST audit artifacts` にある一時ディレクトリへ、各状態の SVG、補足例4種類の PNG、`coverage.json` を保存する。
+出力の `AST audit artifacts` にある一時ディレクトリへ、各状態の SVG、補足例5種類の PNG、`coverage.json` を保存する。
 各題材は新しいブラウザーで開き、初期の表示設定をそろえる。
 通常・全展開・全折りたたみを検証し、展開先がある場合は実際のホイール操作とクリックでドリルダウンして元へ戻る。
 空の文書、単純な公開文字列、エラー回復の葉、単位のアノテーションには独立した展開先がない。
 
 ## 確認結果
 
-2026-10-30、26題材・100表示状態で以下が通過した。
+2026-10-30、27題材・104表示状態で以下が通過した。
 
 - ブラウザーの実行時例外がない。
 - ノードの座標・寸法と辺の経路が有限で、寸法が負でない。
@@ -55,6 +55,7 @@ node --test --test-name-pattern="language AST cases render" tests/graph-svg-brow
 | callable-tuple-type | 13 / 17 / 13 | 確認済み |
 | callable-modifiers | 17 / 37 / 17 | 確認済み |
 | position-types | 13 / 17 / 13 | 確認済み |
+| handlers | 50 / 56 / 4 | 確認済み |
 | recovery | 6 / 6 / 6 | 展開先なし |
 | annotation | 7 / 7 / 7 | 展開先なし |
 
@@ -62,6 +63,7 @@ node --test --test-name-pattern="language AST cases render" tests/graph-svg-brow
 
 この検証は、各題材を各状態で描画できることと基本的な幾何・SVGの整合性を確認する。
 すべてのAST要素について必要な内容が表示されていることを個別に証明するものではない。
-位置要素・索引型・self節を含む型のPNGでは、引数が「テーブル型」と表示されることを確認した。型の詳細は構造メニューのプレビューで確認できるが、グラフ上で各型要素を表示する方法は引き続き監査対象とする。
+位置要素・索引型・self節を含む型のPNGでは、引数が「テーブル型」と表示されることを確認した。この短縮は `06-visual-editor.md` の3.3節の表示方針に従う。完全な型をツールチップとメニューに保持することを含め、各型要素の表示内容を引き続き照合する。
+新しい `handlers` 題材と、空の文書からUIで作成したcatch・finallyのPNGを確認した。catchの型指定と各本文は表示されるが、finallyがブロックでは通常処理の列に含まれ、ifでは条件分岐と並列になり、catchの合流経路がfinallyを通らない描画上の不足を確認した。幾何・SVGの検証が通ることとは区別して、修正対象として残す。
 各種類の表示方針と、UI作成・内容変更・構造変更・削除の検証との対応を照合し、残る描画内容と構文の細部を確認する。
 `visual-editor-unimplemented.md` の最終確認欄は、この照合が完了するまで未完了のままにする。

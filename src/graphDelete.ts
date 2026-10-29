@@ -18,14 +18,21 @@ export function structuralDeletions(tree: AstReply): { site: DeleteSite; owner: 
     };
     const visit = (node: AstNode) => {
         if (node.kind === "disabled") return;
-        if (["if-stmt", "if-expr", "for", "repeat"].includes(node.kind)) {
-            const body = one(node, "body"), owner = { start: node.start, end: node.end, kind: node.kind };
+        if (["block", "func", "with", "if-stmt", "if-expr", "for", "repeat"].includes(node.kind)) {
+            const body = one(node, "body");
+            const scope = ["func", "for", "repeat"].includes(node.kind) ? body : node.kind === "with" ? one(node, "extra") : node, owner = { start: node.start, end: node.end, kind: node.kind };
             for (const choice of structureTemplates(tree, owner)) {
                 let element: SourceSpan | undefined;
                 const branch = /^remove-(?:branch|match):(\d+)$/.exec(choice.id);
                 if (branch) {
                     const branches = (node.kind === "for" ? body : node)?.fields?.items;
                     if (Array.isArray(branches)) element = branches[Number(branch[1])];
+                } else if (choice.id.startsWith("remove-catch:")) {
+                    const arms = scope?.fields?.arms;
+                    if (Array.isArray(arms)) element = arms[Number(choice.id.slice("remove-catch:".length))];
+                } else if (choice.id === "remove-finally") {
+                    const extra = scope?.fields?.extra;
+                    element = (Array.isArray(extra) ? extra : extra ? [extra] : []).find(clause => syntaxTokens(tree.source, clause.start, clause.end)[0]?.text === "finally^");
                 } else if (choice.id.startsWith("remove-section:")) {
                     const name = choice.id.slice("remove-section:".length), extra = body?.fields?.extra;
                     if (Array.isArray(extra)) element = extra.find(clause => syntaxTokens(tree.source, clause.start, clause.end)[0]?.text === name);

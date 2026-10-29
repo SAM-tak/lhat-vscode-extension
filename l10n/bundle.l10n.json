@@ -464,5 +464,15 @@
     "Use a named type": "Use a named type",
     "Named type": "Named type",
     "Enter a type name": "Enter a type name",
-    "Use type name": "Use type name"
+    "Use type name": "Use type name",
+    "Filter caught errors": "Filter caught errors",
+    "Catch all remaining errors": "Catch all remaining errors",
+    "Add filtered catch": "Add filtered catch",
+    "Add catch for remaining errors": "Add catch for remaining errors",
+    "Remove catch": "Remove catch",
+    "Remove finally section": "Remove finally section",
+    "Add finally section": "Add finally section",
+    "Catch filter": "Catch filter",
+    "Enter an error kind or alternatives": "Enter an error kind or alternatives",
+    "Use catch filter": "Use catch filter"
 }
