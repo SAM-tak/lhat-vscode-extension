@@ -31,9 +31,9 @@ export function commaLists(tree: AstReply): CommaList[] {
     const result: CommaList[] = patterns.map(list => ({ node: list.node, field: "items", items: list.items,
         start: list.node.start, end: list.node.end, mode: "value" }));
     const conditions = new Map(patterns.map(list => [list.condition, list.items]));
-    const visit = (node: AstNode) => {
+    const visit = (node: AstNode, typed = false) => {
         const pattern = conditions.get(node);
-        if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(visit); return; }
+        if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(child => visit(child, typed)); return; }
         if (node.kind === "disabled") return;
         const tokens = syntaxTokens(source, node.start, node.end);
         const add = (field: string, mode: CommaList["mode"], start: number, end: number,
@@ -44,7 +44,7 @@ export function commaLists(tree: AstReply): CommaList[] {
         if (braced.includes(node.kind)) {
             const field = ["enumdef", "errordef", "error-kind", "error-new"].includes(node.kind) ? "members" : "items";
             const open = tokens.find(t => t.text === "{"), close = tokens.slice(-1)[0];
-            if (open && close?.text === "}") add(field, node.kind === "type-table" ? "type"
+            if (open && close?.text === "}") add(field, (node.kind === "type-table" || node.kind === "self-table" && typed) ? "type"
                 : node.kind === "enumdef" ? "enum" : node.kind === "errordef" ? "error"
                 : node.kind === "error-kind" ? "parameter" : "member", open.end, close.start);
             else if (node.kind === "error-kind") add("members", "parameter", node.end, node.end, [], undefined,
@@ -91,7 +91,7 @@ export function commaLists(tree: AstReply): CommaList[] {
         }
         for (const [field, children] of Object.entries(node.fields ?? {})) {
             if (field === "focus" && iteratorNames(node, source).length) continue;
-            for (const child of Array.isArray(children) ? children : [children]) visit(child);
+            for (const child of Array.isArray(children) ? children : [children]) visit(child, typed || node.kind === "type-table");
         }
     };
     visit(tree.root);
@@ -143,6 +143,7 @@ export const LIST_TEMPLATE_LABELS = {
     typeMember: "Typed member", name: "Variable", enum: "Enumeration member", error: "Error kind", any: "Any type",
     binding: "Variable binding", default: "Default argument", self: "Self table", operator: "Operator member",
     abstract: "Abstract member", delegate: "Delegated member",
+    typeIndexer: "Indexed member type", typeSelf: "Instance fields type",
     typePattern: "Type pattern", rangePattern: "Range pattern",
     receiver: "Receiver parameter", constructor: "Constructor member", variadic: "Variadic parameter",
 } as const;
@@ -183,7 +184,10 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
     if (list.mode === "error") return [choice("error", name("Problem"))];
     if (list.mode === "type") {
         const types = [choice("number", "number^"), choice("string", "string^"), choice("boolean", "bool^"), choice("any", "any^")];
-        return list.node.kind === "type-table" ? [choice("typeMember", `${name("value")}: number^`), ...types]
+        return list.node.kind === "type-table" ? [choice("typeMember", `${name("value")}: number^`), ...types,
+            ...list.items.some(item => item.computed) ? [] : [choice("typeIndexer", "[string^]:any^")],
+            ...list.items.some(item => one(item, "value")?.kind === "self-table") ? [] : [choice("typeSelf", "self^{}")]]
+            : list.node.kind === "self-table" ? [choice("typeMember", `${name("value")}: number^`)]
             : list.node.kind === "type-func" && list.field === "params" && site.before === undefined ? [...types, choice("variadic", "...:any^"),
                 ...list.items.some(param => { const type = one(param, "type"); return type && sourceText(type) === "self^"; }) ? [] : [choice("receiver", "self^")]] : types;
     }

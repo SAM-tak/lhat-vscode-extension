@@ -452,5 +452,13 @@
     "Use an immutable receiver": "Use an immutable receiver",
     "Use a mutable receiver": "Use a mutable receiver",
     "Remove fresh result promise": "Remove fresh result promise",
-    "Promise a fresh result": "Promise a fresh result"
+    "Promise a fresh result": "Promise a fresh result",
+    "Number of positions": "Number of positions",
+    "Use position count": "Use position count",
+    "Enter position count": "Enter position count",
+    "Set fixed position count": "Set fixed position count",
+    "Use unbounded positions": "Use unbounded positions",
+    "Use a single position": "Use a single position",
+    "Indexed member type": "Indexed member type",
+    "Instance fields type": "Instance fields type"
 }

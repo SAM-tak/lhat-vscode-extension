@@ -452,5 +452,13 @@
     "Use an immutable receiver": "変更しないレシーバーにする",
     "Use a mutable receiver": "変更可能なレシーバーにする",
     "Remove fresh result promise": "新規の戻り値の指定を外す",
-    "Promise a fresh result": "新規の戻り値を指定"
+    "Promise a fresh result": "新規の戻り値を指定",
+    "Number of positions": "位置要素の個数",
+    "Use position count": "この個数を使う",
+    "Enter position count": "位置要素の個数を入力",
+    "Set fixed position count": "位置要素の個数を指定",
+    "Use unbounded positions": "末尾の位置要素を可変長にする",
+    "Use a single position": "位置要素を1つにする",
+    "Indexed member type": "索引でアクセスする要素の型",
+    "Instance fields type": "インスタンスのフィールド型"
 }

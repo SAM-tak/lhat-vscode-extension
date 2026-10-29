@@ -1,16 +1,22 @@
 import { accessOperator } from "./graphCalls";
 import { replacementSpan } from "./graphExpressions";
-import { commaLists, insertListEdit, removeListElement, comparison } from "./graphLists";
+import { commaLists, insertListEdit, listTemplates, removeListElement, comparison } from "./graphLists";
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import type { StatementTemplate } from "./graphStatements";
 import { syntaxTokens, templateMarker, resultTypes } from "./graphSyntax";
-import { literalOf, quoteString } from "./webview/literals";
+import { literalOf, quoteString, isNumberLiteral } from "./webview/literals";
 import { assignmentOperator, ASSIGNMENT_LABELS } from "./graphAssignments";
 import { typeSites, freshMarker } from "./graphTypes";
 import { iteratorNames, freshFocus } from "./graphLoops";
 
-export const validTypeMemberName = (name: string) => /^[\p{L}_][\p{L}\p{N}_]*$/u.test(name);
+export const validTypeMemberName = (name: string) => /^[\p{L}_][\p{L}\p{N}_]*\^?$/u.test(name);
+
+export function validStructureInput(input: NonNullable<StatementTemplate["input"]>, value: string): boolean {
+    if (input.kind !== "count") return validTypeMemberName(value);
+    if (!/^[0-9]/.test(value) || !isNumberLiteral(value)) return false;
+    try { const count = BigInt(value.replace(/_/g, "")); return count > 0n && count <= 256n; } catch { return false; }
+}
 
 export interface StructureSite extends SourceSpan { kind: string }
 interface Action extends StatementTemplate { edit: SourceEdit }
@@ -138,7 +144,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         if (parent && one(parent, "return_type") === node && freshMarker(parent, source)) freshTypes.add(node);
         const gather = (child: AstNode, owner?: AstNode) => {
             if (owner?.kind === "param" && source.slice(child.start, child.end) === "self^") return;
-            if (child.kind.startsWith("type-")) targets.push(child);
+            if (child.kind.startsWith("type-") || child.kind === "self-table") targets.push(child);
             if (freshMarker(child, source)) freshTypes.add(one(child, "return_type")!);
             Object.values(child.fields ?? {}).flat().forEach(part => gather(part, child));
         };
@@ -151,17 +157,19 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
             const change = (id: string, label: string, edit: SourceEdit) => add(prefix + id, label, edit,
                 original.slice(0, edit.start - rootSpan.start) + edit.text + original.slice(edit.end - rootSpan.start));
             const replace = (id: string, label: string, text: string) => change(id, label, { ...span, text });
-            for (const name of names) if (name !== owner?.name) replace(`type:name:${name}`, "Use type", name);
-            for (const [id, label, text] of [
-                ["nullable", "Allow nil", `(${current})|nil^`],
-                ["sequence", "Use sequence type", `t^{(${current})[]}`],
-                ["tuple", "Use tuple type", `(${current}, any^)`],
-                ["intersection", "Use intersection type", `(${current})&t^{}`],
-                ["function", "Use function type", `f^any^ -> (${current});`],
-                ["procedure", "Use procedure type", `p^any^ -> (${current});`],
-                ["coroutine", "Use coroutine type", `c^{f^any^ -> any^ -> (${current})}`],
-                ["apply", "Use type descriptor type", `type^<${current}>`],
-            ]) if (id !== "tuple" || !freshTypes.has(target)) replace(`type:${id}`, label, text);
+            if (target.kind !== "self-table") {
+                for (const name of names) if (name !== owner?.name) replace(`type:name:${name}`, "Use type", name);
+                for (const [id, label, text] of [
+                    ["nullable", "Allow nil", `(${current})|nil^`],
+                    ["sequence", "Use sequence type", `t^{(${current})[]}`],
+                    ["tuple", "Use tuple type", `(${current}, any^)`],
+                    ["intersection", "Use intersection type", `(${current})&t^{}`],
+                    ["function", "Use function type", `f^any^ -> (${current});`],
+                    ["procedure", "Use procedure type", `p^any^ -> (${current});`],
+                    ["coroutine", "Use coroutine type", `c^{f^any^ -> any^ -> (${current})}`],
+                    ["apply", "Use type descriptor type", `type^<${current}>`],
+                ]) if (id !== "tuple" || !freshTypes.has(target)) replace(`type:${id}`, label, text);
+            }
             for (const list of lists.filter(list => list.node === target)) {
                 const field = ["type-tuple", "type-apply"].includes(target.kind) ? "" : `${list.field}:`;
                 list.items.forEach((item, i) => {
@@ -173,15 +181,34 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
                         const mutable = receiverMutation(item, source);
                         if (mutable) change(`type:receiver:${i}:mutable`, mutable.label, mutable.edit);
                     }
+                    if (target.kind === "type-table" && !one(item, "key") && one(item, "value")?.kind !== "self-table") {
+                        const value = one(item, "value")!;
+                        const suffix = syntaxTokens(source, value.end, item.end), open = suffix.find(t => t.text === "[");
+                        const close = open && suffix.find(t => t.text === "]" && t.start >= open.end);
+                        const count = open && close && suffix.find(t => t.start >= open.end && t.end <= close.start);
+                        const at = count ? { start: count.start, end: count.end } : { start: close?.start ?? item.end, end: close?.start ?? item.end };
+                        change(`type:position:${i}:count`, "Set fixed position count", { ...at, text: open ? "1" : "[1]" });
+                        result[result.length - 1].input = { kind: "count", value: count ? count.text : "1", prefix: open ? "" : "[", suffix: open ? "" : "]" };
+                        if (!open || count) change(`type:position:${i}:tail`, "Use unbounded positions", count ? { start: count.start, end: count.end, text: "" } : { start: item.end, end: item.end, text: "[]" });
+                        if (open && close) {
+                            let gap = source.slice(open.start, close.end);
+                            for (const token of syntaxTokens(source, open.start, close.end).reverse()) gap = gap.slice(0, token.start - open.start) + gap.slice(token.end - open.start);
+                            change(`type:position:${i}:single`, "Use a single position", { start: open.start, end: close.end, text: gap });
+                        }
+                    }
                     const key = one(item, "key") ?? one(item, "name");
-                    if (target.kind === "type-table" && key) {
+                    if (["type-table", "self-table"].includes(target.kind) && key && !item.computed) {
                         change(`type:rename:${i}`, "Rename type member", { start: key.start, end: key.end, text: source.slice(key.start, key.end) });
                         result[result.length - 1].input = { value: source.slice(key.start, key.end) };
                     }
                 });
-                const append = insertListEdit(tree, { category: "list", kind: target.kind, start: target.start, end: target.end, field: list.field },
-                    target.kind === "type-table" ? "typeMember" : "any");
-                if (append) change(`type:append${field ? `:${list.field}` : ""}`, "Add type element", append);
+                const insertion = { category: "list" as const, kind: target.kind, start: target.start, end: target.end, field: list.field };
+                const templates = ["type-table", "self-table"].includes(target.kind) ? listTemplates(tree, insertion) : [{ id: "any", label: "Add type element" }];
+                for (const choice of templates) {
+                    const append = insertListEdit(tree, insertion, choice.id);
+                    const id = `type:append${field ? `:${list.field}` : ""}${["type-table", "self-table"].includes(target.kind) && choice.id !== "typeMember" ? `:${choice.id}` : ""}`;
+                    if (append) change(id, choice.label, append);
+                }
                 if (target.kind === "type-func" && list.field === "params") {
                     const variadic = insertListEdit(tree, { category: "list", kind: target.kind, start: target.start, end: target.end, field: list.field }, "variadic");
                     if (variadic) change("type:append:variadic", "Variadic parameter", variadic);
@@ -523,5 +550,5 @@ export function editStructure(tree: AstReply, site: StructureSite, action: strin
     if (choice && !choice.input) return choice.edit;
     const input = choices.find(choice => choice.input && action.startsWith(`${choice.id}:`));
     const name = input && action.slice(input.id.length + 1);
-    return input && name && validTypeMemberName(name) ? { ...input.edit, text: name } : undefined;
+    return input && name && validStructureInput(input.input!, name) ? { ...input.edit, text: `${input.input!.prefix ?? ""}${name}${input.input!.suffix ?? ""}` } : undefined;
 }

@@ -94,7 +94,7 @@ test('language AST cases render and export in normal, folded and drilled views w
                 await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
                 await until(ready);
                 await snapshot(item, index, 'expanded');
-                if (['annotation','callable-modifiers','coroutine'].includes(item.name)) {
+                if (['annotation','callable-modifiers','coroutine','position-types'].includes(item.name)) {
                     if (item.name === 'annotation') assert(await evaluate(`!!document.querySelector('.annotation-box')`));
                     const screenshot = await call('Page.captureScreenshot', { format: 'png' });
                     fs.writeFileSync(path.join(artifactDirectory, `${index}-expanded.png`), Buffer.from(screenshot.data, 'base64'));
@@ -3006,6 +3006,38 @@ test('a typed variadic function is constructed through parameter, reference and 
             await ui.expression(returned().fields.value[0], 'index');
             await ui.structure(returned(), 'return:implicit');
             assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('positional counts, type indexers and instance fields are built from the live type menu', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs'), structures = load('graphStructure.ts');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^function=f^value:t^{number^[3],[string^]:any^,self^{field:number^}}{return^0}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), fn = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('function');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.addElement('parameter', fn(), 'params');
+            const name = () => fn().fields.params[0].fields.name, type = () => fn().fields.params[0].fields.type;
+            await ui.typeStructure(name(), 'type:name:t^{}');
+            await ui.typeStructure(name(), 'type:append:items:number');
+            await ui.typeStructure(name(), 'type:position:0:count:3');
+            await ui.typeStructure(name(), 'type:append:items:typeIndexer');
+            await ui.typeStructure(name(), 'type:append:items:typeSelf');
+            const append = structures.structureTemplates(host.tree, type()).find(c => c.id.startsWith('type:part:') && c.id.endsWith('type:append:items'));
+            await ui.typeStructure(name(), append.id);
+            const rename = structures.structureTemplates(host.tree, type()).find(c => c.id.startsWith('type:part:') && c.id.includes('type:rename:0'));
+            await ui.typeStructure(name(), `${rename.id}:field`);
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.typeStructure(name(), 'type:position:0:tail');
+            assert(host.tree.source.includes('number^[]'));
+            await ui.typeStructure(name(), 'type:position:0:single');
+            assert(!host.tree.source.includes('number^['));
+            await ui.typeStructure(name(), 'type:remove:items:1');
+            assert.equal(type().fields.items.length, 2);
             assert.deepEqual(client.errors, []);
         });
     });

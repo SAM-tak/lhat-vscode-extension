@@ -1,4 +1,4 @@
-import { structureSites, structureTemplates, validTypeMemberName, type StructureSite } from "../../graphStructure";
+import { structureSites, structureTemplates, validStructureInput, type StructureSite } from "../../graphStructure";
 import { deleteSites, type DeleteSite } from "../../graphDelete";
 import { expressionSites, expressionTemplates, validExpressionReference, type ExpressionSite } from "../../graphExpressions";
 import type { AnnotationOwner } from "../../graphAnnotations";
@@ -151,10 +151,10 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
     const menu = useRef<HTMLDivElement>(null), input = useRef<HTMLInputElement>(null);
     const [query, setQuery] = useState(picker.input?.input?.value ?? ""), [index, setIndex] = useState(0);
     const [position, setPosition] = useState({ left: 0, top: 0 });
-    const title = picker.input ? l10n.t("Rename type member") : picker.structure ? l10n.t("Edit structure") : picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
+    const title = picker.input ? picker.input.input?.kind === "count" ? l10n.t("Number of positions") : l10n.t("Rename type member") : picker.structure ? l10n.t("Edit structure") : picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
         ? l10n.t("Choose an element template") : l10n.t("Choose a statement template");
-    const choices = picker.input ? validTypeMemberName(query.trim())
-        ? [{ id: `${picker.input.id}:${query.trim()}`, label: "Use member name", text: query.trim() }] : []
+    const choices = picker.input ? validStructureInput(picker.input.input!, query.trim())
+        ? [{ id: `${picker.input.id}:${query.trim()}`, label: picker.input.input?.kind === "count" ? "Use position count" : "Use member name", text: query.trim() }] : []
         : picker.expression && validExpressionReference(picker.expression, query.trim()) && !picker.choices.some(c => c.id === `reference:${query.trim()}`)
         ? [...picker.choices, { id: `reference:${query.trim()}`, label: query.trim(), text: query.trim() }] : picker.choices;
     const words = query.toLocaleLowerCase().trim().split(/\s+/);
@@ -202,7 +202,7 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
         <input ref={input} role="combobox" aria-expanded="true" aria-controls={`${picker.id}-options`}
             aria-activedescendant={filtered.length ? `${picker.id}-${selected}` : undefined}
             data-name-input={picker.input ? true : undefined}
-            placeholder={picker.input ? l10n.t("Enter member name") : picker.expression ? l10n.t("Filter choices or enter a reference name") : l10n.t("Filter choices")} aria-label={picker.input ? l10n.t("Enter member name") : l10n.t("Filter choices")}
+            placeholder={picker.input ? picker.input.input?.kind === "count" ? l10n.t("Enter position count") : l10n.t("Enter member name") : picker.expression ? l10n.t("Filter choices or enter a reference name") : l10n.t("Filter choices")} aria-label={picker.input ? picker.input.input?.kind === "count" ? l10n.t("Enter position count") : l10n.t("Enter member name") : l10n.t("Filter choices")}
             disabled={picker.saving} value={query} onChange={event => { setQuery(event.target.value); setIndex(0); }}
             onKeyDown={event => {
                 if (event.nativeEvent.isComposing || picker.saving) return;

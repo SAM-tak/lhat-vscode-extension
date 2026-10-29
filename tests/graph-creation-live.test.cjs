@@ -12,6 +12,51 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('positional type counts and tails preserve their type and comments while rejecting invalid limits', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structures = load('graphStructure.ts');
+    const type = tree => tree.root.fields.items[0].fields.values[0].fields.params[0].fields.type;
+    const base = await parse('let^read=f^x:t^{number^,name:string^}{0}');
+    for (const count of ['1','256','0x10','0b10','0o10','1_0']) {
+        const edit = structures.editStructure(base, type(base), `type:position:0:count:${count}`);
+        assert(edit, count);
+        const changed = await parse(apply(base.source, edit));
+        assert(!flat(changed.root).some(n => n.kind === 'error'), changed.source);
+        assert(changed.source.includes(`[${count}]`));
+    }
+    for (const count of ['0','257','-1','+1','1.5','1e0','1;print(1)'])
+        assert.equal(structures.editStructure(base, type(base), `type:position:0:count:${count}`), undefined, count);
+    let tree = await parse('let^read=f^x:t^{(number^)[#[keep]#2],name:string^}{0}');
+    for (const action of ['type:position:0:count:4','type:position:0:tail','type:position:0:single']) {
+        tree = await parse(apply(tree.source, structures.editStructure(tree, type(tree), action)));
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+        assert(tree.source.includes('#[keep]#') && tree.source.includes('name:string^'), tree.source);
+    }
+    assert(tree.source.includes('(number^)#[keep]#,name:string^'), tree.source);
+}));
+
+test('typed indexers and instance sections add once and use declaration syntax for their own fields', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structures = load('graphStructure.ts');
+    let tree = await parse('let^read=f^x:t^{}{0}');
+    const type = () => tree.root.fields.items[0].fields.values[0].fields.params[0].fields.type;
+    const edit = async action => {
+        tree = await parse(apply(tree.source, structures.editStructure(tree, type(), action)));
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    };
+    await edit('type:append:items:typeIndexer');
+    assert(type().fields.items[0].computed);
+    assert(!structures.structureTemplates(tree, type()).some(c => c.id === 'type:rename:0' || c.id === 'type:append:items:typeIndexer'));
+    await edit('type:append:items:typeSelf');
+    const append = structures.structureTemplates(tree, type()).find(c => c.id.startsWith('type:part:') && c.id.endsWith('type:append:items'));
+    assert(append);
+    await edit(append.id);
+    const rename = structures.structureTemplates(tree, type()).find(c => c.id.startsWith('type:part:') && c.id.includes('type:rename:0'));
+    await edit(`${rename.id}:field^`);
+    const field = type().fields.items[1].fields.value.fields.items[0];
+    assert.equal(tree.source.slice(field.fields.key.start, field.fields.key.end), 'field^');
+    assert.equal(tree.source.slice(field.fields.value.start, field.fields.value.end), 'number^');
+    assert(!structures.structureTemplates(tree, type()).some(c => c.id === 'type:append:items:typeSelf'));
+}));
+
 test('contextual and enclosing-body references are editable without admitting structural keywords', { timeout: 30000 }, async () => withLhatServer(async parse => {
     for (const reference of ['this^','this^^','self^^','it^^','def^','def^^','super^','L^','t^','$^it^','$$self^']) {
         const tree = await parse('let^value=nil^'), value = tree.root.fields.items[0].fields.values[0];

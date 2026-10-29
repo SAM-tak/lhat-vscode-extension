@@ -19,6 +19,7 @@ function languageCases() {
         { name: 'chain-next', source: 'let^value=0<1<2 repeat^2{next^}' },
         { name: 'callable-tuple-type', source: 'let^f=f^arg:(f^number^ ->(number^,string^);){0}' },
         { name: 'callable-modifiers', source: 'let^factory=template^f^value:number^ ->fresh^t^{}{return^{}} let^Item=def^{method=f^mutable^self^{return^def^}}' },
+        { name: 'position-types', source: 'let^f=f^arg:t^{number^[3],[string^]:any^,self^{field:number^}}{0}' },
         { name: 'recovery', source: 'let^value=)', recovery: true },
         { name: 'annotation', source: '@game let^value=0' },
     );
