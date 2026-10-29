@@ -85,8 +85,9 @@ export function literalOf(node: AstNode, source: string): LiteralValue | undefin
     return { key: `${node.kind}:${node.start}:${node.end}`, kind: numeric ? "number" : "string", value };
 }
 
-/** Encode an ordinary L^ string, including controls JSON would spell differently. */
-export function quoteString(value: string): string {
+/** Encode L^ strings, keeping raw quoting when its contents permit it. */
+export function quoteString(value: string, raw = false): string {
+    if (raw && !/[\x00-\x1f\x7f]/.test(value)) return "'" + value.replace(/'/g, "''") + "'";
     const escapes: Record<string, string> = { "\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t", "\0": "\\0" };
     return '"' + value.replace(/[\\"\x00-\x1f\x7f]/g, char => escapes[char] ?? `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}`) + '"';
 }

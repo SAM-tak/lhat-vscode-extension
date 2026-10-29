@@ -139,3 +139,12 @@ test('source literal edits validate AST identity and preserve numeric spelling a
     assert.equal(editLiteral(tree, 'int:0:1', '2; evil()'), undefined);
     assert.equal(editLiteral({ ...tree, root: node('disabled', '1', 0, { body: root }) }, 'int:0:1', '2'), undefined);
 });
+
+test('raw string edits retain their delimiter when possible and safely encode control characters', () => {
+    const source = "'old'", root = node('string', source), tree = { source, root };
+    for (const value of ["C:\\temp\\file.txt", "it's fine", '日本語😀', 'line\nnext', '\0']) {
+        const edit = editLiteral(tree, literalOf(root, source).key, value);
+        assert.equal(literalOf(node('string', edit.text), edit.text).value, value);
+        assert.equal(edit.text.startsWith("'"), !/[\x00-\x1f\x7f]/.test(value));
+    }
+});

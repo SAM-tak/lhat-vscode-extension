@@ -55,7 +55,7 @@ async function withLhatServer(run) {
             }
             throw new Error('The checked AST did not catch up with the unsaved document');
         };
-        return await run(parse);
+        return await run(parse, { request, uri });
     } finally {
         child.kill();
         rejectAll(new Error('Test server closed'));

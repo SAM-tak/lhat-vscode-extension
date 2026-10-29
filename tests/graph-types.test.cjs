@@ -340,3 +340,33 @@ test('removal recovers after a failed or still pending candidate lookup', async 
         } finally { h.close(); }
     }
 });
+
+test('uninitialized parameters can change signature type while defaults keep compatibility restrictions', async () => {
+    for (const defaulted of [false, true]) {
+        const source = `f^input:any^${defaulted ? ' = 0' : ''} {}`, n = fixture(source);
+        const param = n('param', `input:any^${defaulted ? ' = 0' : ''}`, {
+            name: n('ident', 'input'), type: n('type-name', 'any^'),
+            ...(defaulted ? { fallback: n('int', '0') } : {}),
+        });
+        const tree = { source, root: n('func', source, { params: [param], body: n('block', '{}') }) };
+        const document = { uri: 'file:parameter-types', version: 1, getText: () => source, positionAt: character => ({ line: 0, character }) };
+        const edits = [];
+        const vscode = { l10n: { t: text => text },
+            Range: class { constructor(start, end) { Object.assign(this, { start, end }); } },
+            WorkspaceEdit: class { changes = []; replace(uri, range, text) { this.changes.push({ uri, range, text }); } },
+            workspace: { applyEdit: async edit => { edits.push(edit); return true; } },
+        };
+        const api = load('graphTypeEditor.ts', vscode);
+        const selection = await api.typeOptionsFromGraph(document, tree,
+            { type: 'chooseType', id: 'parameter', start: 2, end: 7, version: 1 },
+            { sendRequest: async () => ({ source, candidates: ['any^'] }) }, () => true, { isCancellationRequested: false });
+        assert.equal(selection.candidates.includes('string^'), !defaulted);
+        if (defaulted) await assert.rejects(api.applyTypeFromGraph(document, selection, 'string^', () => true), /available types/);
+        else {
+            await api.applyTypeFromGraph(document, selection, 'string^', () => true);
+            assert.equal(edits[0].changes.length, 1);
+            assert.equal(edits[0].changes[0].text, 'string^');
+            assert.deepEqual(edits[0].changes[0].range.start, { line: 0, character: 8 });
+        }
+    }
+});

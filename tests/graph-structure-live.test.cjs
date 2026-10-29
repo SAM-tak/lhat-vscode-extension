@@ -12,7 +12,7 @@ test('real parser preserves branch bodies when adding and removing conditional a
     for (const source of ['if^true^ { print(1) }', 'let^x = if^true^: 1 el^: 2;']) {
         let tree = await parse(source);
         const edit = async action => {
-            const site = structureSites(tree)[0], change = editStructure(tree, site, action);
+            const site = structureSites(tree).find(s => ['if-stmt', 'if-expr'].includes(s.kind)), change = editStructure(tree, site, action);
             assert(change, action);
             tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
             assert(!nodes(tree.root).some(n => n.kind === 'error'));
@@ -63,7 +63,7 @@ test('removing the first branch promotes the next arm without losing its body', 
     for (const source of ['if^true^ { print(1) el^false^: print(2) el^: print(3) }',
         'if^true^ { print(1) el^: print(2) }', 'if^true^ { print(1) }',
         'let^v = if^true^: 1 el^false^: 2 el^: 3;', 'let^v = if^true^: 1 el^: 2;']) {
-        const tree = await parse(source), site = structureSites(tree)[0];
+        const tree = await parse(source), site = structureSites(tree).find(s => ['if-stmt', 'if-expr'].includes(s.kind));
         const change = editStructure(tree, site, 'remove-branch:0');
         assert(change);
         const updated = await parse(source.slice(0, change.start) + change.text + source.slice(change.end));

@@ -11,7 +11,7 @@
 //
 // Element lists (5.3.1) obey neither: they wrap into rows of a set width.
 
-import type { AstNode, AstReply } from "../protocol.js";
+import type { AstNode, AstReply, TypeSite, SourceSpan } from "../protocol.js";
 import { declaredEntry, typeSites } from "../graphTypes";
 import { commaLists, listIdentity, listInsertions, groupedOperatorSites, type CommaList, type InsertionSite, type ListInsertion, type OperatorSite } from "../graphLists";
 import { callInfo, callReceiver, canInsertBinding, outputTypes } from "../graphCalls";
@@ -130,6 +130,8 @@ export interface ElkNode {
         /** Localized semantic runs, kept separate from source labels/spans. */
         labelParts?: LabelPart[];
         literalTypeLabel?: string;
+        literalTypeSite?: TypeSite;
+        elementOwner?: SourceSpan;
         /** Member values are data, not executable statement rows. */
         noExecutionHandles?: boolean;
         collapsed?: boolean;
@@ -259,8 +261,7 @@ function drawnChildren(node: AstNode): Child[] {
 }
 
 // Introduction sites and returns share the same pair of boxes.
-// PARAM is built only for visible error payload fields; function signatures
-// still stay in labels.
+// Parameter defaults and error payload fields use the same value inputs.
 const DEFINITION_FIELDS: Record<string, [string[], string[]]> = {
     define: [["targets"], ["values"]], // let^ and var^ use the same AST kind
     return: [[], ["value"]], // the return pictogram takes the declaration's place
@@ -976,7 +977,8 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         const name = node === viewRoot ? callableNames.get(node) : undefined;
         if (name) keyword.parts.push({ text: ` ${source.slice(name.start, name.end)}`, symbol: { start: name.start, end: name.end } });
         const title = leaf({ ...node, kind: "signature-title", end: node.start + 2 }, keyword);
-        const parameters = listContent(params, unfold, avail, params.items.map(param => leaf(param, labelFor(param, []))));
+        const parameters = listContent(params, unfold, avail, params.items.map(param => param.fields?.fallback
+            ? build(param, "expr", unfold, avail) : leaf(param, labelFor(param, []))));
         const resultSites = sites.filter(site => site.name.startsWith("return value") &&
             (site.result?.owner === node.start || (site.start === (returns.items[0]?.start ?? node.start) && site.end <= node.end)));
         const cells = resultSites.map(site => leaf({ ...node, kind: "result-type", start: site.start, end: site.end },
@@ -1366,7 +1368,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         declarations.forEach(memberHandles);
         const rowKind = reassignment ? "reassign-row" : "define-row";
         const id = nextId(rowKind);
-        const canAdd = canInsertBinding(node), pairs: ElkNode[] = [];
+        const canAdd = canInsertBinding(node, source), pairs: ElkNode[] = [];
         if (permitsUnpack && values.items.length === 1 && declarations.length > 1) {
             // One expression supplying several bindings is evaluated once.
             // It still lives inside the same statement frame as ordinary pairs.
@@ -1538,9 +1540,17 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         // In particular, a def^ field template must expose its own members.
         const positional = node.fields?.value;
         if (node.kind === "table-entry" && node.fields?.key === undefined &&
-            positional !== undefined && !Array.isArray(positional) &&
-            positional.start === node.start && positional.end === node.end) {
+            positional !== undefined && !Array.isArray(positional)) {
             const built = build(positional, voice, unfold, avail);
+            if (positional.start !== node.start || positional.end !== node.end) {
+                const output = definitionSource(built);
+                const attach = (target: ElkNode): void => {
+                    if (target.id === (built.lhat?.layoutOnly ? output : built.id) && target.lhat)
+                        target.lhat.elementOwner = { start: node.start, end: node.end };
+                    else target.children?.forEach(attach);
+                };
+                attach(built);
+            }
             const reorder = reorderBySpan.get(`${node.start}:${node.end}`);
             if (reorder !== undefined && built.lhat !== undefined) built.lhat.reorder = reorder;
             return built;
@@ -1660,7 +1670,14 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             }
             const label = labelFor({ ...node, end: declarationEnd }, []);
             declarationLabelEnd.set(node, declarationEnd);
-            const declaration = isReturn ? returnNode(node) : leaf(node, label);
+            const key = node.kind === "table-entry" && node.computed ? field("key") : undefined;
+            const literalKey = key && literalOf(key, source);
+            const declaration = isReturn ? returnNode(node) : literalKey ? leaf(key!, labelFor(key!, [])) : leaf(node, label);
+            if (literalKey && key) {
+                const site = sites.find(site => site.start === key.start && site.end === key.end);
+                declaration.lhat = { ...declaration.lhat!, kind: node.kind, start: node.start, end: node.end,
+                    literalTypeSite: site, literalTypeLabel: displayType(site?.typeText ?? "?", vocabulary, true) };
+            }
             const handleY = (declaration.height ?? px(LEAF_H)) / 2;
             declaration.lhat = {
                 ...declaration.lhat!, definitionRole: "declaration", revealEnd: declarationEnd,
@@ -1822,7 +1839,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         // child covers the whole of it -- 'print(x)' read as "call-stmt".
         if (!clause && !STATEMENT_LIST.has(kind) && !BRANCH.has(kind) &&
             !ELEMENT_LIST.has(kind) && !VOICE_TURN.has(kind) &&
-            !BODY_STATEMENT.has(kind) && kind !== "try" && !holdsExpandedChild(node)) {
+            !BODY_STATEMENT.has(kind) && !["try", "panic", "await", "pack"].includes(kind) && !holdsExpandedChild(node)) {
             return leaf(node, labelFor(node, []));
         }
 

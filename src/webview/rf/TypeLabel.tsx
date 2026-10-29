@@ -194,6 +194,7 @@ export function TypeLabel({ label, site }: { label: string; site?: TypeSite }) {
     const className = `type-label semantic-label ${site?.explicit ? "type-explicit" : "type-inferred"}`;
     if (!site) return <span className={className} data-category="type" title={origin}>{label}</span>;
     return <button type="button" className={`${className} nodrag nopan nowheel nokey`}
+        data-type-start={site.start} data-type-end={site.end} data-result-index={site.result?.index}
         data-category="type" aria-label={l10n.t("{0}: {1}. Choose type", site.name, label)} aria-haspopup="dialog"
         disabled={context.version === undefined}
         title={`${origin}: ${fullType}\n${l10n.t("Click to choose a type")}`}

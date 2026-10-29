@@ -15,6 +15,8 @@ export interface CommaList {
     implicit?: string[];
     /** Empty optional braces which must be written when the first item is added. */
     materialize?: { prefix: string; suffix: string };
+    /** An unparenthesized implicit return needs a tuple when a second value is added. */
+    groupOnInsert?: boolean;
 }
 const array = (value: AstNode | AstNode[] | undefined): AstNode[] => value ? Array.isArray(value) ? value : [value] : [];
 const one = (node: AstNode, field: string) => array(node.fields?.[field])[0];
@@ -47,8 +49,16 @@ export function commaLists(tree: AstReply): CommaList[] {
                 node.kind === "type-tuple" ? "type" : "value", open.end, close.start);
         } else if (["return", "yield"].includes(node.kind)) {
             // A parser-generated implicit return has no keyword, but its values still form a list.
-            const marker = tokens[0]?.text === `${node.kind}^` ? tokens[0].end : node.start;
-            add("value", "value", marker, node.end);
+            const explicit = tokens[0]?.text === `${node.kind}^`, marker = explicit ? tokens[0].end : node.start;
+            const values = syntaxTokens(source, marker, node.end);
+            let depth = 0;
+            const closing = values[0]?.text === "(" ? values.findIndex(token => {
+                if (token.text === "(") depth++;
+                return token.text === ")" && --depth === 0;
+            }) : -1;
+            const grouped = closing >= 0 && closing === values.length - 1;
+            add("value", "value", grouped ? values[0].end : marker, grouped ? values[closing].start : node.end);
+            if (!explicit && !grouped && array(node.fields?.value).length) result[result.length - 1].groupOnInsert = true;
         } else if (["define", "reassign"].includes(node.kind)) {
             const targets = array(node.fields?.targets), values = node.kind === "reassign" ? assignmentValues(node, source) : array(node.fields?.values);
             const equal = node.kind === "reassign" ? assignmentOperator(node, source)
@@ -84,13 +94,14 @@ export function listInsertions(tree: AstReply): ListInsertion[] {
         const { node, field, items, implicit } = list;
         const base: ListInsertion = { category: "list", kind: node.kind, start: node.start, end: node.end, field };
         return [...(implicit ? implicit.slice(1).map((_, i) => ({ ...base, before: -(i + 2) }))
-            : items.slice(1).map(item => ({ ...base, before: item.start }))), base].filter(site => editableList(list, site, lists));
+            : items.slice(1).map(item => ({ ...base, before: item.start }))), base].filter(site => editableList(list, site, lists, tree.source));
     });
 }
 
-function editableList(list: CommaList, site: ListInsertion, lists: CommaList[]): boolean {
-    if (list.node.kind === "define") return list.field === "targets" && canInsertBinding(list.node);
-    if (list.node.kind === "tuple" && lists.some(parent => parent.node.kind === "define" && parent.field === "values" &&
+function editableList(list: CommaList, site: ListInsertion, lists: CommaList[], source: string): boolean {
+    if (["define", "reassign"].includes(list.node.kind)) return list.field === "targets" && canInsertBinding(list.node, source);
+    if (list.node.kind === "tuple" && lists.some(parent => (parent.node.kind === "define" ||
+        parent.node.kind === "reassign" && assignmentOperator(parent.node, source)?.base === ":=") && parent.field === "values" &&
         parent.items.length === 1 && parent.items[0] === list.node && array(parent.node.fields?.targets).length > 1)) return false;
     if (list.node.kind === "call" && list.field === "argument") {
         const info = callInfo(list.node);
@@ -106,23 +117,27 @@ function findList(tree: AstReply, site: ListInsertion): CommaList | undefined {
     const lists = commaLists(tree);
     return lists.find(list => listIdentity(list.node, list.field) === listIdentity(site, site.field) &&
         (site.before === undefined || list.items.slice(1).some(item => item.start === site.before) ||
-            (list.implicit && site.before <= -2 && -site.before <= list.implicit.length)) && editableList(list, site, lists));
+            (list.implicit && site.before <= -2 && -site.before <= list.implicit.length)) && editableList(list, site, lists, tree.source));
 }
 
 export const LIST_TEMPLATE_LABELS = {
     number: "Number", string: "Text", boolean: "Boolean", nil: "Nil", table: "Table literal",
     function: "Function", procedure: "Procedure", member: "Named member", parameter: "Parameter",
     typeMember: "Typed member", name: "Variable", enum: "Enumeration member", error: "Error kind", any: "Any type",
-    binding: "Variable binding", default: "Default argument",
+    binding: "Variable binding", default: "Default argument", self: "Self table", operator: "Operator member",
+    abstract: "Abstract member",
+    receiver: "Receiver parameter", constructor: "Constructor member",
 } as const;
 
 export function listTemplates(tree: AstReply, site: ListInsertion): StatementTemplate[] {
     const list = findList(tree, site);
     if (!list) return [];
+    const sourceText = (node: AstNode) => tree.source.slice(node.start, node.end);
     const used = new Set(syntaxTokens(tree.source).map(t => t.text));
     const name = (base: string) => { let next = base, i = 2; while (used.has(next)) next = `${base}${i++}`; return next; };
     const choice = (id: keyof typeof LIST_TEMPLATE_LABELS, text: string): StatementTemplate => ({ id, label: LIST_TEMPLATE_LABELS[id], text });
     if (list.node.kind === "define") return [choice("binding", "_^ = nil^")];
+    if (list.node.kind === "reassign") return [choice("binding", name("value"))];
     if (list.node.kind === "call") {
         const info = callInfo(list.node);
         const index = site.before === undefined ? list.items.length : list.items.findIndex(item => item.start === site.before);
@@ -132,7 +147,18 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
             : input?.type === "bool^" ? "false^" : "nil^";
         return [choice("default", initial)];
     }
-    if (list.mode === "parameter") return [choice("parameter", `${name("value")}: any^`)];
+    if (list.mode === "parameter") {
+        let inDefinition = false;
+        const scope = (node: AstNode, inside = false) => {
+            if (node === list.node) inDefinition = inside;
+            Object.values(node.fields ?? {}).flat().forEach(child => scope(child, inside || node.kind === "def"));
+        };
+        scope(tree.root);
+        return [choice("parameter", `${name("value")}: any^`),
+            ...(list.node.kind === "func" && inDefinition && !list.items.some(param => {
+                const key = one(param, "name"); return key && sourceText(key) === "self^";
+            }) ? [choice("receiver", "self^")] : [])];
+    }
     if (list.mode === "name") return [choice("name", name("value"))];
     if (list.mode === "enum") return [choice("enum", name("Item"))];
     if (list.mode === "error") return [choice("error", `${name("Problem")} {}`)];
@@ -144,10 +170,17 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
         choice("table", "{}"), choice("function", "f^{ return^ 0 }"), choice("procedure", "p^{}")];
     if (list.mode === "member") {
         const member = choice("member", `${name("value")} = 0`);
-        if (["def", "self-table", "error-new"].includes(list.node.kind)) return [member];
+        if (list.node.kind === "def") return [member, choice("typeMember", `${name("value")}: number^`),
+            choice("abstract", `abstract^${name("value")}: number^`),
+            choice("operator", "op^<=> = f^self^, rhs:Self^ { return^0 }"),
+            ...(list.items.some(item => { const key = one(item, "key"); return key && sourceText(key) === "new"; })
+                ? [] : [choice("constructor", "override^new = f^{}")]),
+            ...(list.items.some(item => one(item, "value")?.kind === "self-table") ? [] : [choice("self", "self^{}")])];
+        if (["self-table", "error-new"].includes(list.node.kind)) return [member];
         values.unshift(member);
     }
     return values;
+
 }
 
 /** Insert at a syntax-owned comma, retaining grouping, comments and trailing commas. */
@@ -155,7 +188,10 @@ export function insertListEdit(tree: AstReply, site: ListInsertion, template: st
     const choice = listTemplates(tree, site).find(t => t.id === template);
     if (!choice) return undefined;
     const list = findList(tree, site)!;
-    if (list.node.kind === "define") {
+    if (list.groupOnInsert) return { start: list.start, end: list.end,
+        text: `(${tree.source.slice(list.start, list.end)}, ${choice.text})` };
+    if (template === "receiver") return insertAt(tree.source, list, 0, choice.text);
+    if (["define", "reassign"].includes(list.node.kind)) {
         const lists = commaLists(tree);
         let values = lists.find(other => other.node === list.node && other.field === "values");
         if (list.items.length > 1 && values?.items.length === 1 && values.items[0].kind === "tuple") {
@@ -163,7 +199,7 @@ export function insertListEdit(tree: AstReply, site: ListInsertion, template: st
         }
         if (!values) return undefined;
         const index = site.before === undefined ? list.items.length : list.items.findIndex(item => item.start === site.before);
-        const edits = [insertAt(tree.source, list, index, "_^"), insertAt(tree.source, values, index, "nil^")];
+        const edits = [insertAt(tree.source, list, index, list.node.kind === "define" ? "_^" : choice.text), insertAt(tree.source, values, index, "nil^")];
         let text = tree.source.slice(list.node.start, list.node.end);
         for (const edit of edits.sort((a, b) => b.start - a.start)) {
             text = text.slice(0, edit.start - list.node.start) + edit.text + text.slice(edit.end - list.node.start);
@@ -191,6 +227,7 @@ export function insertListEdit(tree: AstReply, site: ListInsertion, template: st
 }
 
 function insertAt(source: string, list: CommaList, index: number, text: string): SourceEdit {
+    if (index === 0) return { start: list.start, end: list.start, text: ` ${text}${list.items.length ? "," : " "}` };
     const tokens = syntaxTokens(source, list.start, list.end);
     const next = list.items[index];
     if (next) {

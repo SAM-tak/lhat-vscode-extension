@@ -2,6 +2,7 @@ import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import type { StatementTemplate } from "./graphStatements";
 import { syntaxTokens } from "./graphSyntax";
+import { literalOf, quoteString } from "./webview/literals";
 
 export interface StructureSite extends SourceSpan { kind: string }
 interface Action extends StatementTemplate { edit: SourceEdit }
@@ -11,7 +12,7 @@ export function structureSites(tree: AstReply): StructureSite[] {
     const sites: StructureSite[] = [];
     const visit = (node: AstNode) => {
         if (node.kind === "disabled") return;
-        if (["if-stmt", "if-expr", "repeat", "for"].includes(node.kind))
+        if (["if-stmt", "if-expr", "repeat", "for", "define", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string"].includes(node.kind))
             sites.push({ start: node.start, end: node.end, kind: node.kind });
         Object.values(node.fields ?? {}).flat().forEach(visit);
     };
@@ -19,16 +20,105 @@ export function structureSites(tree: AstReply): StructureSite[] {
 }
 
 function actions(tree: AstReply, site: StructureSite): Action[] {
-    let node: AstNode | undefined;
-    const find = (candidate: AstNode) => {
+    let node: AstNode | undefined, parent: AstNode | undefined, callable: AstNode | undefined;
+    const find = (candidate: AstNode, owner?: AstNode, enclosing?: AstNode) => {
         if (candidate.kind === "disabled") return;
-        if (candidate.kind === site.kind && candidate.start === site.start && candidate.end === site.end) node = candidate;
-        Object.values(candidate.fields ?? {}).flat().forEach(find);
+        if (candidate.kind === site.kind && candidate.start === site.start && candidate.end === site.end) { node = candidate; parent = owner; callable = enclosing; }
+        Object.values(candidate.fields ?? {}).flat().forEach(child => find(child, candidate, candidate.kind === "func" ? candidate : enclosing));
     };
     find(tree.root);
     if (!node) return [];
     const source = tree.source, result: Action[] = [], newline = source.includes("\r\n") ? "\r\n" : "\n";
     const add = (id: string, label: string, edit: SourceEdit, preview = edit.text || label) => result.push({ id, label, text: preview, edit });
+    const head = syntaxTokens(source, node.start, node.end);
+    if (node.kind === "string") {
+        const literal = literalOf(node, source);
+        if (!literal) return [];
+        if (source[node.start] !== '"' || source.startsWith('"""', node.start))
+            add("string:quoted", "Use escaped string", { start: node.start, end: node.end, text: quoteString(literal.value) });
+        if (source[node.start] !== "'" && !/[\x00-\x1f\x7f]/.test(literal.value))
+            add("string:raw", "Use raw string", { start: node.start, end: node.end, text: quoteString(literal.value, true) });
+        return result;
+    }
+    if (node.kind === "param") {
+        const name = one(node, "name"), fallback = one(node, "fallback"), type = one(node, "type");
+        if (!parent || !["func", "error-kind"].includes(parent.kind) || !name || /^self\^+$/.test(source.slice(name.start, name.end))) return [];
+        if (fallback) {
+            const equal = head.find(t => t.text === "=" && t.start >= (type?.end ?? name.end) && t.end <= fallback.start);
+            if (equal) add("default:remove", "Remove default value", { start: equal.start, end: node.end, text: "" });
+        } else {
+            const text = type && source.slice(type.start, type.end);
+            const value = text === "number^" ? "0" : text === "string^" ? '""' : text === "bool^" ? "false^" : type?.kind === "type-table" ? "{}" : "nil^";
+            add("default:add", "Add default value", { start: node.end, end: node.end, text: ` = ${value}` });
+        }
+        return result;
+    }
+    if (node.kind === "return") {
+        if (!callable || syntaxTokens(source, callable.start, callable.end)[0]?.text !== "f^" ||
+            parent !== one(callable, "body") || array(parent?.fields?.items).length !== 1 || !array(node.fields?.value).length) return [];
+        if (head[0]?.text === "return^") add("return:implicit", "Use implicit return", array(node.fields?.value).length === 1
+            ? { start: head[0].start, end: head[0].end, text: "" }
+            : { start: head[0].start, end: node.end, text: `(${source.slice(head[0].end, node.end)})` });
+        else {
+            const siblings = array(parent?.fields?.items), previous = siblings[siblings.length - 2];
+            const from = previous?.end ?? syntaxTokens(source, parent!.start, parent!.end)[0].end;
+            const prefix = syntaxTokens(source, from, node.start).filter(t => t.text !== ";");
+            if (prefix.every(t => t.text === "(")) {
+                const at = prefix[0]?.start ?? node.start;
+                add("return:explicit", "Use explicit return", { start: at, end: at, text: "return^ " });
+            }
+        }
+        return result;
+    }
+    if (node.kind === "enum-member") {
+        const name = one(node, "name"), values = array(node.fields?.members);
+        if (!name) return [];
+        if (values.length) {
+            const equal = head.find(t => t.start >= name.end && t.text === "=");
+            if (equal) add("enum:implicit", "Use implicit enumeration value", { start: equal.start, end: node.end, text: "" });
+        } else add("enum:explicit", "Set enumeration value", { start: name.end, end: name.end, text: " = 0" });
+        return result;
+    }
+    if (["define", "enumdef", "errordef"].includes(node.kind)) {
+        if (parent === tree.root) {
+            const published = head[0]?.text === "public^";
+            add("public", published ? "Make declaration private" : "Publish declaration", {
+                start: node.start, end: published ? head[0].end : node.start, text: published ? "" : "public^ " });
+        }
+        const marker = head.find(t => ["let^", "var^"].includes(t.text));
+        if (node.kind === "define" && marker && array(node.fields?.targets).every(target => ["ident", "param"].includes(target.kind)))
+            add("mutability", marker.text === "let^" ? "Make variable mutable" : "Make variable immutable",
+                { start: marker.start, end: marker.end, text: marker.text === "let^" ? "var^" : "let^" });
+        return result;
+    }
+    if (node.kind === "table-entry") {
+        const key = one(node, "key");
+        if (!key) return [];
+        if (parent?.kind === "table") {
+            const close = node.computed && syntaxTokens(source, key.end, node.end)[0];
+            const end = close && close.text === "]" ? close.end : key.end;
+            if (!node.computed) {
+                add("key:string", "Use string key", { start: key.start, end, text: `[${quoteString(source.slice(key.start, key.end))}]` });
+                add("key:number", "Use numeric key", { start: key.start, end, text: "[0]" });
+            } else {
+                const value = key.kind === "string" ? literalOf(key, source)?.value : undefined;
+                if (value && /^[\p{L}_][\p{L}\p{N}_]*$/u.test(value))
+                    add("key:identifier", "Use identifier key", { start: node.start, end, text: value });
+            }
+            return result;
+        }
+        if (parent?.kind !== "def") return [];
+        const marker = ["override^", "overload^", "abstract^"].includes(head[0]?.text) ? head[0] : undefined;
+        const declared = !!node.declared || head.some(t => t.text === ":") && !head.some(t => t.text === "=");
+        const choices = declared ? [["abstract^", "Abstract member"]] : [["override^", "Override member"], ["overload^", "Overload member"]];
+        if (marker) add("modifier:plain", "Remove member modifier", { start: marker.start, end: marker.end, text: "" });
+        for (const [text, label] of choices) if (marker?.text !== text)
+            add(`modifier:${text}`, label, { start: marker?.start ?? node.start, end: marker?.end ?? node.start, text: `${text} ` });
+        const op = head.find(t => t.text === "op^");
+        if (op && key) for (const text of ["<=>", "=", "..", "+", "-", "*", "/", "//", "%", "**", "cross^", "dot^"])
+            add(`operator:${text}`, "Define operator", { start: op.end, end: key.end, text }, `op^${text}`);
+        return result;
+    }
     const match = node.kind === "for" ? one(node, "body") : undefined;
     if (match && ["if-stmt", "if-expr"].includes(match.kind)) {
         const branches = array(match.fields?.items), expression = match.kind === "if-expr";

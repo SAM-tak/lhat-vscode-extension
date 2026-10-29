@@ -42,7 +42,7 @@ const html = (reply, acknowledgeEdits = true) => `<!doctype html><meta charset="
 --vscode-input-foreground:#ddd;--vscode-focusBorder:#58a;--vscode-descriptionForeground:#999;
 }</style><link rel="stylesheet" href="/graph.css"><link rel="stylesheet" href="/bundle.css"><div id="root" data-layout-worker="/layout-worker.js"></div><script nonce="test">
 window.exports=[];window.edits=[];window.acquireVsCodeApi=()=>({getState(){},setState(){},postMessage(m){
-if(m.type==='replaceOperator'||m.type==='editTextField'||m.type==='insertStatement'||m.type==='editStructure'||m.type==='deleteElement'||m.type==='replaceExpression'||m.type==='editLiteral'||m.type==='editInterpolation'||m.type==='editAnnotation'){window.edits.push(m);${acknowledgeEdits ? "window.postMessage({type:'statementResult',id:m.id},'*');" : ''}}
+if(m.type==='chooseType'||m.type==='applyType'||m.type==='removeType'||m.type==='rename'||m.type==='insertElement'||m.type==='replaceOperator'||m.type==='editTextField'||m.type==='insertStatement'||m.type==='editStructure'||m.type==='deleteElement'||m.type==='replaceExpression'||m.type==='editLiteral'||m.type==='editInterpolation'||m.type==='editAnnotation'){window.edits.push(m);${acknowledgeEdits ? "window.postMessage({type:'statementResult',id:m.id},'*');" : ''}}
 if(m.type==='saveSvg'){window.exports.push(m);window.postMessage({type:'svgResult',id:m.id},'*');}
 if(m.type==='ready'){window.postMessage({type:'localization',language:'ja',bundle:${JSON.stringify(ja)}},'*');window.postMessage({type:'tree',reply:${JSON.stringify(reply)},uri:'file:///svg-example.lh',version:1},'*');}
 }});</script><script nonce="test" src="/bundle.js"></script>`;
@@ -360,17 +360,18 @@ test('operator expressions embed primitives and route external operands outside 
         await until(`document.querySelectorAll('.react-flow__edge-operand-definition .react-flow__edge-path').length===3 && !document.querySelector('.svg-export>button').disabled`);
         const inspect = () => evaluate(`(()=>{
             const rows=[...document.querySelectorAll('.operator-expression')];
-            const boxes=[...document.querySelectorAll('.box')].map(box=>box.getBoundingClientRect());
+            const boxes=[...document.querySelectorAll('.box')].map(box=>({rect:box.getBoundingClientRect(),label:box.textContent,kind:box.className}));
+            const overlaps=[];
             let collisions=0;
             for(const path of document.querySelectorAll('.react-flow__edge-operand-definition .react-flow__edge-path')) {
                 const matrix=path.getScreenCTM(), length=path.getTotalLength();
                 for(let t=2;t<length-2;t+=2) {
                     const p=path.getPointAtLength(t), point=new DOMPoint(p.x,p.y).matrixTransform(matrix);
-                    if(boxes.some(r=>point.x>r.left+1 && point.x<r.right-1 && point.y>r.top+1 && point.y<r.bottom-1)) collisions++;
+                    for(const box of boxes){const r=box.rect;if(point.x>r.left+1 && point.x<r.right-1 && point.y>r.top+1 && point.y<r.bottom-1){collisions++;overlaps.push({box:box.label,kind:box.kind,x:point.x,y:point.y,rect:r.toJSON(),path:path.getAttribute('d')});break;}}
                 }
             }
             return {rows:rows.length,slots:document.querySelectorAll('.operand-slot').length,
-                calls:document.querySelectorAll('.call-node').length,collisions,
+                calls:document.querySelectorAll('.call-node').length,collisions,overlaps,
                 literalValues:[...document.querySelectorAll('input,textarea')].map(e=>e.value)};
         })()`);
         const first = await inspect();
@@ -939,7 +940,7 @@ test('terminal statements have incoming paths but no outgoing handles, merge wir
                     const box=n.querySelector('.box[data-source-start]');
                     if(!box)return false;
                     return ${JSON.stringify(reply.source)}.slice(Number(box.dataset.sourceStart),Number(box.dataset.sourceEnd)).startsWith(${JSON.stringify(panic ? 'panic^' : 'return^')}) &&
-                        (box.classList.contains('return-node') || (!box.classList.contains('container') && !box.classList.contains('condition-node')));
+                        (box.classList.contains('return-node') || box.querySelector(':scope > .boxlabel [data-role="panic"]') || (!box.classList.contains('container') && !box.classList.contains('condition-node')));
                 });
                 const after=[...document.querySelectorAll('.call-node')].find(n=>Number(n.dataset.sourceStart)===${reply.source.indexOf('print')});
                 return {terminals:boxes.length, inputs:boxes.filter(n=>n.querySelector('[data-handleid="flow-in"]')).length,
@@ -1673,6 +1674,738 @@ test('expression picker builds qualified member references through the UI', { ti
                 await until(`document.querySelector('#app')?.dataset.graphVersion==='${index + 2}' && !document.querySelector('.svg-export>button').disabled`);
             }
             assert.deepEqual(errors, []);
+        });
+    });
+});
+
+test('expression constructors and error kind references remain editable through the UI', { timeout: 60000 }, async () => {
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        let tree = await parse('let^value = 0');
+        const entry = path.resolve(__dirname, '../src/graphExpressions.ts'), mod = new (require('node:module'))(entry);
+        mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree) } }, async ({ evaluate, until, call, errors }) => {
+            const steps = [['true', 'hat-ident'], ['false', 'hat-ident'], ['nil', 'hat-ident'], ['number', 'int'], ['definition', 'def'], ['selfTable', 'self-table'], ['conditional', 'if-expr'], ['interpolation', 'interp'], ['try', 'try'], ['pack', 'pack'], ['error', 'error-new'], ['reference:Example.Failure', 'error-new']];
+            for (const [index, [id, kind]] of steps.entries()) {
+                const value = tree.root.fields.items[0].fields.values[0];
+                const site = id.startsWith('reference:') ? mod.exports.expressionSites(tree).find(s => s.errorName) : value;
+                const selector = `.box[data-source-start="${site.start}"][data-source-end="${site.end}"] > .expression-edit`;
+                await until(`document.querySelector(${JSON.stringify(selector)}) && !document.querySelector('.svg-export>button').disabled`);
+                await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+                await until(`document.querySelector('.statement-menu input')`);
+                let choice;
+                if (id.startsWith('reference:')) {
+                    await call('Input.insertText', { text: id.slice(10) });
+                    await until(`document.querySelector('.statement-menu [role=option]')`);
+                    choice = 0;
+                } else {
+                    const offered = mod.exports.expressionTemplates(tree, site);
+                    choice = offered.findIndex(c => c.id === id);
+                    assert(choice >= 0, id);
+                }
+                await evaluate(`document.querySelector('.statement-menu [data-template-index="${choice}"]').click()`);
+                await until(`window.edits.length===${index + 1}`);
+                const message = await evaluate(`window.edits[${index}]`);
+                assert.equal(message.template, id);
+                const edit = mod.exports.replaceExpression(tree, message.site, message.template);
+                tree = await parse(tree.source.slice(0, edit.start) + edit.text + tree.source.slice(edit.end));
+                assert.equal(tree.root.fields.items[0].fields.values[0].kind, kind);
+                if (['true', 'false', 'nil'].includes(id)) assert.equal(tree.source.trim(), 'let^value = ' + id + '^');
+                await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(tree)},uri:'file:///svg-example.lh',version:${index + 2}},'*')`);
+                await until(`document.querySelector('#app')?.dataset.graphVersion==='${index + 2}' && !document.querySelector('.svg-export>button').disabled`);
+            }
+            assert(tree.source.includes('error^Example.Failure{}'));
+            assert.deepEqual(errors, []);
+        });
+    });
+});
+
+test('debug-fault sample is reconstructed from an empty document using only graph UI edits', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expectedSource = fs.readFileSync(path.join(__dirname, '../testing/debug-fault.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const expected = normalizedAst(await parse(expectedSource));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async ({ evaluate, until, call, errors }) => {
+            const { add, input } = await graphUi(host, { evaluate, until, call });
+            await add('comment');
+            await input('.interpolation-field.comment textarea', expectedSource.split('\n')[0].slice(2));
+            await add('var');
+            await input('.name-input', 'kept');
+            await input('.literal-input', '42');
+            await add('panic');
+            const panic = Object.values(host.tree.root.fields.items.at(-1).fields).flat().find(n => n.kind === 'string');
+            await input(`.box[data-source-start="${panic.start}"] .literal-input`, 'debug fault');
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            assert.deepEqual(errors, []);
+        });
+    });
+});
+
+test('debug-breakpoints sample is reconstructed through graph UI controls', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expectedSource = fs.readFileSync(path.join(__dirname, '../testing/debug-breakpoints.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const expected = normalizedAst(await parse(expectedSource));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client);
+            await ui.add('comment');
+            await ui.input('.interpolation-field.comment textarea', expectedSource.split('\n')[0].slice(2));
+            await ui.add('var');
+            await ui.input('.name-input', 'counter');
+            await ui.add('repeat');
+            const loop = () => host.tree.root.fields.items.find(n => n.kind === 'repeat');
+            await ui.input('.box[data-source-start="' + loop().fields.bound.start + '"] .literal-input', '5');
+            await ui.add('assign', loop().fields.body);
+            const assignment = () => loop().fields.body.fields.items[0];
+            await ui.expression(assignment().fields.targets[0], 'reference:counter');
+            await ui.expression(assignment().fields.values[0], 'reference:counter');
+            await ui.expression(assignment().fields.values[0], 'add');
+            await ui.input('.box[data-source-start="' + assignment().fields.values[0].fields.right.start + '"] .literal-input', '1');
+            await ui.add('return');
+            await ui.expression(host.tree.root.fields.items.at(-1).fields.value[0], 'reference:counter');
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('reference-library sample is reconstructed with module and public declaration controls', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expectedSource = fs.readFileSync(path.join(__dirname, '../testing/reference-library.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const expected = normalizedAst(await parse(expectedSource));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client);
+            await ui.add('module');
+            await ui.input('.interpolation-field.module textarea', 'examples.referenceLibrary');
+            await ui.add('let');
+            await ui.input('.name-input', 'code');
+            const declaration = () => host.tree.root.fields.items.find(n => n.kind === 'define');
+            await ui.expression(declaration().fields.values[0], 'string');
+            await ui.input('.literal-input', 'SKU');
+            await ui.structure(declaration(), 'public');
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            await ui.structure(declaration(), 'mutability');
+            assert(host.tree.source.includes('public^ var^'));
+            await ui.structure(declaration(), 'mutability');
+            await ui.structure(declaration(), 'public');
+            assert(!host.tree.source.includes('public^'));
+            await ui.structure(declaration(), 'public');
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('definition members expose modifier and operator controls after UI creation', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client);
+            await ui.add('tableDefinition');
+            const def = () => host.tree.root.fields.items[0].fields.values[0];
+            const unfold = async () => {
+                await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            };
+            await unfold();
+            await ui.addElement('operator', def());
+            await unfold();
+            await ui.structure(def().fields.items[0], 'operator:=');
+            assert(host.tree.source.includes('op^='));
+            await ui.structure(def().fields.items[0], 'modifier:override^');
+            assert(host.tree.source.includes('override^'));
+            await ui.structure(def().fields.items[0], 'modifier:plain');
+            await ui.addElement('abstract', def());
+            await unfold();
+            await ui.structure(def().fields.items[1], 'modifier:plain');
+            assert(!host.tree.source.includes('abstract^'));
+            await ui.structure(def().fields.items[1], 'modifier:abstract^');
+            assert(host.tree.source.includes('abstract^'));
+            await ui.addElement('self', def());
+            await unfold();
+            assert.equal(def().fields.items[2].fields.value.kind, 'self-table');
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('enum sample is reconstructed with implicit and explicit member values through graph UI', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = fs.readFileSync(path.join(__dirname, '../testing/enum.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const expected = normalizedAst(await parse(source));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client);
+            const unfold = async () => {
+                await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            };
+            const enumeration = () => host.tree.root.fields.items.find(n => n.kind === 'enumdef');
+            const member = index => enumeration().fields.members[index];
+            const rename = async (node, name) => ui.input(`.name-input[data-reference-start="${node.start}"]`, name);
+            const literal = async (node, value) => ui.input(`.box[data-source-start="${node.start}"] .literal-input`, value);
+            await ui.add('module');
+            await ui.input('.interpolation-field.module textarea', 'examples.enums');
+            await ui.add('comment');
+            await ui.input('.interpolation-field.comment textarea', source.split('\n')[2].slice(2));
+            await ui.add('enumeration');
+            await unfold();
+            await rename(enumeration().fields.name, 'Mode');
+            await ui.structure(enumeration(), 'public');
+            await unfold();
+            await rename(member(0).fields.name, 'Idle');
+            for (const [index, name] of ['Walk', 'Dash', 'Label', 'Data'].entries()) {
+                await ui.addElement('enum', enumeration(), 'members');
+                await unfold();
+                await rename(member(index + 1).fields.name, name);
+                if (name === 'Walk') continue;
+                await ui.structure(member(index + 1), 'enum:explicit');
+                if (name === 'Dash') await literal(member(index + 1).fields.members[0], '10');
+                if (name === 'Label') {
+                    await ui.expression(member(index + 1).fields.members[0], 'string');
+                    await literal(member(index + 1).fields.members[0], 'dash');
+                }
+                if (name === 'Data') {
+                    await ui.expression(member(index + 1).fields.members[0], 'table');
+                    const table = () => member(index + 1).fields.members[0];
+                    for (let number = 1; number <= 3; number++) {
+                        await ui.addElement('number', table());
+                        await unfold();
+                        const entry = table().fields.items[number - 1];
+                        await literal(entry.fields?.value ?? entry, String(number));
+                    }
+                }
+            }
+            await ui.add('let');
+            const declaration = () => host.tree.root.fields.items.find(n => n.kind === 'define');
+            await rename(declaration().fields.targets[0], 'current');
+            await ui.expression(declaration().fields.values[0], 'reference:Mode.Idle');
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            await ui.structure(member(2), 'enum:implicit');
+            assert(!member(2).fields.members);
+            await ui.structure(member(2), 'enum:explicit');
+            await literal(member(2).fields.members[0], '10');
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('references sample is reconstructed with typed parameters, local names and require aliases', { timeout: 120000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = fs.readFileSync(path.join(__dirname, '../testing/references.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const expected = normalizedAst(await parse(source));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client);
+            const items = () => host.tree.root.fields.items;
+            const fn = () => items().find(n => n.kind === 'define' && n.fields.values[0].kind === 'func').fields.values[0];
+            const rename = (node, name) => ui.input(`.name-input[data-reference-start="${node.start}"]`, name);
+            const unfold = async () => {
+                await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            };
+            await ui.add('comment');
+            await ui.input('.interpolation-field.comment textarea', source.split('\n')[0].slice(2));
+            await ui.add('require');
+            await ui.input('.interpolation-field.require textarea', 'reference-library.lh');
+            await ui.add('let');
+            await rename(items().at(-1).fields.targets[0], 'library');
+            await ui.expression(items().at(-1).fields.values[0], 'require');
+            await ui.input(`.box[data-source-start="${items().at(-1).fields.values[0].start}"] .interpolation-field.require textarea`, 'reference-library.lh');
+            await ui.add('function');
+            await rename(items().at(-1).fields.targets[0], 'build');
+            await unfold();
+            for (const [index, name] of ['sku', 'name'].entries()) {
+                await ui.addElement('parameter', fn(), 'params');
+                await unfold();
+                await rename(fn().fields.params[index].fields.name, name);
+                await ui.type(fn().fields.params[index].fields.name, 'string^');
+            }
+            await ui.add('let', fn().fields.body, fn().fields.body.fields.items[0]);
+            const copy = () => fn().fields.body.fields.items[0];
+            await rename(copy().fields.targets[0], 'copy');
+            await ui.expression(copy().fields.values[0], 'reference:sku');
+            const returned = () => fn().fields.body.fields.items[1].fields.value[0];
+            await ui.expression(returned(), 'table');
+            for (const [index, [key, value]] of [['sku', 'copy'], ['name', 'name']].entries()) {
+                await ui.addElement('member', returned());
+                await unfold();
+                await rename(returned().fields.items[index].fields.key, key);
+                await ui.expression(returned().fields.items[index].fields.value, `reference:${value}`);
+            }
+            for (const [name, value] of [['fromModule', 'examples.referenceLibrary.code'], ['fromAlias', 'library.code']]) {
+                await ui.add('let');
+                await rename(items().at(-1).fields.targets[0], name);
+                await ui.expression(items().at(-1).fields.values[0], `reference:${value}`);
+            }
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('localization sample is reconstructed with explicit types, Unicode names and exact literal text', { timeout: 120000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = fs.readFileSync(path.join(__dirname, '../testing/localization.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const expected = normalizedAst(await parse(source));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client);
+            const items = () => host.tree.root.fields.items;
+            const nameOf = target => target.fields?.name ?? target;
+            const rename = (node, name) => ui.input(`.name-input[data-reference-start="${node.start}"]`, name);
+            const literal = (node, value) => ui.input(`.box[data-source-start="${node.start}"] .literal-input`, value);
+            const unfold = async () => {
+                await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            };
+            await ui.add('module');
+            await ui.input('.interpolation-field.module textarea', 'examples.localization');
+            await ui.add('comment');
+            await ui.input('.interpolation-field.comment textarea', source.split('\n')[2].slice(2));
+            for (const [id, name, value, type] of [
+                ['let', 'message', 'let^ string^ number^', 'string^'],
+                ['var', '金額', '1234567890123456789', 'number^'],
+                ['let', 'empty', '', undefined], ['let', 'lines', 'first\nsecond', undefined],
+            ]) {
+                await ui.add(id);
+                await rename(nameOf(items().at(-1).fields.targets[0]), name);
+                if (type !== 'number^') await ui.expression(items().at(-1).fields.values[0], 'string');
+                if (value !== '') await literal(items().at(-1).fields.values[0], value);
+                if (type) await ui.type(nameOf(items().at(-1).fields.targets[0]), type);
+            }
+            await ui.add('function');
+            await rename(items().at(-1).fields.targets[0], 'convert');
+            const fn = () => items().find(n => n.kind === 'define' && n.fields.values[0].kind === 'func').fields.values[0];
+            await unfold();
+            for (const [index, [name, type]] of [['text', 'string^'], ['count', 'number^']].entries()) {
+                await ui.addElement('parameter', fn(), 'params'); await unfold();
+                await rename(fn().fields.params[index].fields.name, name);
+                await ui.type(fn().fields.params[index].fields.name, type);
+            }
+            await ui.add('var', fn().fields.body, fn().fields.body.fields.items[0]);
+            const result = () => fn().fields.body.fields.items[0];
+            await rename(nameOf(result().fields.targets[0]), 'result');
+            await ui.expression(result().fields.values[0], 'reference:text');
+            await ui.type(nameOf(result().fields.targets[0]), 'string^');
+            await ui.expression(fn().fields.body.fields.items[1].fields.value[0], 'reference:result');
+            await ui.type(fn(), 'string^');
+            await ui.add('let');
+            await rename(items().at(-1).fields.targets[0], 'table');
+            await ui.expression(items().at(-1).fields.values[0], 'table');
+            const table = () => items().at(-1).fields.values[0];
+            for (const [index, [name, value]] of [['name', '日本語'], ['count', '42']].entries()) {
+                await ui.addElement('member', table()); await unfold();
+                await rename(table().fields.items[index].fields.key, name);
+                if (name === 'name') await ui.expression(table().fields.items[index].fields.value, 'string');
+                await literal(table().fields.items[index].fields.value, value);
+            }
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('returns sample is reconstructed with conditional, empty, implicit and multiple results', { timeout: 180000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = fs.readFileSync(path.join(__dirname, '../testing/returns.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const expected = normalizedAst(await parse(source));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client);
+            const items = () => host.tree.root.fields.items;
+            const lastFunction = () => items().at(-1).fields.values[0];
+            const rename = (node, name) => ui.input(`.name-input[data-reference-start="${node.start}"]`, name);
+            const literal = (node, value) => ui.input(`.box[data-source-start="${node.start}"] .literal-input`, value);
+            const unfold = async () => {
+                await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            };
+            await ui.add('module');
+            await ui.input('.interpolation-field.module textarea', 'examples.returns');
+            await ui.add('function'); await rename(items().at(-1).fields.targets[0], 'describe'); await unfold();
+            await ui.addElement('parameter', lastFunction(), 'params'); await unfold();
+            await rename(lastFunction().fields.params[0].fields.name, 'n');
+            await ui.type(lastFunction().fields.params[0].fields.name, 'number^');
+            const tail = () => lastFunction().fields.body.fields.items.at(-1);
+            await ui.expression(tail().fields.value[0], 'string');
+            await literal(tail().fields.value[0], 'other');
+            await ui.add('if', lastFunction().fields.body, tail()); await unfold();
+            const branch = () => lastFunction().fields.body.fields.items[0].fields.items[0];
+            await ui.expression(branch().fields.condition, 'reference:n');
+            await ui.expression(branch().fields.condition, 'compare');
+            await ui.operator(branch().fields.condition, '>');
+            await ui.add('return', branch().fields.body);
+            const positive = () => branch().fields.body.fields.items[0].fields.value[0];
+            await ui.expression(positive(), 'string'); await literal(positive(), 'positive');
+            await ui.type(lastFunction(), 'string^');
+            await ui.add('procedure'); await rename(items().at(-1).fields.targets[0], 'empty'); await unfold();
+            await ui.add('return', lastFunction().fields.body);
+            await ui.add('comment');
+            await ui.input('.interpolation-field.comment textarea', source.split('\n').find(line=>line.startsWith('# An')).slice(2));
+            await ui.add('function'); await rename(items().at(-1).fields.targets[0], 'implicit'); await unfold();
+            await ui.addElement('parameter', lastFunction(), 'params'); await unfold();
+            await rename(lastFunction().fields.params[0].fields.name, 'n');
+            await ui.type(lastFunction().fields.params[0].fields.name, 'number^');
+            const implicit = () => lastFunction().fields.body.fields.items[0];
+            await ui.expression(implicit().fields.value[0], 'reference:n');
+            await ui.expression(implicit().fields.value[0], 'add');
+            await ui.operator(implicit().fields.value[0], '*');
+            await literal(implicit().fields.value[0].fields.right, '2');
+            await ui.structure(implicit(), 'return:implicit');
+            await ui.add('comment');
+            await ui.input(`.box[data-source-start="${host.tree.source.lastIndexOf('#')}"] .interpolation-field.comment textarea`, source.split('\n').find(line=>line.startsWith('# Drill')).slice(2));
+            await ui.add('function'); await rename(items().at(-1).fields.targets[0], 'many'); await unfold();
+            const many = () => lastFunction().fields.body.fields.items[0];
+            await literal(many().fields.value[0], '100');
+            for (let i = 101; i < 120; i++) {
+                await ui.addElement('number', many(), 'value');
+                await literal(many().fields.value.at(-1), String(i));
+            }
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('empty sample remains an editable graph with its first statement entry point', { timeout: 30000 }, async () => {
+    const { graphHost, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = fs.readFileSync(path.join(__dirname, '../testing/empty.lh'), 'utf8');
+        const expected = normalizedAst(await parse(source));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            await client.until(`document.querySelector('.append-statement:not(:disabled)') && !document.querySelector('.svg-export>button').disabled`);
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            assert.equal(await client.evaluate('window.edits.length'), 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('literals sample is reconstructed with raw spelling, nested definitions, defaults and interpolation', { timeout: 180000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = fs.readFileSync(path.join(__dirname, '../testing/literals.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const expected = normalizedAst(await parse(source));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client);
+            const items = () => host.tree.root.fields.items;
+            const value = () => items().at(-1).fields.values[0];
+            const rename = (node, name) => ui.input(`.name-input[data-reference-start="${node.start}"]`, name);
+            const literal = (node, text) => ui.input(`.box[data-source-start="${node.start}"] .literal-input`, text);
+            const unfold = async () => {
+                await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            };
+            const binding = async (name, template) => {
+                await ui.add('let'); await rename(items().at(-1).fields.targets[0], name);
+                if (template) await ui.expression(value(), template);
+            };
+            const comment = async text => {
+                await ui.add('comment');
+                await ui.input(`.box[data-source-start="${host.tree.source.lastIndexOf('#')}"] .interpolation-field.comment textarea`, text);
+            };
+            await ui.add('module');
+            await ui.input('.interpolation-field.module textarea', 'examples.literals');
+            await comment(source.split('\n').find(line=>line.startsWith('# Literal')).slice(2));
+            for (const [name, template, text] of [
+                ['amount', undefined, '-3.5'], ['message', 'string', '  Hello, 世界  '],
+                ['precise', undefined, '1234567890123456789'], ['hex', undefined, '0xFF'],
+                ['empty', 'string', ''], ['multiline', 'string', 'first\nsecond'], ['raw', 'string', 'C:\\temp\\file.txt'],
+            ]) {
+                await binding(name, template);
+                if (text !== '') await literal(value(), text);
+                if (name === 'raw') {
+                    await ui.structure(value(), 'string:raw');
+                    await literal(value(), 'C:\\temp\\other.txt'); await literal(value(), text);
+                    assert(host.tree.source.includes("'C:\\temp\\file.txt'"));
+                }
+            }
+            await binding('values', 'table'); await unfold();
+            for (const [index, text] of ['10', '15', '1_000', '2.5e-3', 'sample'].entries()) {
+                await ui.addElement(index === 4 ? 'string' : 'number', value());
+                const entry = value().fields.items[index]; await literal(entry.fields?.value ?? entry, text);
+            }
+            await binding('nested', 'definition'); await unfold();
+            await ui.addElement('member', value());
+            await rename(value().fields.items[0].fields.key, 'count'); await literal(value().fields.items[0].fields.value, '42');
+            await ui.addElement('member', value());
+            await rename(value().fields.items[1].fields.key, 'read');
+            await ui.expression(value().fields.items[1].fields.value, 'function'); await unfold();
+            const read = () => value().fields.items[1].fields.value.fields.body.fields.items[0];
+            await ui.expression(read().fields.value[0], 'string'); await literal(read().fields.value[0], 'inside');
+            await ui.structure(read(), 'return:implicit');
+            await ui.add('enumeration'); await unfold();
+            const enumeration = () => items().at(-1);
+            await rename(enumeration().fields.name, 'Mode');
+            await rename(enumeration().fields.members[0].fields.name, 'Idle');
+            for (const [index, [name, text]] of [['Label', 'ready'], ['Code', '7']].entries()) {
+                await ui.addElement('enum', enumeration(), 'members'); await unfold();
+                await rename(enumeration().fields.members[index + 1].fields.name, name);
+                await ui.structure(enumeration().fields.members[index + 1], 'enum:explicit');
+                if (name === 'Label') await ui.expression(enumeration().fields.members[index + 1].fields.members[0], 'string');
+                await literal(enumeration().fields.members[index + 1].fields.members[0], text);
+            }
+            await ui.add('error'); await unfold();
+            const kind = () => items().at(-1).fields.members[0];
+            await rename(kind().fields.name, 'Missing');
+            for (const [index, [name, template, text]] of [['name', 'string', ''], ['code', 'number', '404']].entries()) {
+                await ui.addElement('parameter', kind(), 'members');
+                await rename(kind().fields.members[index].fields.name, name);
+                await ui.structure(kind().fields.members[index], 'default:add');
+                await ui.expression(kind().fields.members[index].fields.fallback, template);
+                if (text !== '') await literal(kind().fields.members[index].fields.fallback, text);
+                await ui.type(kind().fields.members[index].fields.name, undefined);
+            }
+            await ui.structure(kind().fields.members[1], 'default:remove');
+            await ui.structure(kind().fields.members[1], 'default:add');
+            await ui.expression(kind().fields.members[1].fields.fallback, 'number');
+            await literal(kind().fields.members[1].fields.fallback, '404');
+            await comment(source.split('\n').find(line=>line.startsWith('# Expressions')).slice(2));
+            await binding('expression', 'add');
+            await literal(value().fields.left, '1'); await literal(value().fields.right, '2');
+            await binding('interpolation', 'interpolation');
+            await ui.input('.interpolation-field.text textarea', 'amount: ');
+            const hole = value().fields.items.find(n => n.kind === 'interp-hole');
+            await ui.expression(hole.fields.value, 'reference:amount');
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('function parameter defaults expose editable value nodes and retain removal controls', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client);
+            await ui.add('function');
+            const fn = () => host.tree.root.fields.items[0].fields.values[0];
+            const unfold = async () => {
+                await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            };
+            await unfold(); await ui.addElement('parameter', fn(), 'params'); await unfold();
+            const param = () => fn().fields.params[0];
+            await ui.type(param().fields.name, 'string^');
+            await ui.structure(param(), 'default:add');
+            await ui.input(`.box[data-source-start="${param().fields.fallback.start}"] .literal-input`, 'hello, 世界');
+            assert(host.tree.source.includes('"hello, 世界"'));
+            await ui.structure(param(), 'default:remove');
+            assert(!param().fields.fallback);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('computed literal keys retain input editors and their value type controls', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client);
+            await ui.add('let');
+            const table = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.expression(table(), 'table');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            await ui.addElement('member', table());
+            const member = () => table().fields.items[0];
+            await ui.structure(member(), 'key:string');
+            const keyInput = () => `.box[data-source-start="${member().start}"] .literal-input`;
+            await ui.input(keyInput(), 'request-method');
+            await ui.expression(member().fields.value, 'string');
+            await ui.input(`.box[data-source-start="${member().fields.value.start}"] .literal-input`, 'GET');
+            await ui.type(member().fields.key, 'string^');
+            assert.equal(member().fields.type.kind, 'type-name');
+            await ui.type(member().fields.key, undefined);
+            await ui.input(keyInput(), 'method');
+            await ui.structure(member(), 'key:identifier');
+            assert.equal(member().computed, false);
+            await ui.structure(member(), 'key:number');
+            await ui.input(keyInput(), '7');
+            assert.equal(member().computed, true);
+            assert.equal(member().fields.key.kind, 'int');
+            assert(host.tree.source.includes('[7]'));
+            assert(host.tree.source.includes('"GET"'));
+            await ui.addElement('number', table());
+            await ui.expression(table().fields.items[1].fields.value, 'compare');
+            const comparison = () => table().fields.items[1].fields.value;
+            await ui.input('.box[data-source-start="' + comparison().fields.left.start + '"] .literal-input', '1');
+            await ui.remove(comparison());
+            assert.equal(table().fields.items.length, 1);
+            assert.equal(table().fields.items[0].computed, true);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('member-definitions sample is reconstructed with computed keys, receivers and typed payload defaults', { timeout: 180000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = fs.readFileSync(path.join(__dirname, '../testing/member-definitions.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const expected = normalizedAst(await parse(source));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), items = () => host.tree.root.fields.items;
+            const rename = (node, name) => ui.input(`.name-input[data-reference-start="${node.start}"]`, name);
+            const literal = (node, text) => ui.input(`.box[data-source-start="${node.start}"] .literal-input`, text);
+            const unfold = async () => {
+                await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            };
+            await ui.add('module'); await ui.input('.interpolation-field.module textarea', 'examples.memberDefinitions');
+            await ui.add('var'); await rename(items().at(-1).fields.targets[0], 'count');
+            await ui.add('let'); await rename(items().at(-1).fields.targets[0], 'settings');
+            const settings = () => items()[2].fields.values[0];
+            await ui.expression(settings(), 'table'); await unfold();
+            await ui.addElement('member', settings());
+            await rename(settings().fields.items[0].fields.key, 'enabled');
+            await ui.expression(settings().fields.items[0].fields.value, 'true');
+            await ui.addElement('member', settings());
+            await ui.structure(settings().fields.items[1], 'key:string');
+            await ui.input(`.box[data-source-start="${settings().fields.items[1].start}"] .literal-input`, 'request-method');
+            await ui.expression(settings().fields.items[1].fields.value, 'string');
+            await literal(settings().fields.items[1].fields.value, 'GET');
+            await ui.addElement('member', settings());
+            await rename(settings().fields.items[2].fields.key, 'nested');
+            await ui.expression(settings().fields.items[2].fields.value, 'table');
+            const nested = () => settings().fields.items[2].fields.value;
+            for (const [index, [name, template, text]] of [['limit', 'number', '10'], ['name', 'string', 'sample']].entries()) {
+                await ui.addElement('member', nested());
+                await rename(nested().fields.items[index].fields.key, name);
+                if (template === 'string') await ui.expression(nested().fields.items[index].fields.value, template);
+                await literal(nested().fields.items[index].fields.value, text);
+            }
+            await ui.addElement('number', settings());
+            const comparison = () => settings().fields.items[3].fields.value;
+            await ui.expression(comparison(), 'compare');
+            await literal(comparison().fields.left, '1'); await literal(comparison().fields.right, '1');
+            await ui.addElement('number', settings()); await literal(settings().fields.items[4].fields.value, '42');
+            await ui.add('enumeration'); await unfold();
+            const enumeration = () => items()[3];
+            await rename(enumeration().fields.name, 'Mode'); await rename(enumeration().fields.members[0].fields.name, 'Idle');
+            for (const [index, [name, text]] of [['Walk', undefined], ['Dash', '10'], ['Label', 'dash']].entries()) {
+                await ui.addElement('enum', enumeration(), 'members');
+                await rename(enumeration().fields.members[index + 1].fields.name, name);
+                if (text === undefined) continue;
+                await ui.structure(enumeration().fields.members[index + 1], 'enum:explicit');
+                if (name === 'Label') await ui.expression(enumeration().fields.members[index + 1].fields.members[0], 'string');
+                await literal(enumeration().fields.members[index + 1].fields.members[0], text);
+            }
+            await ui.add('tableDefinition'); await rename(items().at(-1).fields.targets[0], 'Counter'); await unfold();
+            const counter = () => items()[4].fields.values[0];
+            await ui.addElement('self', counter());
+            const self = () => counter().fields.items[0].fields.value;
+            await ui.addElement('member', self()); await rename(self().fields.items[0].fields.key, 'count');
+            await ui.type(self().fields.items[0].fields.key, 'number^');
+            await ui.addElement('member', counter()); await rename(counter().fields.items[1].fields.key, 'version');
+            await literal(counter().fields.items[1].fields.value, '1');
+            await ui.addElement('abstract', counter()); await rename(counter().fields.items[2].fields.key, 'limit');
+            await ui.addElement('constructor', counter()); await unfold();
+            const constructor = () => counter().fields.items[3].fields.value;
+            await ui.addElement('parameter', constructor(), 'params');
+            await rename(constructor().fields.params[0].fields.name, 'count');
+            await ui.type(constructor().fields.params[0].fields.name, 'number^');
+            await ui.add('return', constructor().fields.body);
+            const constructed = () => constructor().fields.body.fields.items[0];
+            await ui.expression(constructed().fields.value[0], 'selfTable');
+            await ui.addElement('member', constructed().fields.value[0]);
+            await rename(constructed().fields.value[0].fields.items[0].fields.key, 'count');
+            await ui.expression(constructed().fields.value[0].fields.items[0].fields.value, 'reference:count');
+            await ui.structure(constructed(), 'return:implicit');
+            await ui.addElement('member', counter()); await rename(counter().fields.items[4].fields.key, 'read');
+            await ui.expression(counter().fields.items[4].fields.value, 'function'); await unfold();
+            const read = () => counter().fields.items[4].fields.value;
+            await ui.addElement('receiver', read(), 'params');
+            await ui.expression(read().fields.body.fields.items[0].fields.value[0], 'reference:self^.count');
+            await ui.structure(read().fields.body.fields.items[0], 'return:implicit');
+            await ui.addElement('operator', counter()); await unfold();
+            await ui.structure(counter().fields.items[5], 'operator:=');
+            const equality = () => counter().fields.items[5].fields.value.fields.body.fields.items[0];
+            await ui.expression(equality().fields.value[0], 'reference:self^.count');
+            await ui.expression(equality().fields.value[0], 'compare');
+            await ui.expression(equality().fields.value[0].fields.right, 'reference:rhs.count');
+            await ui.structure(equality(), 'return:implicit');
+            await ui.add('error'); await rename(items().at(-1).fields.name, 'StockError'); await unfold();
+            const error = () => items()[5];
+            await rename(error().fields.members[0].fields.name, 'OutOfStock');
+            for (const [index, [name, type]] of [['sku', 'string^'], ['wanted', 'number^']].entries()) {
+                const kind = () => error().fields.members[0];
+                await ui.addElement('parameter', kind(), 'members');
+                await rename(kind().fields.members[index].fields.name, name); await ui.type(kind().fields.members[index].fields.name, type);
+                await ui.structure(kind().fields.members[index], 'default:add');
+            }
+            await ui.addElement('error', error(), 'members');
+            await rename(error().fields.members[1].fields.name, 'UnknownSku');
+            await ui.addElement('parameter', error().fields.members[1], 'members');
+            await rename(error().fields.members[1].fields.members[0].fields.name, 'sku');
+            await ui.type(error().fields.members[1].fields.members[0].fields.name, 'string^');
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('parallel initializer controls create a three-output call without extra arguments', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client);
+            const items = () => host.tree.root.fields.items;
+            const fn = () => items()[0].fields.values[0];
+            const returned = () => fn().fields.body.fields.items[0];
+            await ui.add('function');
+            await ui.input('.name-input', 'f');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            await ui.addElement('number', returned(), 'value');
+            await ui.addElement('number', returned(), 'value');
+            for (let i = 0; i < 3; i++) await ui.input(`.box[data-source-start="${returned().fields.value[i].start}"] .literal-input`, String(i + 1));
+            await ui.structure(returned(), 'return:implicit');
+            await ui.add('let'); await ui.input(`.name-input[data-reference-start="${items()[1].fields.targets[0].start}"]`, 'a');
+            for (const name of ['b', 'c']) {
+                await ui.addElement('binding', items()[1], 'targets');
+                await ui.input(`.name-input[data-reference-start="${items()[1].fields.targets.at(-1).start}"]`, name);
+            }
+            await ui.initializers(items()[1], 'reference:f');
+            await ui.expression(items()[1].fields.values[0], 'call');
+            assert.equal(items()[1].fields.targets.length, 3);
+            assert.equal(items()[1].fields.values.length, 1);
+            assert.equal(items()[1].fields.values[0].fields.argument?.length ?? 0, 0);
+            assert.equal(items()[1].fields.values[0].callable.outputs.length, 3);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('parallel reassignment adds its target and value in one edit', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'var^a2=0\nvar^a3=0\na2:=0');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), assignment = () => host.tree.root.fields.items[2];
+            await ui.addElement('binding', assignment(), 'targets');
+            assert.equal(host.version, 2);
+            assert.equal(assignment().fields.values.length, 2);
+            await ui.expression(assignment().fields.targets[1], 'reference:a3');
+            await ui.expression(assignment().fields.values[1], 'number');
+            assert.equal(assignment().fields.targets.length, 2);
+            assert.equal(assignment().fields.values.length, 2);
+            assert.deepEqual(client.errors, []);
         });
     });
 });

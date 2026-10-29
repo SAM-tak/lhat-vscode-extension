@@ -113,6 +113,7 @@ export function typeSites({ root, source }: AstReply): TypeSite[] {
             // self^ is a receiver marker, not an argument a caller supplies.
             if (name && !/^self\^+$/.test(source.slice(name.start, name.end))) {
                 add(node, name, one(node.fields?.type), one(node.fields?.fallback), false);
+                if (!one(node.fields?.fallback)) sites[sites.length - 1].parameter = true;
             } else if (!name) {
                 const annotation = one(node.fields?.type);
                 if (annotation) sites.push({ start: annotation.start, end: annotation.end, name: "parameter type",

@@ -12,6 +12,47 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('error construction edits its qualified kind and payload without allowing value syntax in the kind', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const lists = load('graphLists.ts');
+    let tree = await parse('errordef^E { Failure { value:number^ } }\nlet^e = 0');
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, expressions.expressionSites(tree).find(s => s.kind === 'int'), 'error')));
+    const site = expressions.expressionSites(tree).find(s => s.errorName);
+    assert(site);
+    for (const invalid of ['number', 'call', 'reference:self^.Failure', 'reference:E.0', 'reference:E{}'])
+        assert.equal(expressions.replaceExpression(tree, { ...site, errorName: false }, invalid), undefined, invalid);
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, site, 'reference:E.Failure')));
+    const insertion = lists.listInsertions(tree).find(s => s.kind === 'error-new');
+    assert(insertion);
+    tree = await parse(apply(tree.source, lists.insertListEdit(tree, insertion, 'member')));
+    const error = flat(tree.root).find(n => n.kind === 'error-new');
+    assert.equal(tree.source.slice(error.fields.name.start, error.fields.name.end), 'E.Failure');
+    assert.equal(error.fields.members.length, 1);
+    const value = expressions.expressionSites(tree).find(s => s.kind === 'int');
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value, 'string')));
+    assert(flat(tree.root).some(n => n.kind === 'string'));
+}));
+
+test('expression constructors retain editable roots and children after real reanalysis', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const initial = await parse('let^value = 17');
+    const site = expressions.expressionSites(initial).find(s => s.kind === 'int');
+    for (const [id, kind] of Object.entries({ definition: 'def', selfTable: 'self-table', conditional: 'if-expr', interpolation: 'interp', try: 'try', pack: 'pack', require: 'require', compare:'binary', logical:'binary', fallback:'binary', bitwise:'binary', product:'binary' })) {
+        const tree = await parse(apply(initial.source, expressions.replaceExpression(initial, site, id)));
+        const value = tree.root.fields.items[0].fields.values[0];
+        assert.equal(value.kind, kind, id);
+        const root = expressions.expressionSites(tree).find(s => s.kind === kind && s.start === value.start && s.end === value.end);
+        assert(root, `${id}: replacement remains available`);
+        const restored = await parse(apply(tree.source, expressions.replaceExpression(tree, root, 'number')));
+        assert.equal(restored.root.fields.items[0].fields.values[0].kind, 'int');
+        if (['try', 'pack', 'conditional', 'interpolation', 'compare', 'logical', 'fallback', 'bitwise', 'product'].includes(id)) {
+            const child = expressions.expressionSites(tree).find(s => s.kind === 'int');
+            assert(child, `${id}: editable child`);
+            const edited = await parse(apply(tree.source, expressions.replaceExpression(tree, child, 'reference:other')));
+            assert.equal(edited.root.fields.items[0].fields.values[0].kind, kind);
+            assert(flat(edited.root).some(n => n.kind === 'ident' && edited.source.slice(n.start, n.end) === 'other'));
+        }
+    }
+}));
+
 test('new statement templates produce their intended real AST node kinds', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const empty = await parse(''), site = api.statementInsertions(empty)[0];
     const expected = { call: 'call-stmt', assign: 'reassign', with: 'with', handled: 'block', type: 'define',
@@ -110,4 +151,212 @@ test('qualified references, self members and computed receivers are constructed 
     const change = expressions.replaceExpression(updated, key, 'reference:count');
     updated = await parse(apply(updated.source, change));
     assert.equal(updated.source, 'let^value = (make()).count');
+}));
+
+test('definition member templates and modifiers preserve their source-owned values', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const lists = load('graphLists.ts'), structures = load('graphStructure.ts');
+    for (const id of ['member', 'typeMember', 'abstract', 'operator', 'self']) {
+        let tree = await parse('let^T = def^{}');
+        const site = lists.listInsertions(tree).find(s => s.kind === 'def');
+        tree = await parse(apply(tree.source, lists.insertListEdit(tree, site, id)));
+        const def = flat(tree.root).find(n => n.kind === 'def');
+        assert.equal(def.fields.items.length, 1, id);
+        const member = def.fields.items[0];
+        if (id === 'self') {
+            assert.equal(member.fields.value.kind, 'self-table');
+            assert(!lists.listTemplates(tree, lists.listInsertions(tree).find(s => s.kind === 'def')).some(c => c.id === 'self'));
+            continue;
+        }
+        const fieldValue = member.fields.value ?? member.fields.type;
+        const value = tree.source.slice(fieldValue.start, fieldValue.end);
+        for (const action of id === 'abstract' ? ['modifier:plain', 'modifier:abstract^'] : id === 'typeMember' ? ['modifier:abstract^', 'modifier:plain'] : ['modifier:override^', 'modifier:overload^', 'modifier:plain']) {
+            const current = flat(tree.root).find(n => n.kind === 'def').fields.items[0];
+            const edit = structures.editStructure(tree, current, action);
+            assert(edit, `${id}: ${action}`);
+            tree = await parse(apply(tree.source, edit));
+            const updated = flat(tree.root).find(n => n.kind === 'def').fields.items[0];
+            const fieldValue = updated.fields.value ?? updated.fields.type;
+            assert.equal(tree.source.slice(fieldValue.start, fieldValue.end), value);
+        }
+        if (id === 'operator') for (const operator of ['=', 'cross^', 'dot^', '<=>']) {
+            const current = flat(tree.root).find(n => n.kind === 'def').fields.items[0];
+            tree = await parse(apply(tree.source, structures.editStructure(tree, current, `operator:${operator}`)));
+            assert(tree.source.includes(`op^${operator}`));
+            assert.equal(flat(tree.root).find(n => n.kind === 'def').fields.items[0].fields.value.kind, 'func');
+        }
+    }
+}));
+
+test('grouped expressions remain balanced through repeated wrapping and root replacement', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    for (const source of ['let^x = ((a) + 1)', 'let^x = ((a + 1) * (b + 2))', 'let^x = (factory())(1)', 'let^x = ((a #[ ) ]#) + 1)']) {
+        let tree = await parse(source);
+        const value = () => tree.root.fields.items[0].fields.values[0];
+        for (const template of ['add', 'negative', 'call', 'number']) {
+            const node = value();
+            const site = expressions.expressionSites(tree).find(s => s.kind === node.kind && s.start === node.start && s.end === node.end);
+            const edit = expressions.replaceExpression(tree, site, template);
+            assert(edit, `${source}: ${template}`);
+            tree = await parse(apply(tree.source, edit));
+            assert.equal(tree.root.fields.items.length, 1, tree.source);
+            assert.equal(value().kind, { add:'binary', negative:'unary', call:'call', number:'int' }[template], tree.source);
+        }
+        assert.equal(tree.source.replace(/[()\s]/g, ''), 'let^x=0');
+    }
+}));
+
+test('sample comparison ignores layout syntax but detects values, names, operators and modifiers', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { normalizedAst } = require('./graph-browser-host.cjs');
+    const baseline = normalizedAst(await parse('let^a = 1 + 2'));
+    assert.deepEqual(normalizedAst(await parse('let^ a = ((1) + (2))\n')), baseline);
+    for (const source of ['let^b = 1 + 2', 'let^a = 1 + 3', 'let^a = 1 - 2', 'public^let^a = 1 + 2', 'var^a = 1 + 2'])
+        assert.notDeepEqual(normalizedAst(await parse(source)), baseline, source);
+    assert.deepEqual(normalizedAst(await parse('let^a = { 1, 2, }')), normalizedAst(await parse('let^a = {1,2}')));
+    assert.notDeepEqual(normalizedAst(await parse('# old\nlet^a=0')), normalizedAst(await parse('# new\nlet^a=0')));
+}));
+
+test('last function results can switch between explicit and implicit return without changing their value', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structures = load('graphStructure.ts');
+    for (const source of ['let^f = f^{ return^1 + 2 }', 'let^f = f^{ (1 + 2) }']) {
+        let tree = await parse(source);
+        for (const action of source.includes('return^') ? ['return:implicit', 'return:explicit'] : ['return:explicit', 'return:implicit']) {
+            const returned = flat(tree.root).find(n => n.kind === 'return');
+            const edit = structures.editStructure(tree, returned, action);
+            assert(edit, `${source}: ${action}`);
+            tree = await parse(apply(tree.source, edit));
+            assert.equal(flat(tree.root).find(n => n.kind === 'return').fields.value[0].kind, 'binary');
+            assert.equal(tree.source.includes('return^'), action === 'return:explicit');
+        }
+    }
+    for (const source of ['let^f = p^{ return^1 }', 'let^f = f^{ return^1 return^2 }', 'let^f = f^{ let^x = 1 return^x }', 'let^f = f^{ if^true^ { return^1 } return^2 }']) {
+        const tree = await parse(source), first = flat(tree.root).find(n => n.kind === 'return');
+        assert.equal(structures.editStructure(tree, first, 'return:implicit'), undefined);
+    }
+}));
+
+test('default value and raw string actions reparse without changing neighboring fields or decoded text', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structures = load('graphStructure.ts'), literals = load('webview/literals.ts');
+    for (const source of ['let^f = f^arg:string^ {}', 'errordef^E { Failure { arg:number^ } }']) {
+        let tree = await parse(source);
+        let param = flat(tree.root).find(n => n.kind === 'param');
+        tree = await parse(apply(tree.source, structures.editStructure(tree, param, 'default:add')));
+        param = flat(tree.root).find(n => n.kind === 'param');
+        assert(param.fields.fallback);
+        assert.equal(param.fields.fallback.kind, source.startsWith('let^') ? 'string' : 'int');
+        tree = await parse(apply(tree.source, structures.editStructure(tree, param, 'default:remove')));
+        assert(!flat(tree.root).find(n => n.kind === 'param').fields.fallback);
+    }
+    let tree = await parse('let^path = "C:\\\\temp\\\\file.txt"');
+    for (const action of ['string:raw', 'string:quoted']) {
+        const value = flat(tree.root).find(n => n.kind === 'string');
+        const before = literals.literalOf(value, tree.source).value;
+        tree = await parse(apply(tree.source, structures.editStructure(tree, value, action)));
+        assert.equal(literals.literalOf(flat(tree.root).find(n => n.kind === 'string'), tree.source).value, before);
+    }
+    const multiline = await parse('let^text="a\\nb"');
+    assert.equal(structures.editStructure(multiline, flat(multiline.root).find(n => n.kind === 'string'), 'string:raw'), undefined);
+    const receiver = await parse('let^T=def^{read=f^self^ {0}}');
+    const self = flat(receiver.root).find(n => n.kind === 'param');
+    assert.equal(structures.editStructure(receiver, self, 'default:add'), undefined);
+}));
+
+test('receiver and constructor templates respect definition scope and preserve receiver-first ordering', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const lists = load('graphLists.ts');
+    let tree = await parse('let^T=def^{read=f^value:any^ {0}}');
+    let def = flat(tree.root).find(n => n.kind === 'def');
+    tree = await parse(apply(tree.source, lists.insertListEdit(tree, lists.listInsertions(tree).find(s => s.kind === 'def'), 'constructor')));
+    assert(flat(tree.root).some(n => n.kind === 'table-entry' && tree.source.slice(n.fields.key?.start, n.fields.key?.end) === 'new'));
+    assert(!lists.listTemplates(tree, lists.listInsertions(tree).find(s => s.kind === 'def')).some(c => c.id === 'constructor'));
+    const fn = flat(tree.root).find(n => n.kind === 'func');
+    const site = lists.listInsertions(tree).find(s => s.kind === 'func' && s.start === fn.start && s.field === 'params');
+    tree = await parse(apply(tree.source, lists.insertListEdit(tree, site, 'receiver')));
+    const params = flat(tree.root).find(n => n.kind === 'func').fields.params;
+    assert.equal(tree.source.slice(params[0].fields.name.start, params[0].fields.name.end), 'self^');
+    assert.equal(tree.source.slice(params[1].fields.name.start, params[1].fields.name.end), 'value');
+    const current = flat(tree.root).find(n => n.kind === 'func');
+    assert(!lists.listTemplates(tree, lists.listInsertions(tree).find(s => s.kind === 'func' && s.start === current.start && s.field === 'params')).some(c => c.id === 'receiver'));
+    const outside = await parse('let^read=f^{}');
+    assert(!lists.listTemplates(outside, lists.listInsertions(outside).find(s => s.kind === 'func' && s.field === 'params')).some(c => c.id === 'receiver'));
+}));
+
+test('comments on grouped positional elements stay attached to their editable expression row', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const tree = await parse('let^values = { 0,\n# comparison\n(1 = 1), 42 }');
+    const entry = flat(tree.root).find(n => n.kind === 'table-entry' && n.comments?.length);
+    assert(entry);
+    const graph = await new (require('elkjs/lib/elk.bundled.js'))().layout(load('webview/map.ts').toElk(tree));
+    const mapped = node => [node, ...(node.children ?? []).flatMap(mapped)];
+    const expression = mapped(graph).find(n => n.lhat?.operatorExpression);
+    assert.deepEqual(expression.lhat.elementOwner, { start: entry.start, end: entry.end });
+    const laid = load('webview/comments.ts').placeComments(graph, tree);
+    const comment = mapped(laid).find(n => n.lhat?.kind === 'comment');
+    assert.equal(comment.lhat.commentAnchor.id, expression.id);
+}));
+
+test('parallel initializers can become one call and call construction honors the resolved signature', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    let tree = await parse('let^f=f^{(1,2,3)}\nlet^a,b,c=0,0,0');
+    const site = expressions.expressionSites(tree).find(s => s.kind === 'initializers');
+    assert(site);
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, site, 'reference:f')));
+    const binding = tree.root.fields.items[1];
+    const value = binding.fields.values[0];
+    const ref = expressions.expressionSites(tree).find(s => s.start === value.start && s.end === value.end);
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, { ...ref, callArguments: ['evil()'] }, 'call')));
+    const updated = tree.root.fields.items[1], call = updated.fields.values[0];
+    assert.equal(updated.fields.targets.length, 3);
+    assert.equal(updated.fields.values.length, 1);
+    assert.equal(call.kind, 'call');
+    assert.equal(call.fields.argument?.length ?? 0, 0);
+    assert.equal(call.callable.outputs.length, 3);
+    assert(!tree.source.includes('evil'));
+    const typed = await parse('let^f=f^n:number^,text:string^,enabled:bool^ {n}\nlet^v=f');
+    const target = typed.root.fields.items[1].fields.values[0];
+    const selected = expressions.expressionSites(typed).find(s => s.start === target.start && s.end === target.end);
+    const called = await parse(apply(typed.source, expressions.replaceExpression(typed, selected, 'call')));
+    assert.deepEqual(called.root.fields.items[1].fields.values[0].fields.argument.map(n => n.kind), ['int', 'string', 'hat-ident']);
+}));
+
+test('paired reassignment insertion preserves written RHS expressions and blocks call-result expansion', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const lists = load('graphLists.ts'), assignments = load('graphAssignments.ts');
+    for (const operator of [':=', '+=', '*=', '?+=']) {
+        let tree = await parse(`var^a=1\na ${operator} 2`);
+        const node = tree.root.fields.items[1];
+        const site = lists.listInsertions(tree).find(s => s.kind === 'reassign');
+        assert(site, operator);
+        assert.equal(site.field, 'targets');
+        tree = await parse(apply(tree.source, lists.insertListEdit(tree, site, 'binding')));
+        const updated = tree.root.fields.items[1];
+        assert.equal(updated.fields.targets.length, 2);
+        assert.equal(assignments.assignmentOperator(updated, tree.source).text, operator);
+        const values = assignments.assignmentValues(updated, tree.source);
+        assert.deepEqual(values.map(n => tree.source.slice(n.start, n.end)), ['2', 'nil^']);
+        if (operator !== ':=') assert(!expressions.expressionSites(tree).some(s => s.kind === 'binary' && s.start === updated.start && s.end === updated.end));
+    }
+    const call = await parse('var^a=0\na:=f()');
+    assert(!lists.listInsertions(call).some(s => s.kind === 'reassign'));
+    const tuple = await parse('var^a=0\nvar^b=0\na,b:=(1,2)');
+    assert(!lists.listInsertions(tuple).some(s => s.kind === 'tuple'));
+    const site = lists.listInsertions(tuple).find(s => s.kind === 'reassign');
+    const changed = await parse(apply(tuple.source, lists.insertListEdit(tuple, site, 'binding')));
+    assert.equal(changed.root.fields.items[2].fields.targets.length, 3);
+    assert.equal(changed.root.fields.items[2].fields.values[0].fields.items.length, 3);
+}));
+
+test('implicit and parenthesized return lists grow inside a single result group', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const lists = load('graphLists.ts'), structures = load('graphStructure.ts');
+    for (const source of ['let^f=f^{0}', 'let^f=f^{(0,1)}', 'let^f=f^{return^(0,1)}']) {
+        let tree = await parse(source);
+        for (let count = 0; count < 2; count++) {
+            const node = flat(tree.root).find(n => n.kind === 'return');
+            const before = node.fields.value.length;
+            const site = lists.listInsertions(tree).find(s => s.kind === 'return' && s.before === undefined);
+            tree = await parse(apply(tree.source, lists.insertListEdit(tree, site, 'number')));
+            assert.equal(flat(tree.root).find(n => n.kind === 'return').fields.value.length, before + 1, tree.source);
+            assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+        }
+        const node = flat(tree.root).find(n => n.kind === 'return');
+        if (tree.source.includes('return^')) tree = await parse(apply(tree.source, structures.editStructure(tree, node, 'return:implicit')));
+        const implicit = flat(tree.root).find(n => n.kind === 'return');
+        const values = implicit.fields.value.length;
+        tree = await parse(apply(tree.source, structures.editStructure(tree, implicit, 'return:explicit')));
+        assert.equal(flat(tree.root).find(n => n.kind === 'return').fields.value.length, values);
+    }
 }));

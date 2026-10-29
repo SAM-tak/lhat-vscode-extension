@@ -29,7 +29,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import "./rf.css";
-import type { AstNode, AstReply, FromWebview, ToWebview } from "../../protocol";
+import type { AstNode, AstReply, FromWebview, ToWebview, TypeSite, SourceSpan } from "../../protocol";
 import { graphViewportX, nodeAt, titleOf, type ElkNode, type DrillTarget } from "../map";
 import type { LiteralValue } from "../literals";
 import { LiteralEditProvider, LiteralInput } from "./LiteralInput";
@@ -135,6 +135,8 @@ interface BoxData extends Record<string, unknown>, SlideData {
     labelParts?: LabelPart[];
     literal?: LiteralValue;
     literalTypeLabel?: string;
+    literalTypeSite?: TypeSite;
+    elementOwner?: SourceSpan;
     depth: number;
     isContainer: boolean;
     layoutOnly: boolean;
@@ -464,6 +466,8 @@ function toFlow(
                     noExecutionHandles: c.lhat?.noExecutionHandles === true || unreachable || c.lhat?.unreachable === true,
                     literal: c.lhat?.literal,
                     literalTypeLabel: c.lhat?.literalTypeLabel,
+                    literalTypeSite: c.lhat?.literalTypeSite,
+                    elementOwner: c.lhat?.elementOwner,
                     inline: c.lhat?.inline,
                     operator: c.lhat?.operator,
                     decoration: ["signature-title", "signature-arrow", "range-arrow", "delimiter", "binding-keyword", "interpolation-add"].includes(c.lhat?.kind ?? ""),
@@ -541,10 +545,18 @@ function toFlow(
         for (const link of parent.lhat?.operandLinks ?? []) {
             if (!endpoints.has(link.source) || !endpoints.has(link.target)) continue;
             const source = endpoints.get(link.source)!;
+            // A sole call output lives inside its header. Start the external
+            // wire at the card border, keeping the output row's vertical seat.
+            let cursor = source, owner = parents.get(cursor.id), sourceInset = 0;
+            while (owner?.lhat?.layoutOnly) {
+                sourceInset += cursor.x ?? 0;
+                cursor = owner; owner = parents.get(cursor.id);
+            }
+            sourceInset = owner?.lhat?.invocation ? sourceInset + (cursor.x ?? 0) : 0;
             definitions.push({ ...definitionEdge, id: `o__${parent.id}__${link.target}`, type: "operand-definition",
                 source: link.source, target: link.target,
                 sourceHandle: source.lhat?.definitionRole === "value" ? "definition-out" : "operand-out", targetHandle: "operand-in",
-                data: { laneOffset: link.laneOffset, rise: link.rise }, selectable: false, focusable: false });
+                data: { laneOffset: link.laneOffset, rise: link.rise, sourceInset }, selectable: false, focusable: false });
         }
         for (const link of parent.lhat?.definitionLinks ?? []) {
             if (!endpoints.has(link.source) || !endpoints.has(link.target)) continue;
@@ -1070,10 +1082,12 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                 {data.reorder !== undefined && <ReorderHandle site={data.reorder} label={data.label}
                     onDrop={data.onReorder} />}
                 {foldButton}
-                {!data.disabled && !data.operator && <StructureButton start={data.start} end={data.sourceEnd} />}
-                {!data.operator && <DeleteButton start={data.start} end={data.sourceEnd}
+                {!data.disabled && !data.operator && !data.ioGroup && <StructureButton start={data.start} end={data.sourceEnd}
                     declaration={data.definitionRole === "declaration" ? data.statement : undefined} />}
-                {!data.disabled && !data.operator && <ExpressionButton start={data.start} end={data.sourceEnd} />}
+                {!data.operator && !data.ioGroup && <DeleteButton start={data.start} end={data.sourceEnd}
+                    owner={data.elementOwner}
+                    declaration={data.definitionRole === "declaration" ? data.statement : undefined} />}
+                {!data.disabled && !data.operator && !data.ioGroup && <ExpressionButton start={data.start} end={data.sourceEnd} />}
                 {data.isRangeArrow ? (
                     <svg className="range-arrow-icon" viewBox="0 0 40 30" aria-label="Range" role="img">
                         <path d="M 5 15 H 34 M 27 9 L 34 15 L 27 21" />
@@ -1103,7 +1117,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                     {data.literalTypeLabel && <div className="literal-type-label"><TypeLabel label={data.literalTypeLabel} /></div>}
                     <InterpolationInput field={data.interpolation} />
                 </> : data.literal !== undefined ? <>
-                    <div className="literal-type-label"><TypeLabel label={data.literalTypeLabel ?? "?"} /></div>
+                    <div className="literal-type-label"><TypeLabel site={data.literalTypeSite} label={data.literalTypeLabel ?? "?"} /></div>
                     <LiteralInput key={data.literal.key} literal={data.literal} />
                 </> : <div className="boxlabel"><span>{data.labelParts?.map((part, i) => part.typeSite !== undefined || part.typeLabel !== undefined
                     ? <span key={i} className="typed-name">
@@ -1251,6 +1265,7 @@ function CallDefinitionEdge({ id, sourceX, sourceY, targetX, targetY, style, mar
 function OperandDefinitionEdge({ id, sourceX, sourceY, targetX, targetY, style, markerEnd, data }: EdgeProps) {
     // Each extracted operand has a reserved lane left of the value column,
     // then returns through the empty band below the expression row.
+    sourceX -= typeof data?.sourceInset === "number" ? data.sourceInset : 0;
     const lane = sourceX - (typeof data?.laneOffset === "number" ? data.laneOffset : 24);
     const bend = targetY + (typeof data?.rise === "number" ? data.rise : 18);
     const path = `M ${sourceX} ${sourceY} H ${lane} V ${bend} H ${targetX} V ${targetY}`;

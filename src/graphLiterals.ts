@@ -11,7 +11,7 @@ export function editLiteral(tree: AstReply, key: string, value: string): SourceE
         const literal = literalOf(node, tree.source);
         if (literal?.key === key && (literal.kind === "string" || isNumberLiteral(value))) {
             change = { start: node.start, end: node.end,
-                text: literal.kind === "string" ? quoteString(value) : value };
+                text: literal.kind === "string" ? quoteString(value, tree.source[node.start] === "'") : value };
         }
         for (const child of Object.values(node.fields ?? {}).flat()) visit(child);
     };

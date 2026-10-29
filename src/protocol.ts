@@ -64,6 +64,8 @@ export interface AstReply {
 
 export interface SourceSpan { start: number; end: number }
 export interface TypeSite extends SourceSpan {
+    /** An input without a default has no stored value constraining its type. */
+    parameter?: boolean;
     name: string;
     insert: number;
     annotation?: SourceSpan;

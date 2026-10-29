@@ -1,5 +1,6 @@
 import type { AstNode, CallableInfo, CallableInput } from "./protocol";
 import { resultTypes, syntaxTokens } from "./graphSyntax";
+import { assignmentOperator, assignmentValues } from "./graphAssignments";
 
 const nodes = (value: AstNode | AstNode[] | undefined): AstNode[] => value ? Array.isArray(value) ? value : [value] : [];
 
@@ -89,23 +90,25 @@ export function outputTypes(type: string | undefined): string[] {
     return resultTypes(type);
 }
 
-export function hasCallInitializer(node: AstNode): boolean {
-    const values = nodes(node.fields?.values);
+export function hasCallInitializer(node: AstNode, source?: string): boolean {
+    const values = bindingValues(node, source);
     const hasCall = (value: AstNode): boolean => value.kind === "call" ||
         (value.kind !== "func" && Object.values(value.fields ?? {}).flat().some(hasCall));
     return values.some(hasCall);
 }
 
 /** Binding pairs are editable only when each written value owns one position. */
-export function canInsertBinding(node: AstNode): boolean {
-    const targets = nodes(node.fields?.targets), values = bindingValues(node);
-    return node.kind === "define" && targets.length > 0 && targets.length === values.length &&
-        !hasCallInitializer(node) && values.every(value => value.kind !== "tuple" && outputTypes(value.inferredType).length === 1);
+export function canInsertBinding(node: AstNode, source?: string): boolean {
+    const targets = nodes(node.fields?.targets), values = bindingValues(node, source);
+    return (node.kind === "define" || node.kind === "reassign" && source !== undefined && !!assignmentOperator(node, source)) &&
+        targets.length > 0 && targets.length === values.length && !hasCallInitializer(node, source) &&
+        values.every(value => value.kind !== "tuple" && outputTypes(value.inferredType).length === 1);
 }
 
 /** An explicit tuple initializer can be edited as pairs without unpacking a call. */
-export function bindingValues(node: AstNode): AstNode[] {
-    const values = nodes(node.fields?.values);
-    return nodes(node.fields?.targets).length > 1 && values.length === 1 && values[0].kind === "tuple"
+export function bindingValues(node: AstNode, source?: string): AstNode[] {
+    const values = node.kind === "reassign" && source !== undefined ? assignmentValues(node, source) : nodes(node.fields?.values);
+    const unpack = node.kind !== "reassign" || source !== undefined && assignmentOperator(node, source)?.base === ":=";
+    return unpack && nodes(node.fields?.targets).length > 1 && values.length === 1 && values[0].kind === "tuple"
         ? nodes(values[0].fields?.items) : values;
 }

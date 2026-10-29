@@ -1,19 +1,42 @@
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { StatementTemplate } from "./graphStatements";
 import type { SourceEdit } from "./graphReorder";
+import { syntaxTokens } from "./graphSyntax";
+import { callInfo } from "./graphCalls";
+import { assignmentValues } from "./graphAssignments";
 
-export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean }
+export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean; errorName?: boolean;
+    owner?: SourceSpan; callArguments?: string[] }
 const kinds = new Set(["int", "float", "string", "bool", "nil", "ident", "hat-ident", "hole",
-    "binary", "unary", "call", "member", "index", "tuple", "table", "def", "self-table", "func", "interp", "if-expr"]);
+    "binary", "unary", "call", "member", "index", "tuple", "table", "def", "self-table", "func", "interp", "if-expr", "try", "pack", "error-new", "require"]);
 
 /** Declaration names, type syntax and member keys are not replaceable value expressions. */
 export function expressionSites(tree: AstReply): ExpressionSite[] {
     const sites: ExpressionSite[] = [];
     const visit = (node: AstNode, value = true, assignmentTarget = false, memberKey = false) => {
         if (["disabled", "module", "annotation", "import", "import-stmt", "require-stmt"].includes(node.kind) || node.kind.startsWith("type-")) return;
-        if (value && kinds.has(node.kind) && node.start < node.end)
-            sites.push({ kind: node.kind, start: node.start, end: node.end, ...assignmentTarget ? { assignmentTarget: true } : {}, ...memberKey ? { memberKey: true } : {} });
+        if (value && kinds.has(node.kind) && node.start < node.end) {
+            const info = callInfo({ kind: "call", start: node.start, end: node.end, line: node.line, column: node.column, fields: { target: node } });
+            sites.push({ kind: node.kind, start: node.start, end: node.end,
+                ...(info ? { callArguments: info.inputs.map(input => input.default ?? (input.type === "number^" ? "0" : input.type === "string^" ? '\"\"' : input.type === "bool^" ? "false^" : "nil^")) } : {}),
+                ...assignmentTarget ? { assignmentTarget: true } : {}, ...memberKey ? { memberKey: true } : {} });
+        }
+        if (["define", "reassign"].includes(node.kind)) {
+            const values = node.kind === "reassign" ? assignmentValues(node, tree.source) : node.fields?.values, targets = node.fields?.targets;
+            if (Array.isArray(values) && (values.length > 1 || values[0]?.kind === "tuple" && Array.isArray(targets) && targets.length > 1))
+                sites.push({ kind: "initializers", start: values[0].start, end: values[values.length - 1].end,
+                    owner: { start: node.start, end: node.end } });
+        }
         for (const [field, children] of Object.entries(node.fields ?? {})) {
+            if (node.kind === "reassign" && field === "values") {
+                assignmentValues(node, tree.source).forEach(child => visit(child));
+                continue;
+            }
+            if (node.kind === "error-new" && field === "name") {
+                for (const child of Array.isArray(children) ? children : [children])
+                    sites.push({ kind: child.kind, start: child.start, end: child.end, errorName: true });
+                continue;
+            }
             const declaration = ["name", "key", "type", "return_type", "annotations"].includes(field)
                 || node.kind === "define" && field === "targets"
                 || node.kind === "func" && field === "params";
@@ -29,33 +52,72 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
 
 export const validMember = (text: string) => /^(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+)$/u.test(text);
 export const validReference = (text: string) => /^(?:[\p{L}_][\p{L}\p{N}_]*|self\^|it\^)(?:\.(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+))*$/u.test(text);
+export const validExpressionReference = (site: ExpressionSite, text: string) => site.errorName
+    ? /^[\p{L}_][\p{L}\p{N}_]*(?:\.[\p{L}_][\p{L}\p{N}_]*)*$/u.test(text)
+    : (site.memberKey ? validMember : validReference)(text);
+
+/** Grouping has no AST node. A binary span may start inside a grouped left operand. */
+function replacementSpan(source: string, site: SourceSpan): SourceSpan | undefined {
+    let start = site.start, end = site.end, opens = 0, closes = 0;
+    for (const token of syntaxTokens(source, start, end)) {
+        if (token.text === "(") opens++;
+        else if (token.text === ")") { if (opens) opens--; else closes++; }
+    }
+    while (closes-- > 0) {
+        const previous = syntaxTokens(source, 0, start).slice(-1)[0];
+        if (previous?.text !== "(") return undefined;
+        start = previous.start;
+    }
+    while (opens-- > 0) {
+        const next = syntaxTokens(source, end)[0];
+        if (next?.text !== ")") return undefined;
+        end = next.end;
+    }
+    return { start, end };
+}
 
 export function expressionTemplates(tree: AstReply, site: ExpressionSite): StatementTemplate[] {
     const currentSite = expressionSites(tree).find(s => s.kind === site.kind && s.start === site.start && s.end === site.end);
     if (!currentSite) return [];
-    const current = tree.source.slice(site.start, site.end);
+    const span = replacementSpan(tree.source, site);
+    if (!span) return [];
+    const current = tree.source.slice(span.start, span.end);
     const choices: [string, string, string][] = [
         ["match", "Pattern matching expression", "(for^nil^: when^0: 0 other^: 0;)"],
         ["number", "Number", "0"], ["string", "String", '""'], ["true", "True", "true^"],
         ["false", "False", "false^"], ["nil", "Nil", "nil^"], ["table", "Table", "{}"],
+        ["tuple", "Tuple", "(0, 0)"],
         ["function", "Function", "f^{ return^ 0 }"], ["procedure", "Procedure", "p^{}"],
+        ["definition", "Table definition", "def^{}"],
+        ["selfTable", "Self table", "self^{}"],
+        ["conditional", "Conditional expression", "(if^true^: 0 el^: 0;)"],
+        ["interpolation", "Interpolated string", '$"text{0}"'],
+        ["try", "Propagate an error", `try^(${current})`],
+        ["pack", "Pack return values", `pack^(${current})`],
+        ["error", "Error value", "error^Problem.Failure{}"],
+        ["require", "Require file", 'require^"./module.lh"'],
         ["member", "Access a member", `(${current}).value`],
-        ["call", "Call this value", `(${current})(nil^)`],
+        ["call", "Call this value", `(${current})(${(currentSite.callArguments ?? ["nil^"]).join(", ")})`],
         ["index", "Index this value", `(${current})[0]`],
         ["add", "Add to this value", `((${current}) + 0)`],
+        ["compare", "Compare values", `((${current}) = 0)`],
+        ["logical", "Combine conditions", `((${current}) and^ true^)`],
+        ["fallback", "Default a missing value", `((${current}) ?? nil^)`],
+        ["bitwise", "Bitwise expression", `((${current}) bitand^ 0)`],
+        ["product", "Vector product", `((${current}) dot^ 0)`],
         ["not", "Negate condition", `(!(${current}))`],
         ["negative", "Negate number", `(-(${current}))`],
     ];
-    const references = new Set<string>(currentSite.memberKey ? ["value", "0"] : ["self^", "it^"]);
+    const references = new Set<string>(currentSite.errorName ? ["Problem.Failure"] : currentSite.memberKey ? ["value", "0"] : ["self^", "it^"]);
     const names = (node: AstNode) => {
         if (["ident", "hat-ident", "member"].includes(node.kind)) {
             const name = tree.source.slice(node.start, node.end);
-            if ((currentSite.memberKey ? validMember : validReference)(name)) references.add(name);
+            if (validExpressionReference(currentSite, name)) references.add(name);
         }
         for (const child of Object.values(node.fields ?? {}).flat()) names(child);
     };
     names(tree.root);
-    return [...choices.filter(([id]) => !currentSite.memberKey && (!currentSite.assignmentTarget || ["index", "member"].includes(id))).map(([id, label, text]) => ({ id, label, text })),
+    return [...choices.filter(([id]) => !currentSite.errorName && !currentSite.memberKey && (!currentSite.assignmentTarget || ["index", "member"].includes(id))).map(([id, label, text]) => ({ id, label, text })),
         ...[...references].sort().map(name => ({ id: `reference:${name}`, label: name, text: name }))];
 }
 
@@ -64,6 +126,7 @@ export function replaceExpression(tree: AstReply, site: ExpressionSite, template
     if (!choices.length) return undefined;
     const name = template.startsWith("reference:") ? template.slice(10) : undefined;
     const currentSite = expressionSites(tree).find(s => s.kind === site.kind && s.start === site.start && s.end === site.end)!;
-    const text = name !== undefined && (currentSite.memberKey ? validMember : validReference)(name) ? name : choices.find(c => c.id === template)?.text;
-    return text === undefined ? undefined : { start: site.start, end: site.end, text };
+    const text = name !== undefined && validExpressionReference(currentSite, name) ? name : choices.find(c => c.id === template)?.text;
+    const span = replacementSpan(tree.source, currentSite);
+    return text === undefined || !span ? undefined : { ...span, text };
 }

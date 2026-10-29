@@ -28,22 +28,43 @@ async function browser(routes, work) {
     child.on('error', error => { launchError = error; });
     try {
         const portFile = path.join(profile, 'DevToolsActivePort');
-        for (let i = 0; !fs.existsSync(portFile) && i < 150 && !launchError; i++) await sleep(100);
+        let port;
+        for (let i = 0; i < 150 && !launchError; i++) {
+            try {
+                const lines = fs.readFileSync(portFile, 'utf8').split('\n');
+                if (/^\d+$/.test(lines[0].trim()) && lines[1]?.startsWith('/devtools/browser/')) { port = lines[0].trim(); break; }
+            } catch (error) { if (!['ENOENT', 'EBUSY', 'EACCES'].includes(error.code)) throw error; }
+            await sleep(100);
+        }
         if (launchError) throw launchError;
-        const port = fs.readFileSync(portFile, 'utf8').split('\n')[0];
-        const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+        if (!port) throw new Error('Test browser did not publish its debugging endpoint');
+        const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(10000) })).json();
         socket = new WebSocket(targets.find(target => target.type === 'page').webSocketDebuggerUrl);
-        await new Promise(resolve => socket.addEventListener('open', resolve, { once: true }));
+        await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('Test browser connection timed out')), 10000);
+            socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
+            socket.addEventListener('error', () => { clearTimeout(timer); reject(new Error('Test browser connection failed')); }, { once: true });
+        });
         let sequence = 0;
         const waiting = new Map(), errors = [];
         socket.addEventListener('message', event => {
             const message = JSON.parse(event.data);
             if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails);
-            waiting.get(message.id)?.(message); waiting.delete(message.id);
+            const pending = waiting.get(message.id);
+            if (pending) { clearTimeout(pending.timer); pending.resolve(message); waiting.delete(message.id); }
         });
+        const disconnected = () => {
+            for (const pending of waiting.values()) { clearTimeout(pending.timer); pending.reject(new Error('Test browser disconnected')); }
+            waiting.clear();
+        };
+        socket.addEventListener('close', disconnected);
+        socket.addEventListener('error', disconnected);
         const call = async (method, params = {}) => {
             const id = ++sequence;
-            const reply = await new Promise(resolve => { waiting.set(id, resolve); socket.send(JSON.stringify({ id, method, params })); });
+            const reply = await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => { waiting.delete(id); reject(new Error(`Test browser timed out: ${method}`)); }, 15000);
+                waiting.set(id, { resolve, reject, timer }); socket.send(JSON.stringify({ id, method, params }));
+            });
             assert(!reply.error, JSON.stringify(reply.error)); return reply.result;
         };
         const evaluate = async expression => {
@@ -52,13 +73,19 @@ async function browser(routes, work) {
         };
         const until = async expression => {
             for (let i = 0; i < 100; i++) { if (await evaluate(`Boolean(${expression})`)) return; await sleep(50); }
-            throw Error(`Browser condition timed out: ${expression}`);
+            throw Error(`Browser condition timed out: ${expression}${errors.length ? '\n' + JSON.stringify(errors) : ''}`);
         };
         await call('Runtime.enable'); await call('Page.enable');
         await call('Emulation.setDeviceMetricsOverride', { width: 1000, height: 700, deviceScaleFactor: 1, mobile: false });
         await call('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` });
         await work({ evaluate, until, call, errors });
     } finally {
+        // Edge's launcher can exit before the browser it starts. Close the
+        // browser over CDP as well, so renderer processes do not accumulate.
+        if (socket?.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ id: 0, method: 'Browser.close' }));
+            await Promise.race([new Promise(resolve => socket.addEventListener('close', resolve, { once: true })), sleep(1000)]);
+        }
         socket?.close(); child.kill(); server.close();
         // The browser may still hold its profile open on Windows. Keep it in
         // the OS temporary directory; do not race a recursive cleanup.

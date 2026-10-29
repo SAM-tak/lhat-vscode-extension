@@ -1,11 +1,11 @@
 import { structureSites, structureTemplates, type StructureSite } from "../../graphStructure";
 import { deleteSites, type DeleteSite } from "../../graphDelete";
-import { expressionSites, expressionTemplates, validReference, validMember, type ExpressionSite } from "../../graphExpressions";
+import { expressionSites, expressionTemplates, validExpressionReference, type ExpressionSite } from "../../graphExpressions";
 import type { AnnotationOwner } from "../../graphAnnotations";
 import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as l10n from "@vscode/l10n";
-import type { AstReply, FromWebview, ToWebview } from "../../protocol";
+import type { AstReply, FromWebview, ToWebview, SourceSpan } from "../../protocol";
 import { statementTemplates, type StatementInsertion, type StatementSite, type StatementTemplate } from "../../graphStatements";
 import { isListInsertion, listTemplates, groupedOperatorSites, type InsertionSite, type OperatorSite } from "../../graphLists";
 import type { InterpolationSite } from "../../graphInterpolation";
@@ -119,7 +119,7 @@ export function StatementButton({ site, append = false, floating = false, axis =
     const actions = useStatementActions();
     const title = isListInsertion(site) ? append ? l10n.t("Add element") : l10n.t("Insert element here")
         : append ? l10n.t("Add statement") : l10n.t("Insert statement here");
-    return <InsertionButton title={title} append={append} floating={floating} axis={axis} style={style}
+    return <InsertionButton site={site} title={title} append={append} floating={floating} axis={axis} style={style}
         plus={append || isListInsertion(site)} disabled={actions.version === undefined}
         onOpen={anchor => actions.open(site, anchor)} />;
 }
@@ -129,11 +129,13 @@ export function InsertionIcon({ plus = true, axis = "horizontal" }: { plus?: boo
         : axis === "horizontal" ? "M 6 9 L 12 15 L 18 9" : "M 9 6 L 15 12 L 9 18"} /></svg>;
 }
 
-export function InsertionButton({ title, append = true, floating = false, axis = "horizontal", style, plus = true, disabled, onOpen }: {
+export function InsertionButton({ site, title, append = true, floating = false, axis = "horizontal", style, plus = true, disabled, onOpen }: {
+    site?: InsertionSite;
     title: string; append?: boolean; floating?: boolean; axis?: "horizontal" | "vertical"; style?: React.CSSProperties;
     plus?: boolean; disabled?: boolean; onOpen: (anchor: HTMLElement) => void;
 }) {
     return <button type="button" className={`statement-button nodrag nopan nowheel nokey ${append ? "append-statement" : "insert-statement"} ${floating ? "floating-add" : ""} insertion-${axis}`}
+        data-insertion-site={site ? JSON.stringify(site) : undefined}
         data-vscode-context={JSON.stringify({ lhatStatement: false, lhatFoldable: false })} style={style}
         title={title} aria-label={title} aria-haspopup="dialog" disabled={disabled}
         onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
@@ -147,13 +149,14 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
     const menu = useRef<HTMLDivElement>(null), input = useRef<HTMLInputElement>(null);
     const [query, setQuery] = useState(""), [index, setIndex] = useState(0);
     const [position, setPosition] = useState({ left: 0, top: 0 });
-    const title = picker.structure ? l10n.t("Edit branches and sections") : picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
+    const title = picker.structure ? l10n.t("Edit structure") : picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
         ? l10n.t("Choose an element template") : l10n.t("Choose a statement template");
-    const choices = picker.expression && (picker.expression.memberKey ? validMember : validReference)(query.trim()) && !picker.choices.some(c => c.id === `reference:${query.trim()}`)
+    const choices = picker.expression && validExpressionReference(picker.expression, query.trim()) && !picker.choices.some(c => c.id === `reference:${query.trim()}`)
         ? [...picker.choices, { id: `reference:${query.trim()}`, label: query.trim(), text: query.trim() }] : picker.choices;
     const words = query.toLocaleLowerCase().trim().split(/\s+/);
     const filtered = choices.filter(choice => words.every(word =>
-        `${l10n.t(choice.label)} ${choice.label} ${choice.text}`.toLocaleLowerCase().includes(word)));
+        `${l10n.t(choice.label)} ${choice.label} ${choice.text}`.toLocaleLowerCase().includes(word)))
+        .sort((a, b) => Number(b.id === `reference:${query.trim()}`) - Number(a.id === `reference:${query.trim()}`));
     const selected = Math.min(index, Math.max(0, filtered.length - 1));
     useLayoutEffect(() => {
         const place = () => {
@@ -218,7 +221,8 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
 
 export function ExpressionButton({ start, end }: { start?: number; end?: number }) {
     const actions = useStatementActions();
-    const site = actions.expressions.find(site => site.start === start && site.end === end);
+    const site = actions.expressions.find(site => site.start === start && site.end === end)
+        ?? actions.expressions.find(site => site.owner && site.owner.start === start && site.owner.end === end);
     if (!site) return null;
     return <button type="button" className="expression-edit nodrag nopan nokey" title={l10n.t("Change expression")}
         aria-label={l10n.t("Change expression")} disabled={actions.version === undefined}
@@ -227,9 +231,10 @@ export function ExpressionButton({ start, end }: { start?: number; end?: number 
 }
 
 
-export function DeleteButton({ start, end, declaration }: { start?: number; end?: number; declaration?: StatementSite }) {
+export function DeleteButton({ start, end, declaration, owner }: { start?: number; end?: number; declaration?: StatementSite; owner?: SourceSpan }) {
     const actions = useStatementActions();
-    const site = actions.deletions.find(site => site.start === start && site.end === end)
+    const site = (owner && actions.deletions.find(site => site.category === "element" && site.start === owner.start && site.end === owner.end))
+        ?? actions.deletions.find(site => site.start === start && site.end === end)
         ?? (declaration && actions.deletions.find(site => site.category === "statement" && site.start === declaration.start && site.end === declaration.end));
     if (!site) return null;
     return <button type="button" className="element-delete nodrag nopan nokey" title={l10n.t("Delete element")}
@@ -239,12 +244,14 @@ export function DeleteButton({ start, end, declaration }: { start?: number; end?
 }
 
 
-export function StructureButton({ start, end }: { start?: number; end?: number }) {
+export function StructureButton({ start, end, declaration }: { start?: number; end?: number; declaration?: StatementSite }) {
     const actions = useStatementActions();
-    const site = actions.structures.find(site => site.start === start && site.end === end);
+    const site = actions.structures.find(site => site.start === start && site.end === end)
+        ?? actions.structures.find(site => site.start === start && ["table-entry", "enum-member", "param"].includes(site.kind))
+        ?? (declaration && actions.structures.find(site => site.start === declaration.start && site.end === declaration.end));
     if (!site) return null;
-    return <button type="button" className="structure-edit nodrag nopan nokey" title={l10n.t("Edit branches and sections")}
-        aria-label={l10n.t("Edit branches and sections")} disabled={actions.version === undefined}
+    return <button type="button" className="structure-edit nodrag nopan nokey" title={l10n.t("Edit structure")}
+        aria-label={l10n.t("Edit structure")} disabled={actions.version === undefined}
         onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
         onClick={event => { event.stopPropagation(); actions.structure(site, event.currentTarget); }}>⋯</button>;
 }

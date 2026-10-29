@@ -200,14 +200,17 @@ test('var declarations use the same definition lines, types and execution endpoi
     assert.equal(graph.children.at(-1).lhat.synthetic, 'add');
 });
 
-test('table member pairs wrap using both boxes; positional comparisons stay leaves', async () => {
+test('table member pairs wrap using both boxes and positional comparisons retain expression editors', async () => {
     const source = '{ first = 1, second = 2, [("a=b")] #[ ignored = ]# = 3, (1 = 1), 42 }';
     const n = nodesFor(source);
     const table = n('table', source, { items: [
         n('table-entry', 'first = 1', { key: n('ident', 'first'), value: n('int', '1') }),
         n('table-entry', 'second = 2', { key: n('ident', 'second'), value: n('int', '2') }),
         n('table-entry', '[("a=b")] #[ ignored = ]# = 3', { key: n('string', '"a=b"'), value: n('int', '3') }),
-        n('table-entry', '(1 = 1)', { value: n('binary', '1 = 1') }),
+        n('table-entry', '(1 = 1)', { value: n('binary', '1 = 1', {
+            left: n('int', '1', undefined, source.indexOf('(1 = 1)') + 1),
+            right: n('int', '1', undefined, source.indexOf('(1 = 1)') + 5),
+        }) }),
         n('table-entry', '42', { value: n('int', '42') }),
     ] });
     for (const width of [360, 1500]) {
@@ -222,9 +225,11 @@ test('table member pairs wrap using both boxes; positional comparisons stay leav
             assert.equal(left.y, right.y);
             assert(left.x + left.width < right.x);
         }
-        const positional = flatten(graph).filter(n => ['(1 = 1)', '42'].includes(n.labels?.[0]?.text));
-        assert.equal(positional.length, 2);
-        assert(positional.every(n => !n.children && !n.lhat.definitionRole));
+        const positional = flatten(graph).find(n => n.lhat?.operatorExpression && n.lhat.start === source.indexOf('(1 = 1)') + 1);
+        assert(positional.children.length > 0);
+        assert.deepEqual(positional.lhat.elementOwner, { start: source.indexOf('(1 = 1)'), end: source.indexOf('(1 = 1)') + 7 });
+        const scalar = flatten(graph).find(n => n.labels?.[0]?.text === '42');
+        assert(!scalar.children && !scalar.lhat.definitionRole);
         assert(flatten(graph).flatMap(n => n.edges ?? []).every(e => !e.drawn || e.definition));
         assert(width === 1500 ? elements(graph).length === 1 : elements(graph).length > 1,
             'rows wrap using the full labeled value width, including the type caption');
@@ -241,7 +246,7 @@ test('table member pairs wrap using both boxes; positional comparisons stay leav
     }
 });
 
-test('def and self-table members split while abstract fields and function parameters do not', async () => {
+test('member values and parameter defaults split while abstract fields stay compact', async () => {
     const selfText = 'self^{ count:number^ = 0, # The multiset of digits used.\n }';
     const source = `def^{ ${selfText}, abstract^limit:number^, override^new = f^n = 1 { n }, op^= = f^a, b { a = b } }`;
     const n = nodesFor(source);
@@ -269,7 +274,10 @@ test('def and self-table members split while abstract fields and function parame
     ] });
     const reply = { source, root: definition };
     const graph = await new ELK().layout(toElk(reply));
-    const pairs = rows(graph).filter(n => n.lhat.kind === 'member-row');
+    const defaultStart = method.fields.params[0].start;
+    const defaultRow = rows(graph).find(n => n.lhat.kind === 'member-row' && n.lhat.start === defaultStart);
+    assertDefinition(defaultRow, source, ['n', '1']);
+    const pairs = rows(graph).filter(n => n.lhat.kind === 'member-row' && n.lhat.start !== defaultStart);
     assert.equal(pairs.length, 3, 'only explicit member values split');
     assertDefinition(pairs[0], source, ['count:number^', '0']);
     assert.equal(pairs[1].children[0].labels[0].text, 'override^new');
@@ -287,8 +295,9 @@ test('def and self-table members split while abstract fields and function parame
     assert.equal(foldedMethod.children[0].lhat.collapsed, undefined);
     assert.equal(foldedMethod.edges[0].definition, true);
     const methodView = toElk(reply, { root: method, collapse: true });
-    assert.equal(rows(methodView).length, 1, 'only the implicit return splits; parameter defaults remain in the signature');
-    assert.equal(rows(methodView)[0].lhat.kind, 'return-row');
+    assert.deepEqual(rows(methodView).map(row => row.lhat.kind).sort(), ['member-row', 'return-row']);
+    const inputs = flatten(methodView).find(node => node.lhat?.ioGroup === 'input');
+    assert(flatten(inputs).some(node => node.lhat?.kind === 'member-row' && node.lhat.start === defaultStart));
 });
 
 test('branch-free enclosing expressions expose nested member definitions', async () => {

@@ -15,6 +15,11 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
         if (box.lhat && !box.lhat.synthetic) {
             const key = `${box.lhat.start}:${box.lhat.end}`;
             boxes.set(key, [...boxes.get(key) ?? [], box]);
+            const owner = box.lhat.elementOwner;
+            if (owner) {
+                const alias = `${owner.start}:${owner.end}`;
+                boxes.set(alias, [...boxes.get(alias) ?? [], box]);
+            }
         }
         box.children?.forEach(index);
     };

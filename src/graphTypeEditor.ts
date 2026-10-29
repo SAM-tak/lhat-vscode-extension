@@ -47,7 +47,9 @@ export async function typeOptionsFromGraph(document: vscode.TextDocument, tree: 
         }, token);
         if (!unchanged() || (reply && normalizedGraphSource(reply.source) !== normalizedGraphSource(tree.source))) throw stale();
         if (reply) return { ...selection,
-            candidates: [...new Set(reply.candidates)].filter(text => typeof text === "string" && text.length > 0) };
+            candidates: [...new Set([...reply.candidates,
+                ...(site.parameter ? ["number^", "string^", "bool^", "nil^", "any^", "t^{}"] : []),
+            ])].filter(text => typeof text === "string" && text.length > 0) };
         if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 150 * (attempt + 1)));
     }
     throw new Error(vscode.l10n.t("Type candidates are unavailable at this location. Retry, or update the language server if this persists."));
