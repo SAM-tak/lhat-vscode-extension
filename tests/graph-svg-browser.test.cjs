@@ -2882,3 +2882,153 @@ test('native statement context disables and restores a UI-created enum through t
         });
     });
 });
+
+test('dispatch sample is reconstructed through nested branches, disabled declarations and named types', { timeout: 300000 }, async () => {
+    const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs');
+    const literals = load('webview/literals.ts'), syntax = load('graphSyntax.ts');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = fs.readFileSync(path.join(__dirname, '../testing/dispatch.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const blueprint = await parse(source), expected = normalizedAst(blueprint), host = await graphHost(parse, server);
+        const text = node => source.slice(node.start, node.end);
+        const original = name => blueprint.root.fields.items.find(n => n.kind === 'define' && text(n.fields.targets[0]) === name);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), items = () => host.tree.root.fields.items;
+            const declaration = name => items().find(n => n.kind === 'define' && host.tree.source.slice(n.fields.targets[0].start, n.fields.targets[0].end) === name);
+            const literal = async (node, value) => {
+                const current = literals.literalOf(node, host.tree.source);
+                if (current?.value !== value) await ui.input(`.box[data-source-start="${node.start}"] .literal-input`, value);
+            };
+            const rename = async (node, value) => {
+                if (host.tree.source.slice(node.start, node.end) !== value) await ui.input(`.name-input[data-reference-start="${node.start}"]`, value);
+            };
+            const unfold = async () => {
+                await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            };
+            const comments = async (owner, model) => {
+                for (const comment of [...model.comments ?? []].reverse()) {
+                    assert.equal(comment.block, false);
+                    await ui.add('comment', host.tree.root, owner());
+                    await ui.input(`.comment-box[data-source-start="${owner().comments[0].start}"] textarea`, text(comment).slice(1).trim());
+                }
+            };
+            const bodyItems = owner => owner().fields?.items ?? [];
+            const append = async (id, owner) => {
+                const index = bodyItems(owner).length;
+                await ui.add(id, owner());
+                assert.equal(bodyItems(owner).length, index + 1, `Append ${id} to ${owner().kind}\n${host.tree.source}`);
+                return index;
+            };
+            const expression = async (get, model) => {
+                if (['int', 'float', 'string'].includes(model.kind)) {
+                    const kind = model.kind === 'string' ? 'string' : 'number';
+                    if (get().kind !== model.kind && !(kind === 'number' && ['int', 'float'].includes(get().kind))) await ui.expression(get(), kind);
+                    await literal(get(), model.kind === 'string' ? literals.literalOf(model, source).value : text(model));
+                } else if (['ident', 'member', 'hat-ident'].includes(model.kind)) {
+                    const value = text(model), id = value === 'nil^' ? 'nil' : value === 'true^' ? 'true' : value === 'false^' ? 'false' : `reference:${value}`;
+                    await ui.expression(get(), id);
+                } else if (model.kind === 'binary') {
+                    await expression(get, model.fields.left); await ui.expression(get(), 'compare');
+                    const operator = syntax.syntaxTokens(source, model.fields.left.end, model.fields.right.start).find(t => !['(', ')'].includes(t.text)).text;
+                    await ui.operator(get(), operator); await expression(() => get().fields.right, model.fields.right);
+                } else if (model.kind === 'if-expr') {
+                    await ui.expression(get(), 'conditional');
+                    for (let i = 1; i < model.fields.items.filter(n => n.fields.condition).length; i++) await ui.structure(get(), 'branch');
+                    for (const [i, branch] of model.fields.items.entries()) {
+                        if (branch.fields.condition) await expression(() => get().fields.items[i].fields.condition, branch.fields.condition);
+                        await expression(() => get().fields.items[i].fields.body, branch.fields.body);
+                    }
+                } else if (model.kind === 'interp') {
+                    await ui.expression(get(), 'interpolation');
+                    const parts = model.fields.items;
+                    assert.equal(parts.length, 2);
+                    const selector = '.interpolation-field.text textarea';
+                    const index = await client.evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length - 1`);
+                    await ui.input(selector, load('graphInterpolation.ts').interpolationText(text(parts[0])), index);
+                    await expression(() => get().fields.items.find(n => n.kind === 'interp-hole').fields.value, parts[1].fields.value);
+                } else throw Error(`Unsupported dispatch expression ${model.kind}`);
+            };
+            const statements = async (owner, models) => {
+                for (const model of models) {
+                    if (model.kind === 'if-stmt') {
+                        const index = await append('if', owner), get = () => bodyItems(owner)[index];
+                        const branches = model.fields.items;
+                        for (let i = 1; i < branches.filter(n => n.fields.condition).length; i++) await ui.structure(get(), 'branch');
+                        if (branches.some(n => !n.fields.condition)) await ui.structure(get(), 'else');
+                        for (const [i, branch] of branches.entries()) {
+                            if (branch.fields.condition) await expression(() => get().fields.items[i].fields.condition, branch.fields.condition);
+                            await statements(() => get().fields.items[i].fields.body, branch.fields.body.fields.items ?? []);
+                        }
+                    } else if (model.kind === 'call-stmt') {
+                        const index = await append('call', owner), get = () => bodyItems(owner)[index].fields.value;
+                        await ui.expression(get().fields.target, `reference:${text(model.fields.value.fields.target)}`);
+                        const args = model.fields.value.fields.argument ?? [];
+                        while ((get().fields.argument?.length ?? 0) > args.length) await ui.remove(get().fields.argument.at(-1));
+                        while ((get().fields.argument?.length ?? 0) < args.length) await ui.addElement('default', get(), 'argument');
+                        for (const [i, argument] of args.entries()) await expression(() => get().fields.argument[i], argument);
+                    } else if (model.kind === 'return') {
+                        const index = await append('return', owner), get = () => bodyItems(owner)[index];
+                        while ((get().fields?.value?.length ?? 0) < model.fields.value.length) await ui.addElement('number', get(), 'value');
+                        for (const [i, value] of model.fields.value.entries()) await expression(() => get().fields.value[i], value);
+                    } else throw Error(`Unsupported dispatch statement ${model.kind}`);
+                }
+            };
+            const fn = async (name, before) => {
+                const model = original(name).fields.values[0], procedure = text(model).startsWith('p^');
+                await ui.add(procedure ? 'procedure' : 'function', host.tree.root, before?.());
+                const created = before ? items()[items().indexOf(before()) - 1] : items().at(-1);
+                await rename(created.fields.targets[0], name); await unfold();
+                const get = () => declaration(name).fields.values[0];
+                for (const parameter of model.fields.params ?? []) {
+                    await ui.addElement('parameter', get(), 'params');
+                    await rename(get().fields.params.at(-1).fields.name, text(parameter.fields.name));
+                    const type = parameter.fields.type; assert.equal(type.kind, 'type-name');
+                    await ui.typeStructure(get().fields.params.at(-1).fields.name, `type:name:${text(type)}`);
+                }
+                return get;
+            };
+            await ui.add('module'); await ui.input('.interpolation-field.module textarea', 'shop.dispatch');
+            await ui.add('enumeration'); await unfold();
+            let enumeration = () => host.tree.root.fields.items[1];
+            await rename(enumeration().fields.name, 'Method');
+            for (const [i, name] of ['GET', 'POST', 'PUT', 'DELETE'].entries()) {
+                if (i) await ui.addElement('enum', enumeration(), 'members');
+                await rename(enumeration().fields.members[i].fields.name, name);
+                await ui.structure(enumeration().fields.members[i], 'enum:explicit');
+                await ui.expression(enumeration().fields.members[i].fields.members[0], 'string');
+                await literal(enumeration().fields.members[i].fields.members[0], name);
+            }
+            await comments(enumeration, blueprint.root.fields.items[1]); await ui.toggleStatement(enumeration());
+            const definition = async name => {
+                await ui.add('tableDefinition'); await rename(items().at(-1).fields.targets[0], name);
+                await ui.structure(declaration(name), 'public'); await unfold();
+                const get = () => declaration(name).fields.values[0];
+                await ui.addElement('self', get()); return () => get().fields.items[0].fields.value;
+            };
+            const body = await definition('Body'); await ui.addElement('member', body()); await rename(body().fields.items[0].fields.key, 'total');
+            const request = await definition('Request');
+            for (const name of ['method', 'path', 'user', 'body']) {
+                await ui.addElement('member', request()); const index = request().fields.items.length - 1, member = () => request().fields.items[index];
+                await rename(member().fields.key, name); await ui.expression(member().fields.value, name === 'body' ? 'table' : 'string');
+                if (name === 'user') { await ui.type(member().fields.key, 'string^'); await ui.typeStructure(member().fields.key, 'type:nullable'); }
+                if (name === 'body') {
+                    await ui.addElement('member', member().fields.value); await rename(member().fields.value.fields.items[0].fields.key, 'total');
+                    await ui.type(member().fields.key, 't^{}'); await ui.typeStructure(member().fields.key, 'type:name:Body');
+                }
+            }
+            for (const name of ['render', 'addToCart', 'redirect', 'reject', 'notFound', 'charge', 'update', 'remove', 'methodNotAllowed']) await fn(name);
+            const before = () => declaration('Body');
+            const route = await fn('route', before); await statements(() => route().fields.body, original('route').fields.values[0].fields.body.fields.items);
+            await comments(() => declaration('route'), original('route'));
+            const grade = await fn('grade', before), gradeModel = original('grade').fields.values[0];
+            await expression(() => grade().fields.body.fields.items[0].fields.value[0], gradeModel.fields.body.fields.items[0].fields.value[0]);
+            await ui.structure(grade().fields.body.fields.items[0], 'return:implicit'); await ui.type(grade(), 'string^');
+            await comments(() => declaration('grade'), original('grade'));
+            const describe = await fn('describe', before); await ui.remove(describe().fields.body.fields.items[0]);
+            await statements(() => describe().fields.body, original('describe').fields.values[0].fields.body.fields.items);
+            await comments(() => declaration('Body'), original('Body'));
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
