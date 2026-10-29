@@ -12,6 +12,26 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('type tests and casts retain editable values, type syntax and operator conversions', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const lists = load('graphLists.ts'), structure = load('graphStructure.ts');
+    for (const template of ['fits', 'cast']) {
+        let tree = await parse('let^value=1');
+        const value = () => tree.root.fields.items[0].fields.values[0];
+        tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value(), template)));
+        assert.equal(value().kind, template === 'fits' ? 'binary' : 'as');
+        const annotation = () => value().fields.type ?? value().fields.right;
+        assert(!expressions.expressionSites(tree).some(s => s.start === annotation().start && s.end === annotation().end));
+        tree = await parse(apply(tree.source, structure.editStructure(tree, annotation(), 'type:name:string^')));
+        assert.equal(tree.source.slice(annotation().start, annotation().end), 'string^');
+        const site = lists.groupedOperatorSites(tree).find(s => s.owner.start === value().start && s.owner.end === value().end);
+        tree = await parse(apply(tree.source, lists.replaceOperatorEdit(tree, site, template === 'fits' ? 'as^' : 'fits^')));
+        assert.equal(value().kind, template === 'fits' ? 'as' : 'binary');
+        tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value(), 'nil')));
+        assert.equal(value().kind, 'hat-ident');
+        assert.equal(tree.source.slice(value().start, value().end), 'nil^');
+    }
+}));
+
 test('required index and focus lists retain their final element, while the last advance removes next too', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const deletion = load('graphDelete.ts');
     const indexed = await parse('let^items={1} let^value=items[0]'), argument = indexed.root.fields.items[1].fields.values[0].fields.argument[0];

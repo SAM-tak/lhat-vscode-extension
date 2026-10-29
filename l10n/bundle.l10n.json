@@ -356,6 +356,8 @@
     "Edit structure": "Edit structure",
     "Use implicit enumeration value": "Use implicit enumeration value",
     "Set enumeration value": "Set enumeration value",
+    "Check type compatibility": "Check type compatibility",
+    "Convert to a type": "Convert to a type",
     "Compare values": "Compare values",
     "Combine conditions": "Combine conditions",
     "Default a missing value": "Default a missing value",

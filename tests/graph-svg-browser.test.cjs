@@ -2867,6 +2867,34 @@ test('a typed variadic function is constructed through parameter, reference and 
     });
 });
 
+test('type tests and casts use editable type operands and preserve values across operator changes', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), value = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('let');
+            await ui.expression(value(), 'fits');
+            const annotation = () => value().fields.type ?? value().fields.right;
+            await ui.structure(annotation(), 'type:name:string^');
+            await ui.expression(value().fields.left, 'string');
+            await ui.operator(value(), 'as^');
+            assert.equal(value().kind, 'as');
+            assert.equal(value().fields.value.kind, 'string');
+            await ui.structure(annotation(), 'type:nullable');
+            assert.equal(annotation().kind, 'type-union');
+            await ui.operator(value(), 'fits^');
+            assert.equal(value().kind, 'binary');
+            assert.equal(annotation().kind, 'type-union');
+            await ui.expression(value(), 'cast');
+            assert.equal(value().kind, 'as');
+            await ui.expression(value(), 'nil');
+            assert.equal(value().kind, 'hat-ident');
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('postfix nil checks are created, displayed and edited through the live source', { timeout: 60000 }, async () => {
     const { graphHost, graphUi } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {

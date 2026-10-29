@@ -10,7 +10,7 @@ import { iteratorNames } from "./graphLoops";
 export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean; errorName?: boolean;
     owner?: SourceSpan; callArguments?: string[] }
 const kinds = new Set(["int", "float", "string", "bool", "nil", "ident", "hat-ident", "hole",
-    "binary", "unary", "call", "member", "index", "tuple", "table", "def", "self-table", "func", "interp", "if-expr", "try", "pack", "error-new", "require"]);
+    "binary", "unary", "as", "call", "member", "index", "tuple", "table", "def", "self-table", "func", "interp", "if-expr", "try", "pack", "error-new", "require"]);
 
 /** Declaration names, type syntax and member keys are not replaceable value expressions. */
 export function expressionSites(tree: AstReply): ExpressionSite[] {
@@ -124,6 +124,8 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         ["call", "Call this value", `(${current})(${(currentSite.callArguments ?? ["nil^"]).join(", ")})`],
         ["index", "Index this value", `(${current})[0]`],
         ["add", "Add to this value", `((${current}) + 0)`],
+        ["fits", "Check type compatibility", `((${current}) fits^ number^)`],
+        ["cast", "Convert to a type", `((${current}) as^ number^)`],
         ["compare", "Compare values", `((${current}) = 0)`],
         ["logical", "Combine conditions", `((${current}) and^ true^)`],
         ["fallback", "Default a missing value", `((${current}) ?? nil^)`],

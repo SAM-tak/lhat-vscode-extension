@@ -3,7 +3,7 @@ import { syntaxTokens, type SyntaxToken } from "../graphSyntax";
 import { literalOf } from "./literals";
 
 export type ExpressionCell = { operand: AstNode; inline: boolean } | { token: SyntaxToken; delimiter?: boolean };
-const operation = (node: AstNode) => ["binary", "unary", "compare-chain"].includes(node.kind);
+const operation = (node: AstNode) => ["binary", "unary", "as", "compare-chain"].includes(node.kind);
 /** The same literal/name rule is shared by operator operands and method Self. */
 export const isInlineValue = (node: AstNode, source: string): boolean =>
     !!literalOf(node, source) || ((["ident", "hat-ident", "bool", "bool-literal"].includes(node.kind) || dottedName(node, source)) &&
@@ -52,7 +52,7 @@ export function expressionCells(node: AstNode, source: string): ExpressionCell[]
             const cells = expressionCells(child, source);
             if (cells.length) return cells;
         }
-        return [{ operand: child, inline: !grouped && isInlineValue(child, source) }];
+        return [{ operand: child, inline: child.kind.startsWith("type-") || !grouped && isInlineValue(child, source) }];
     };
     if (node.kind === "member") {
         const target = one(node, "target"), key = one(node, "argument") ?? one(node, "key");
@@ -94,6 +94,7 @@ export function expressionCells(node: AstNode, source: string): ExpressionCell[]
         return [...prefix.map(token => ({ token })), ...operand(value), ...suffix.map(token => ({ token }))];
     }
     const values = node.kind === "compare-chain" ? node.fields?.operands
+        : node.kind === "as" ? [one(node, "value"), one(node, "type")].filter((value): value is AstNode => !!value)
         : [one(node, "left"), one(node, "right")].filter((value): value is AstNode => !!value);
     if (!Array.isArray(values) || values.length < 2) return [];
     const cells: ExpressionCell[] = [];

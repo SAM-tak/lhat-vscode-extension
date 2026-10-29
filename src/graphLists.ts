@@ -274,13 +274,14 @@ export function operatorSites(tree: AstReply): OperatorSite[] {
             const token = operand && syntaxTokens(tree.source, node.start, operand.start).find(t => ["-", "!", "bitnot^"].includes(t.text));
             if (token) sites.push({ ...token, owner: { start: node.start, end: node.end }, choices: ["-", "!", "bitnot^"] });
         }
-        const left = one(node, "left"), right = one(node, "right");
+        const left = one(node, node.kind === "as" ? "value" : "left"), right = one(node, node.kind === "as" ? "type" : "right");
         const operands = array(node.fields?.operands);
-        const pairs = left && right && node.kind === "binary" ? [[left, right]] : operands.slice(1).map((r, i) => [operands[i], r]);
+        const pairs = left && right && ["binary", "as"].includes(node.kind) ? [[left, right]] : operands.slice(1).map((r, i) => [operands[i], r]);
         for (const [a, b] of pairs) {
             const token = syntaxTokens(tree.source, a.end, b.start).find(t => !["(", ")"].includes(t.text));
             if (!token) continue;
-            const choices = numeric.includes(token.text) || token.text === ".." || token.text === "<=>" ? [...numeric, "..", "<=>"]
+            const choices = ["fits^", "as^"].includes(token.text) ? ["fits^", "as^"]
+                : numeric.includes(token.text) || token.text === ".." || token.text === "<=>" ? [...numeric, "..", "<=>"]
                 : comparison.includes(token.text) || ["==", "=/", "≠", "≤", "≥", "≦", "≧"].includes(token.text) ? comparison
                 : bitwise.includes(token.text) ? bitwise : products.includes(token.text) ? products
                 : ["??", "catch^"].includes(token.text) ? ["??", "catch^"]

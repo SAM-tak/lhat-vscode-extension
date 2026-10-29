@@ -1614,7 +1614,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 return built;
             }
         }
-        if (["binary", "compare-chain", "index"].includes(node.kind)) return operatorExpression(node, unfold, avail);
+        if (["binary", "as", "compare-chain", "index"].includes(node.kind)) return operatorExpression(node, unfold, avail);
         if (node.kind === "member" && !isInlineValue(node, source)) return operatorExpression(node, unfold, avail);
         if (node.kind === "unary" && literalOf(node, source) === undefined) {
             const value = field("value") ?? field("operand");
