@@ -85,7 +85,7 @@ function semanticTokens(source: string, root: AstNode,
         if (node.kind === "define") bindings.set(node.start, !!node.fields?.values);
         if (node.kind === "string") { protectedSpans.push(node); return; }
         if (["table-entry", "member-decl", "param", "enumdef", "enum-member", "errordef", "error-kind"].includes(node.kind)) {
-            const name = node.fields?.name ?? node.fields?.key;
+            const name = node.fields?.name ?? (node.computed ? undefined : node.fields?.key);
             // A method's explicit receiver is a language-provided binding,
             // not a user declaration shadowing every self^ in this file.
             if (!(node.kind === "param" && name && !Array.isArray(name) &&

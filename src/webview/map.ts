@@ -1705,11 +1705,20 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             declarationLabelEnd.set(node, declarationEnd);
             const key = node.kind === "table-entry" && node.computed ? field("key") : undefined;
             const literalKey = key && literalOf(key, source);
-            const declaration = isReturn ? returnNode(node) : literalKey ? leaf(key!, labelFor(key!, [])) : leaf(node, label);
+            const keySite = key && sites.find(site => site.start === key.start && site.end === key.end);
+            const keyLabel: DisplayLabel = { text: "", parts: [{ text: "", typeSite: keySite,
+                typeLabel: displayType(keySite?.typeText ?? "?", vocabulary, true) }] };
+            const declaration = isReturn ? returnNode(node) : key
+                ? literalKey ? leaf(key, labelFor(key, []))
+                    : container(nextId("computed-key"), keyLabel, "DOWN", [build(key, "expr", unfold, avail)], [], node)
+                : leaf(node, label);
+            if (key && !literalKey) {
+                declaration.layoutOptions!["elk.nodeSize.constraints"] = "MINIMUM_SIZE";
+                declaration.layoutOptions!["elk.nodeSize.minimum"] = `(${widthFor(keyLabel)}, 0)`;
+            }
             if (literalKey && key) {
-                const site = sites.find(site => site.start === key.start && site.end === key.end);
                 declaration.lhat = { ...declaration.lhat!, kind: node.kind, start: node.start, end: node.end,
-                    literalTypeSite: site, literalTypeLabel: displayType(site?.typeText ?? "?", vocabulary, true) };
+                    literalTypeSite: keySite, literalTypeLabel: displayType(keySite?.typeText ?? "?", vocabulary, true) };
             }
             const handleY = (declaration.height ?? px(LEAF_H)) / 2;
             declaration.lhat = {
@@ -1762,7 +1771,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             };
             // Wrapping tables can measure simple pairs without asking ELK;
             // complex values remain unknown and receive a row of their own.
-            if (value.width !== undefined) {
+            if (declaration.width !== undefined && value.width !== undefined) {
                 row.width = (declaration.width ?? 0) + gap + value.width;
             }
             row.layoutOptions!["elk.layered.spacing.nodeNodeBetweenLayers"] = `${gap}`;

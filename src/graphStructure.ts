@@ -136,12 +136,22 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         const key = one(node, "key");
         if (!key) return [];
         if (parent?.kind === "table") {
-            const close = node.computed && syntaxTokens(source, key.end, node.end)[0];
-            const end = close && close.text === "]" ? close.end : key.end;
+            let end = key.end;
+            if (node.computed) {
+                let depth = 0;
+                const close = head.find(token => {
+                    if (token.text === "[") depth++;
+                    if (token.text === "]") return --depth === 0;
+                    return false;
+                });
+                if (close) end = close.end;
+            }
             if (!node.computed) {
                 add("key:string", "Use string key", { start: key.start, end, text: `[${quoteString(source.slice(key.start, key.end))}]` });
                 add("key:number", "Use numeric key", { start: key.start, end, text: "[0]" });
             } else {
+                if (key.kind !== "string") add("key:string", "Use string key", { start: node.start, end, text: '[""]' });
+                if (literalOf(key, source)?.kind !== "number") add("key:number", "Use numeric key", { start: node.start, end, text: "[0]" });
                 const value = key.kind === "string" ? literalOf(key, source)?.value : undefined;
                 if (value && /^[\p{L}_][\p{L}\p{N}_]*$/u.test(value))
                     add("key:identifier", "Use identifier key", { start: node.start, end, text: value });

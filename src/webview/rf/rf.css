@@ -736,15 +736,15 @@ textarea.literal-input {
 .comment-link path { fill: none; stroke: var(--vscode-descriptionForeground); stroke-width: 1; stroke-dasharray: 4 3; }
 
 .expression-edit, .element-delete, .structure-edit {
-    position: absolute; right: 2px; bottom: 2px; z-index: 5;
     width: 16px; height: 16px; padding: 0; line-height: 14px;
     border: 1px solid var(--vscode-editorWidget-border, #555); border-radius: 3px;
     background: var(--vscode-editor-background); color: var(--vscode-editor-foreground);
-    cursor: pointer; opacity: 0;
+    cursor: pointer;
 }
-.box:hover > .expression-edit, .box:focus-within > .expression-edit, .element-delete, .structure-edit { opacity: 1; }
+.node-actions { position: absolute; right: 0; top: 100%; z-index: 8; display: flex; gap: 2px; opacity: 0; pointer-events: none; }
+.node-actions:empty { display: none; }
+.react-flow__node:hover > .node-actions, .react-flow__node:focus-within > .node-actions { opacity: 1; pointer-events: auto; }
 .section-delete { position: absolute; right: 10px; top: 2px; z-index: 5; display: flex; align-items: center; gap: 4px; font-size: calc(10px * var(--lhat-scale, 1)); pointer-events: auto; }
-.section-delete > .element-delete { position: static; }
 
 .source-text-field { display: flex; gap: 4px; align-items: center; min-width: 0; width: 100%; }
 .source-text-caption { white-space: nowrap; }

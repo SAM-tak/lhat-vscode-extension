@@ -1430,7 +1430,7 @@ test('expression menu changes a value reference and wraps it in a call without r
             await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(tree)},uri:'file:///svg-example.lh',version:${index + 2}},'*')`);
             await until(`document.querySelector('#app')?.dataset.graphVersion==='${index + 2}' && ${ready}`);
         }
-        assert.equal(await evaluate(`document.querySelector('.box[data-source-start="5"] .expression-edit')`), null);
+        assert.equal(await evaluate(`document.querySelector('.expression-edit[data-expression-start="5"][data-expression-end="10"]')`), null);
         assert.deepEqual(errors, []);
     });
 });
@@ -1457,7 +1457,7 @@ test('delete control removes a statement and the graph redraws as an empty edita
     mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', external: ['vscode'], write: false }).outputFiles[0].text, entry);
     await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async ({ evaluate, until, errors }) => {
         await until(`document.querySelector('.element-delete') && !document.querySelector('.svg-export>button').disabled`);
-        assert.equal(await evaluate(`document.querySelector('.literal-node .element-delete')`), null, 'a scalar value does not delete its enclosing statement');
+        assert.equal(await evaluate(`document.querySelector('.element-delete[data-delete-start="13"][data-delete-end="14"]')`), null, 'a scalar value does not delete its enclosing statement');
         await evaluate(`document.querySelector('.element-delete').click()`);
         await until(`window.edits.length===1`);
         const message = await evaluate(`window.edits[0]`);
@@ -1658,7 +1658,7 @@ test('expression picker builds qualified member references through the UI', { ti
         await browser({ ...routes, '/': { type: 'text/html', body: html(tree) } }, async ({ evaluate, until, call, errors }) => {
             for (const [index, name] of ['self^.count', 'Item.new', 'items.length^', 'values.0'].entries()) {
                 const value = tree.root.fields.items[0].fields.values[0];
-                const selector = `.box[data-source-start="${value.start}"][data-source-end="${value.end}"] > .expression-edit`;
+                const selector = `.expression-edit[data-expression-start="${value.start}"][data-expression-end="${value.end}"]`;
                 await until(`document.querySelector(${JSON.stringify(selector)}) && !document.querySelector('.svg-export>button').disabled`);
                 await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
                 await until(`document.querySelector('.statement-menu input')`);
@@ -1689,7 +1689,7 @@ test('expression constructors and error kind references remain editable through 
             for (const [index, [id, kind]] of steps.entries()) {
                 const value = tree.root.fields.items[0].fields.values[0];
                 const site = id.startsWith('reference:') ? mod.exports.expressionSites(tree).find(s => s.errorName) : value;
-                const selector = `.box[data-source-start="${site.start}"][data-source-end="${site.end}"] > .expression-edit`;
+                const selector = `.expression-edit[data-expression-start="${site.start}"][data-expression-end="${site.end}"]`;
                 await until(`document.querySelector(${JSON.stringify(selector)}) && !document.querySelector('.svg-export>button').disabled`);
                 await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
                 await until(`document.querySelector('.statement-menu input')`);
@@ -2902,6 +2902,101 @@ test('native statement context disables and restores a UI-created enum through t
             assert.equal(host.tree.root.fields.items[0].kind, 'disabled');
             await ui.toggleStatement(host.tree.root.fields.items[0]);
             assert.deepEqual(normalizedAst(host.tree), original);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('edit controls remain separate from each other and literal inputs during real pointer interaction', { timeout: 60000 }, async () => {
+    const { graphHost } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'let^mapping={[0]=10}');
+        const entry = host.tree.root.fields.items[0].fields.values[0].fields.items[0], key = entry.fields.key;
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            await client.until(`document.querySelector('.svg-export>button') && !document.querySelector('.svg-export>button').disabled`);
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            const selectors = [`.structure-edit[data-structure-start="${entry.start}"][data-structure-end="${entry.end}"]`,
+                `.element-delete[data-delete-start="${entry.start}"][data-delete-end="${entry.end}"]`,
+                `.expression-edit[data-expression-start="${key.start}"][data-expression-end="${key.end}"]`];
+            await client.until(`document.querySelector(${JSON.stringify(selectors[2])}) && !document.querySelector('.svg-export>button').disabled`);
+            const box = await client.evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selectors[2])}).closest('.react-flow__node').querySelector('.box').getBoundingClientRect();return {x:r.left+4,y:r.top+4}})()`);
+            await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...box });
+            const hit = selector => `(()=>{const e=document.querySelector(${JSON.stringify(selector)}),r=e.getBoundingClientRect();return document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)?.closest('button')===e})()`;
+            for (const selector of selectors) await client.until(hit(selector));
+            assert.equal(await client.evaluate(`(()=>{const input=document.querySelector(${JSON.stringify(selectors[2])}).closest('.react-flow__node').querySelector('.literal-input'),r=input.getBoundingClientRect();return document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===input})()`), true);
+            const click = async selector => {
+                const point = await client.evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()`);
+                await client.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+                await client.call('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point });
+                await client.call('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point });
+            };
+            for (const selector of [selectors[0], selectors[2]]) {
+                await click(selector); await client.until(`document.querySelector('.statement-menu [role=option]')`);
+                await client.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+                await client.call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+                await client.until(`!document.querySelector('.statement-menu')`);
+            }
+            await click(selectors[1]); await client.until('window.edits.length===1');
+            const message = await client.evaluate('window.edits[0]');
+            assert.equal(message.type, 'deleteElement');
+            assert.equal(message.site.start, entry.start);
+            await host.edit(message);
+            assert.equal(host.tree.root.fields.items[0].fields.values[0].fields?.items?.length ?? 0, 0);
+            await client.evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(host.tree)},uri:'file:///svg-example.lh',version:${host.version}},'*')`);
+            await client.until(`document.querySelector('#app')?.dataset.graphVersion==='${host.version}' && !document.querySelector('.svg-export>button').disabled`);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('call-result bindings can be discarded and named again without shifting later results', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'let^pair=f^{(10,"two",30)}\nlet^first,second,third=pair()');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), binding = () => host.tree.root.fields.items[1];
+            await ui.remove(binding().fields.targets[1]);
+            assert.equal(host.tree.source.slice(binding().fields.targets[1].start, binding().fields.targets[1].end), '_^');
+            await ui.input(`.name-input[data-reference-start="${binding().fields.targets[1].start}"]`, 'middle');
+            await ui.remove(binding().fields.targets[0]);
+            const expected = await parse('let^pair=f^{(10,"two",30)}\nlet^_^,middle,third=pair()');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(expected));
+            assert.equal(binding().fields.targets[2].inferredType, 'number^');
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('computed table keys build references, arithmetic and calls while preserving values and ownership', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'let^base=4\nlet^make=f^x:number^{x}\nlet^mapping={name="hi",other=20}');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), table = () => host.tree.root.fields.items[2].fields.values[0], member = () => table().fields.items[0];
+            await client.until(`document.querySelector('.svg-export>button') && !document.querySelector('.svg-export>button').disabled`);
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.structure(member(), 'key:number');
+            await ui.expression(member().fields.key, 'reference:base');
+            await ui.expression(member().fields.key, 'add');
+            await ui.input(`.box[data-source-start="${member().fields.key.fields.right.start}"] .literal-input`, '1');
+            assert.equal(member().fields.key.kind, 'binary');
+            assert.equal(host.tree.source.slice(member().fields.value.start, member().fields.value.end), '"hi"');
+            await ui.expression(member().fields.key, 'reference:make');
+            await ui.expression(member().fields.key, 'call');
+            await ui.expression(member().fields.key.fields.argument[0], 'reference:base');
+            assert.equal(member().fields.key.kind, 'call');
+            await ui.type(member().fields.key, 'string^');
+            assert.equal(host.tree.source.slice(member().fields.type.start, member().fields.type.end), 'string^');
+            await ui.type(member().fields.key, undefined);
+            assert(!member().fields.type);
+            await ui.structure(member(), 'key:string');
+            await ui.input(`.box[data-source-start="${member().start}"] .literal-input`, 'field');
+            await ui.structure(member(), 'key:identifier');
+            const expected = await parse('let^base=4\nlet^make=f^x:number^{x}\nlet^mapping={field="hi",other=20}');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(expected));
+            await ui.remove(member());
+            assert.equal(table().fields.items.length, 1);
+            assert.equal(host.tree.source.slice(table().fields.items[0].fields.key.start, table().fields.items[0].fields.key.end), 'other');
             assert.deepEqual(client.errors, []);
         });
     });

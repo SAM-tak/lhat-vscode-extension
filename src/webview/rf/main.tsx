@@ -1088,12 +1088,6 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                 {data.reorder !== undefined && <ReorderHandle site={data.reorder} label={data.label}
                     onDrop={data.onReorder} />}
                 {foldButton}
-                {!data.disabled && !data.operator && !data.ioGroup && <StructureButton start={data.start} end={data.sourceEnd}
-                    declaration={data.definitionRole === "declaration" ? data.statement : undefined} />}
-                {!data.operator && !data.ioGroup && <DeleteButton start={data.start} end={data.sourceEnd}
-                    owner={data.elementOwner}
-                    declaration={data.definitionRole === "declaration" ? data.statement : undefined} />}
-                {!data.disabled && !data.operator && !data.ioGroup && <ExpressionButton start={data.start} end={data.sourceEnd} />}
                 {data.isRangeArrow ? (
                     <svg className="range-arrow-icon" viewBox="0 0 40 30" aria-label="Range" role="img">
                         <path d="M 5 15 H 34 M 27 9 L 34 15 L 27 21" />
@@ -1137,6 +1131,15 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                         data-reference-start={part.symbol?.start} data-reference-end={part.symbol?.end}
                         title={part.source}>{part.text}</span>) ?? data.label}</span></div>}
                 {data.foldedSummary !== undefined && <div className="fold-summary">{data.foldedSummary}</div>}
+            </div>}
+            {!data.layoutOnly && !data.operator && !data.ioGroup && <div className="node-actions">
+                {!data.disabled && <StructureButton start={data.start} end={data.sourceEnd}
+                    declaration={data.definitionRole === "declaration" ? data.statement : undefined} />}
+                <DeleteButton start={data.start} end={data.sourceEnd} owner={data.elementOwner}
+                    declaration={data.definitionRole === "declaration" ? data.statement : undefined} />
+                {!data.disabled && <ExpressionButton
+                    start={data.literal ? data.drillTarget?.start ?? data.start : data.start}
+                    end={data.literal ? data.drillTarget?.end ?? data.sourceEnd : data.sourceEnd} />}
             </div>}
             {data.interpolationFormat && <div className="interpolation-format-header"><InterpolationInput field={data.interpolationFormat} /></div>}
             {/* Execution ports counter the box's horizontal slide, keeping

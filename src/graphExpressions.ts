@@ -49,7 +49,8 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
                     sites.push({ kind: child.kind, start: child.start, end: child.end, errorName: true });
                 continue;
             }
-            const declaration = ["name", "key", "type", "return_type", "annotations"].includes(field)
+            const declaration = ["name", "type", "return_type", "annotations"].includes(field)
+                || field === "key" && !(node.kind === "table-entry" && node.computed)
                 || node.kind === "define" && field === "targets"
                 || node.kind === "func" && field === "params";
             for (const child of Array.isArray(children) ? children : [children]) {

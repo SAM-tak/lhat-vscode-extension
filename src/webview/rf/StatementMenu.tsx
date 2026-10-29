@@ -225,6 +225,7 @@ export function ExpressionButton({ start, end }: { start?: number; end?: number 
         ?? actions.expressions.find(site => site.owner && site.owner.start === start && site.owner.end === end);
     if (!site) return null;
     return <button type="button" className="expression-edit nodrag nopan nokey" title={l10n.t("Change expression")}
+        data-expression-start={site.start} data-expression-end={site.end}
         aria-label={l10n.t("Change expression")} disabled={actions.version === undefined}
         onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
         onClick={event => { event.stopPropagation(); actions.expression(site, event.currentTarget); }}>✎</button>;
@@ -238,6 +239,7 @@ export function DeleteButton({ start, end, declaration, owner }: { start?: numbe
         ?? (declaration && actions.deletions.find(site => site.category === "statement" && site.start === declaration.start && site.end === declaration.end));
     if (!site) return null;
     return <button type="button" className="element-delete nodrag nopan nokey" title={l10n.t("Delete element")}
+        data-delete-start={site.start} data-delete-end={site.end}
         aria-label={l10n.t("Delete element")} disabled={actions.version === undefined}
         onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
         onClick={event => { event.stopPropagation(); actions.remove(site); }}>×</button>;
@@ -251,6 +253,7 @@ export function StructureButton({ start, end, declaration }: { start?: number; e
         ?? (declaration && actions.structures.find(site => site.start === declaration.start && site.end === declaration.end));
     if (!site) return null;
     return <button type="button" className="structure-edit nodrag nopan nokey" title={l10n.t("Edit structure")}
+        data-structure-start={site.start} data-structure-end={site.end}
         aria-label={l10n.t("Edit structure")} disabled={actions.version === undefined}
         onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
         onClick={event => { event.stopPropagation(); actions.structure(site, event.currentTarget); }}>⋯</button>;

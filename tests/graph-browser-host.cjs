@@ -186,12 +186,12 @@ async function graphUi(host, { evaluate, until, call }) {
         async expression(node, id) {
             const site = expressions.expressionSites(host.tree).find(s => s.kind === node.kind && s.start === node.start && s.end === node.end);
             assert(site, `Expression site for ${node.kind}`);
-            await choose(`.box[data-source-start="${node.start}"][data-source-end="${node.end}"] > .expression-edit`, expressions.expressionTemplates(host.tree, site), id);
+            await choose(`.expression-edit[data-expression-start="${node.start}"][data-expression-end="${node.end}"]`, expressions.expressionTemplates(host.tree, site), id);
         },
         async initializers(owner, id) {
             const site = expressions.expressionSites(host.tree).find(s => s.kind === 'initializers' && s.owner.start === owner.start && s.owner.end === owner.end);
             assert(site);
-            await choose(`.box[data-source-start="${owner.start}"][data-source-end="${owner.end}"] > .expression-edit`, expressions.expressionTemplates(host.tree, site), id);
+            await choose(`.expression-edit[data-expression-start="${site.start}"][data-expression-end="${site.end}"]`, expressions.expressionTemplates(host.tree, site), id);
         },
         async addElement(id, owner, field = 'items') {
             const site = lists.listInsertions(host.tree).find(s => s.kind === owner.kind && s.start === owner.start && s.end === owner.end && s.field === field && s.before === undefined);
@@ -199,7 +199,7 @@ async function graphUi(host, { evaluate, until, call }) {
             await choose(`[data-insertion-site=${JSON.stringify(JSON.stringify(site))}]`, lists.listTemplates(host.tree, site), id);
         },
         async structure(node, id) {
-            await choose(`.box[data-source-start="${node.start}"] > .structure-edit`, structures.structureTemplates(host.tree, node), id);
+            await choose(`.structure-edit[data-structure-start="${node.start}"][data-structure-end="${node.end}"]`, structures.structureTemplates(host.tree, node), id);
         },
         async interpolationPart(node, id) {
             await choose(`[data-id^="interpolation-add-"] .box[data-source-start="${node.start}"][data-source-end="${node.end}"] .statement-button`,
@@ -216,7 +216,7 @@ async function graphUi(host, { evaluate, until, call }) {
             await accept();
         },
         async remove(node) {
-            const selector = `.box[data-source-start="${node.start}"] > .element-delete, .section-delete[data-source-start="${node.start}"][data-source-end="${node.end}"] > .element-delete`;
+            const selector = `.element-delete[data-delete-start="${node.start}"][data-delete-end="${node.end}"]`;
             await until(`document.querySelector(${JSON.stringify(selector)}) && ${ready}`);
             await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
             await accept();

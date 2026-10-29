@@ -12,6 +12,70 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('required index and focus lists retain their final element, while the last advance removes next too', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const deletion = load('graphDelete.ts');
+    const indexed = await parse('let^items={1} let^value=items[0]'), argument = indexed.root.fields.items[1].fields.values[0].fields.argument[0];
+    assert.equal(deletion.deleteFromGraph(indexed, { ...argument, category: 'element' }), undefined);
+    const tree = await parse('for^var^i=0 while^i<2 next^i+=1 {print(i)}'), loop = tree.root.fields.items[0];
+    assert.equal(deletion.deleteFromGraph(tree, { ...loop.fields.focus[0], category: 'element' }), undefined);
+    const result = await parse(apply(tree.source, deletion.deleteFromGraph(tree, { ...loop.fields.advance[0], category: 'element' })));
+    assert(!result.source.includes('next^'));
+    assert(!result.root.fields.items[0].fields.advance);
+    assert.equal(result.root.fields.items[0].fields.focus.length, 1);
+    assert.equal(result.root.fields.items[0].fields.body.fields.items.length, 1);
+}));
+
+test('deleting call-result bindings keeps each output position and the single initializer evaluation', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const deletion = load('graphDelete.ts');
+    const prefix = 'let^pair=f^{(10,"two",30)}\n';
+    for (const declaration of ['let^a,b,c=pair()', 'var^a:number^,b:string^,c:number^=pair()',
+        'var^a=0 var^b="" var^c=0 a,b,c:=pair()']) {
+        let tree = await parse(prefix + declaration);
+        const statement = () => tree.root.fields.items.at(-1), original = tree.source;
+        const values = statement().fields.values.map(n => tree.source.slice(n.start, n.end));
+        for (const i of [1, 0, 2]) {
+            const target = statement().fields.targets[i];
+            const site = deletion.deleteSites(tree).find(s => s.category === 'element' && s.start === target.start && s.end === target.end);
+            assert(site, original);
+            tree = await parse(apply(tree.source, deletion.deleteFromGraph(tree, site)));
+            assert.equal(statement().fields.targets.length, 3);
+            assert.equal(tree.source.slice(statement().fields.targets[i].start, statement().fields.targets[i].end), '_^');
+            assert.deepEqual(statement().fields.values.map(n => tree.source.slice(n.start, n.end)), values);
+            assert.equal((tree.source.match(/pair\(/g) ?? []).length, 1);
+            assert.equal(deletion.deleteFromGraph(tree, site), undefined);
+        }
+    }
+}));
+
+test('compound assignment deletion removes the paired RHS even when it calls a function', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const deletion = load('graphDelete.ts');
+    for (const operator of ['+=', '?+=', '*=']) {
+        const tree = await parse(`let^read=f^{1}\nvar^a,b=0,0\na,b ${operator} read(),2`), assignment = tree.root.fields.items.at(-1);
+        const target = assignment.fields.targets[0];
+        const result = await parse(apply(tree.source, deletion.deleteFromGraph(tree, { ...target, category: 'element' })));
+        assert(result.source.endsWith(`b ${operator} 2`), result.source);
+        assert.equal(result.root.fields.items.at(-1).fields.targets.length, 1);
+    }
+}));
+
+test('computed table keys expose full expression editing and grouped-key conversion preserves neighbors', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structures = load('graphStructure.ts');
+    let tree = await parse('let^base=4 let^mapping={[0]=10,other=20}');
+    const entry = () => tree.root.fields.items[1].fields.values[0].fields.items[0];
+    const key = () => entry().fields.key;
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, { ...key() }, 'reference:base')));
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, { ...key() }, 'add')));
+    assert.equal(key().kind, 'binary');
+    assert.equal(tree.source.slice(entry().fields.value.start, entry().fields.value.end), '10');
+    const grouped = await parse('let^mapping={[("field")]=10,other=20}'), member = grouped.root.fields.items[0].fields.values[0].fields.items[0];
+    const converted = await parse(apply(grouped.source, structures.editStructure(grouped, member, 'key:identifier')));
+    assert(converted.source.includes('field=10,other=20'), converted.source);
+    assert.equal(converted.root.fields.items[0].fields.values[0].fields.items.length, 2);
+    const named = await parse('let^mapping={field=10}');
+    const namedKey = named.root.fields.items[0].fields.values[0].fields.items[0].fields.key;
+    assert(!expressions.expressionSites(named).some(s => s.start === namedKey.start && s.end === namedKey.end));
+}));
+
 test('branch and loop-section deletion reuses structural edits and preserves the remaining source structure', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const { structuralDeletions, deleteFromGraph, deleteSites } = load('graphDelete.ts');
     const { normalizedAst } = require('./graph-browser-host.cjs');
@@ -543,7 +607,9 @@ test('parallel binding deletion removes the matching target and written value to
         }
     }
     const call = await parse('let^f=f^{(1,2)}\nlet^a,b=f()');
-    assert(!deletion.deleteSites(call).some(s => s.category === 'element' && s.start === call.root.fields.items[1].fields.targets[0].start));
+    const target = call.root.fields.items[1].fields.targets[0];
+    const discarded = await parse(apply(call.source, deletion.deleteFromGraph(call, { ...target, category: 'element' })));
+    assert.equal(discarded.source, 'let^f=f^{(1,2)}\nlet^_^,b=f()');
 }));
 
 test('deleting grouped list items preserves neighboring written groups and comment text', { timeout: 30000 }, async () => withLhatServer(async parse => {
