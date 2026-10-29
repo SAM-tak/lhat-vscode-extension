@@ -368,6 +368,8 @@
     "Remove default value": "既定値を削除",
     "Add default value": "既定値を追加",
     "Receiver parameter": "レシーバー引数",
+    "Variadic parameter": "可変長引数",
+    "Check for a non-nil value": "nil でないか確認",
     "Constructor member": "コンストラクター",
     "Use string key": "文字列キーにする",
     "Use numeric key": "数値キーにする",

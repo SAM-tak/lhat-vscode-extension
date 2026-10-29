@@ -12,6 +12,25 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('variadic parameters can be appended once and their values remain referenceable and indexable', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const lists = load('graphLists.ts');
+    let tree = await parse('let^first=f^head:number^{return^0}');
+    const site = lists.listInsertions(tree).find(s => s.kind === 'func' && s.field === 'params' && s.before === undefined);
+    assert(lists.listTemplates(tree, site).some(t => t.id === 'variadic'));
+    tree = await parse(apply(tree.source, lists.insertListEdit(tree, site, 'variadic')));
+    const fn = tree.root.fields.items[0].fields.values[0];
+    assert.equal(fn.fields.params.length, 2);
+    assert.equal(tree.source.slice(fn.fields.params[1].start, fn.fields.params[1].end), '...: any^');
+    assert(!lists.listInsertions(tree).some(s => s.kind === 'func' && s.field === 'params' && s.before === undefined));
+    assert.equal(lists.insertListEdit(tree, { ...site, end: fn.end }, 'parameter'), undefined);
+    const value = expressions.expressionSites(tree).find(s => s.kind === 'int');
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value, 'reference:...')));
+    const spread = expressions.expressionSites(tree).find(s => s.kind === 'hat-ident');
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, spread, 'index')));
+    assert(flat(tree.root).some(n => n.kind === 'index'));
+    assert(!flat(tree.root).some(n => n.kind === 'error'));
+}));
+
 test('postfix nil checks retain their written operator and editable operand after reanalysis', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const { expressionCells } = load('webview/operatorExpression.ts');
     for (const value of ['nil^', '1', 'value', 'items[0]', 'read()']) {

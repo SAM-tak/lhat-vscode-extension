@@ -110,6 +110,8 @@ export function listInsertions(tree: AstReply): ListInsertion[] {
 }
 
 function editableList(list: CommaList, site: ListInsertion, lists: CommaList[], source: string): boolean {
+    if (list.node.kind === "func" && list.field === "params" && site.before === undefined &&
+        list.items.some(item => syntaxTokens(source, item.start, item.end)[0]?.text === "...")) return false;
     if (list.node.kind === "for" && list.field === "focus" && iteratorNames(list.node, source).length) return false;
     if (["define", "reassign"].includes(list.node.kind)) return list.field === "targets" && canInsertBinding(list.node, source);
     if (list.node.kind === "tuple" && lists.some(parent => (parent.node.kind === "define" ||
@@ -138,7 +140,7 @@ export const LIST_TEMPLATE_LABELS = {
     typeMember: "Typed member", name: "Variable", enum: "Enumeration member", error: "Error kind", any: "Any type",
     binding: "Variable binding", default: "Default argument", self: "Self table", operator: "Operator member",
     abstract: "Abstract member",
-    receiver: "Receiver parameter", constructor: "Constructor member",
+    receiver: "Receiver parameter", constructor: "Constructor member", variadic: "Variadic parameter",
 } as const;
 
 export function listTemplates(tree: AstReply, site: ListInsertion): StatementTemplate[] {
@@ -167,6 +169,7 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
         };
         scope(tree.root);
         return [choice("parameter", `${name("value")}: any^`),
+            ...(list.node.kind === "func" && site.before === undefined ? [choice("variadic", "...: any^")] : []),
             ...(list.node.kind === "func" && inDefinition && !list.items.some(param => {
                 const key = one(param, "name"); return key && sourceText(key) === "self^";
             }) ? [choice("receiver", "self^")] : [])];

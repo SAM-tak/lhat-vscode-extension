@@ -63,7 +63,7 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
 }
 
 export const validMember = (text: string) => /^(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+)$/u.test(text);
-export const validReference = (text: string) => /^(?:[\p{L}_][\p{L}\p{N}_]*|self\^|it\^)(?:\.(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+))*$/u.test(text);
+export const validReference = (text: string) => text === "..." || /^(?:[\p{L}_][\p{L}\p{N}_]*|self\^|it\^)(?:\.(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+))*$/u.test(text);
 export const validExpressionReference = (site: ExpressionSite, text: string) => site.errorName
     ? /^[\p{L}_][\p{L}\p{N}_]*(?:\.[\p{L}_][\p{L}\p{N}_]*)*$/u.test(text)
     : (site.memberKey ? validMember : validReference)(text);
@@ -141,5 +141,6 @@ export function replaceExpression(tree: AstReply, site: ExpressionSite, template
     const currentSite = expressionSites(tree).find(s => s.kind === site.kind && s.start === site.start && s.end === site.end)!;
     const text = name !== undefined && validExpressionReference(currentSite, name) ? name : choices.find(c => c.id === template)?.text;
     const span = replacementSpan(tree.source, currentSite);
-    return text === undefined || !span ? undefined : { ...span, text };
+    // Bare ellipsis after return^ is parsed as a separate statement.
+    return text === undefined || !span ? undefined : { ...span, text: text === "..." ? "(...)" : text };
 }

@@ -2843,6 +2843,30 @@ test('focused conditional statements are created with one editable predicate and
     });
 });
 
+test('a typed variadic function is constructed through parameter, reference and index controls', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^first=f^...:number^{...[0]}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), declaration = () => host.tree.root.fields.items[0];
+            const fn = () => declaration().fields.values[0], returned = () => fn().fields.body.fields.items[0];
+            await ui.add('function');
+            await ui.input(`.name-input[data-reference-start="${declaration().fields.targets[0].start}"]`, 'first');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            await ui.addElement('variadic', fn(), 'params');
+            await ui.typeStructure(fn().fields.params[0].fields.type, 'type:name:number^');
+            assert(returned()?.fields?.value?.length, host.tree.source);
+            await ui.expression(returned().fields.value[0], 'reference:...');
+            await ui.expression(returned().fields.value[0], 'index');
+            await ui.structure(returned(), 'return:implicit');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('postfix nil checks are created, displayed and edited through the live source', { timeout: 60000 }, async () => {
     const { graphHost, graphUi } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {

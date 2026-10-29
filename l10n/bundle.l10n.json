@@ -368,6 +368,8 @@
     "Remove default value": "Remove default value",
     "Add default value": "Add default value",
     "Receiver parameter": "Receiver parameter",
+    "Variadic parameter": "Variadic parameter",
+    "Check for a non-nil value": "Check for a non-nil value",
     "Constructor member": "Constructor member",
     "Use string key": "Use string key",
     "Use numeric key": "Use numeric key",
