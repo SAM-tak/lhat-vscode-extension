@@ -140,6 +140,7 @@ export const LIST_TEMPLATE_LABELS = {
     typeMember: "Typed member", name: "Variable", enum: "Enumeration member", error: "Error kind", any: "Any type",
     binding: "Variable binding", default: "Default argument", self: "Self table", operator: "Operator member",
     abstract: "Abstract member",
+    typePattern: "Type pattern", rangePattern: "Range pattern",
     receiver: "Receiver parameter", constructor: "Constructor member", variadic: "Variadic parameter",
 } as const;
 
@@ -183,6 +184,7 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
     }
     const values = [choice("number", "0"), choice("string", '""'), choice("boolean", "false^"), choice("nil", "nil^"),
         choice("table", "{}"), choice("function", "f^{ return^ 0 }"), choice("procedure", "p^{}")];
+    if (list.node.kind === "pattern-list") return [...values, choice("typePattern", "fits^number^"), choice("rangePattern", "0 to^1")];
     if (list.mode === "member") {
         const member = choice("member", `${name("value")} = 0`);
         if (list.node.kind === "def") return [member, choice("typeMember", `${name("value")}: number^`),

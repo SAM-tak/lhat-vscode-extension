@@ -1521,6 +1521,11 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                        unfold: boolean, avail: number): ElkNode {
         const iteratorName = iteratorFocus.get(node) ?? (iteratorBindings.has(node) ? node : undefined);
         if (iteratorName) return leaf({ ...node, kind: "iterator-name" }, labelFor(iteratorName, []));
+        if (node.kind === "pattern-type") {
+            const type = node.fields!.type as AstNode;
+            const marker = { ...node, kind: "operator", end: node.start + 5, fields: undefined };
+            return inlineBox(node, [leaf(marker, makeLabel(marker, [], MAX_LABEL)), build(type, "expr", unfold, avail)]);
+        }
         if (node.kind === "pattern-range") {
             const lower = node.fields!.lower as AstNode, upper = node.fields!.upper as AstNode;
             const token = syntaxTokens(source, lower.end, upper.start).find(t => ["to^", "downto^"].includes(t.text))!;

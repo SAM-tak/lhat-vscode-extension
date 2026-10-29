@@ -2772,6 +2772,76 @@ test('real pattern alternatives show only written values and support deletion fo
     });
 });
 
+test('type patterns expose editable type structure and table member declarations through the live UI', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs'), patterns = load('graphPatterns.ts');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('for^nil^{when^fits^t^{item:string^}: other^:}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), match = () => host.tree.root.fields.items[0];
+            const pattern = () => patterns.patternLists(host.tree)[0].items[0], type = () => pattern().fields.type;
+            await ui.add('match');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            await ui.structure(match(), 'pattern:0:type');
+            await ui.structure(type(), 'type:name:t^{}');
+            await ui.addElement('typeMember', type());
+            const key = () => type().fields.items[0].fields.key;
+            await ui.input(`.name-input[data-reference-start="${key().start}"]`, 'item');
+            await ui.typeStructure(key(), 'type:name:string^');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.remove(type().fields.items[0]);
+            assert.equal(type().fields?.items?.length ?? 0, 0);
+            await ui.structure(type(), 'type:name:number^');
+            await ui.structure(type(), 'type:nullable');
+            assert.equal(type().kind, 'type-union');
+            await ui.structure(match(), 'pattern:0:range');
+            assert.equal(pattern().kind, 'pattern-range');
+            const alternatives = () => patterns.patternLists(host.tree)[0];
+            await ui.addElement('typePattern', alternatives().node);
+            await ui.addElement('rangePattern', alternatives().node);
+            assert.deepEqual(alternatives().items.map(n => n.kind), ['pattern-range', 'pattern-type', 'pattern-range']);
+            await ui.structure(alternatives().items[1].fields.type, 'type:name:string^');
+            await ui.remove(alternatives().items[0]);
+            assert.deepEqual(alternatives().items.map(n => n.kind), ['pattern-type', 'pattern-range']);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('nested table patterns are built, edited and deleted with shared expression and list controls', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs'), patterns = load('graphPatterns.ts');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('for^nil^{when^{child={key=2}}: other^:}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), list = () => patterns.patternLists(host.tree)[0];
+            const table = () => list().items[0], entry = () => table().fields.items[0];
+            await ui.add('match');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            await ui.expression(table(), 'table');
+            await ui.addElement('member', table());
+            await ui.input(`.name-input[data-reference-start="${entry().fields.key.start}"]`, 'child');
+            await ui.expression(entry().fields.value, 'table');
+            await ui.addElement('member', entry().fields.value);
+            const nested = () => entry().fields.value.fields.items[0];
+            await ui.input(`.name-input[data-reference-start="${nested().fields.key.start}"]`, 'key');
+            await ui.input(`.box[data-source-start="${nested().fields.value.start}"] .literal-input`, '2');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.remove(nested());
+            assert.equal(entry().fields.value.fields?.items?.length ?? 0, 0);
+            await ui.addElement('number', entry().fields.value);
+            assert.equal(entry().fields.value.fields.items.length, 1);
+            await ui.addElement('number', list().node);
+            await ui.remove(table());
+            assert.equal(list().items.length, 1);
+            assert.equal(list().items[0].kind, 'int');
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('type labels construct named, sequence and nullable types through the live source', { timeout: 90000 }, async () => {
     const { graphHost, graphUi } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {

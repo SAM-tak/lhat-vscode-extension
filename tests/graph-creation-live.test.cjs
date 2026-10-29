@@ -12,6 +12,21 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('type patterns retain their real type nodes for structure and list editing without value-expression controls', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const patterns = load('graphPatterns.ts'), lists = load('graphLists.ts'), structure = load('graphStructure.ts');
+    let tree = await parse('for^nil^{when^fits^number^:print(1) other^:print(2)}');
+    const pattern = () => patterns.patternLists(tree)[0].items[0], type = () => pattern().fields.type;
+    tree = await parse(apply(tree.source, structure.editStructure(tree, type(), 'type:name:t^{}')));
+    assert.equal(type().kind, 'type-table');
+    const insertion = lists.listInsertions(tree).find(s => s.start === type().start && s.kind === 'type-table');
+    assert(insertion);
+    tree = await parse(apply(tree.source, lists.insertListEdit(tree, insertion, 'typeMember')));
+    assert.equal(type().fields.items.length, 1);
+    assert(!expressions.expressionSites(tree).some(s => s.start >= type().start && s.end <= type().end));
+    assert.equal(lists.operatorSites(tree).length, 0);
+    assert(tree.source.includes('print(1)') && tree.source.includes('print(2)'));
+}));
+
 test('local expression scopes and shared for drivers preserve their inner source and avoid name capture', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const loops = load('graphLoops.ts'), structure = load('graphStructure.ts');
     let tree = await parse('let^local=7 let^answer=local');

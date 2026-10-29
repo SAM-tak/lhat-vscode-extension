@@ -54,7 +54,9 @@ export function patternLists(tree: AstReply): WrittenPatternList[] {
             lower: value(condition, { start: span.start, end: range.start }),
             upper: value(condition, { start: range.end, end: span.end }),
         } };
-        if (tokens[0].text === "fits^") return { ...condition, ...span, kind: "pattern-type", fields: undefined };
+        if (tokens[0].text === "fits^") return { ...condition, ...span, kind: "pattern-type", fields: {
+            type: value(condition, { start: tokens[0].end, end: span.end }),
+        } };
         return value(condition, span);
     };
     const visit = (node: AstNode) => {
@@ -81,6 +83,6 @@ export function patternLists(tree: AstReply): WrittenPatternList[] {
     visit(tree.root); return result;
 }
 
-export const patternExpressions = (node: AstNode): AstNode[] => node.kind === "pattern-range"
+export const patternExpressions = (node: AstNode): AstNode[] => ["pattern-range", "pattern-type"].includes(node.kind)
     ? Object.values(node.fields ?? {}).flat().flatMap(patternExpressions)
     : node.kind.startsWith("pattern") ? [] : [node];
