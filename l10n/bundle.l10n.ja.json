@@ -372,5 +372,13 @@
     "Use string key": "文字列キーにする",
     "Use numeric key": "数値キーにする",
     "Use identifier key": "名前のキーにする",
-    "Tuple": "タプル"
+    "Tuple": "タプル",
+    "Use descending range": "降順の範囲にする",
+    "Use ascending range": "昇順の範囲にする",
+    "Remove range step": "範囲の刻み幅を削除",
+    "Set range step": "範囲の刻み幅を指定",
+    "Assign an existing loop variable": "既存のループ変数へ代入する",
+    "Declare a mutable loop variable": "可変のループ変数を宣言する",
+    "Remove loop advance": "ループの更新処理を削除",
+    "Add loop advance": "ループの更新処理を追加"
 }

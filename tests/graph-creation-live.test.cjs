@@ -360,3 +360,58 @@ test('implicit and parenthesized return lists grow inside a single result group'
         assert.equal(flat(tree.root).find(n => n.kind === 'return').fields.value.length, values);
     }
 }));
+
+test('new empty error kinds omit payload braces and materialize them for the first field', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const lists = load('graphLists.ts');
+    let tree = await parse('');
+    tree = await parse(apply(tree.source, api.insertStatementEdit(tree, api.statementInsertions(tree)[0], 'error')));
+    let definition = tree.root.fields.items[0];
+    assert.equal(tree.source.slice(definition.fields.members[0].start, definition.fields.members[0].end), 'Failure');
+    tree = await parse(apply(tree.source, lists.insertListEdit(tree, lists.listInsertions(tree).find(s => s.kind === 'errordef'), 'error')));
+    definition = tree.root.fields.items[0];
+    const kind = definition.fields.members[1];
+    assert(!tree.source.slice(kind.start, kind.end).includes('{'));
+    const site = lists.listInsertions(tree).find(s => s.kind === 'error-kind' && s.start === kind.start);
+    tree = await parse(apply(tree.source, lists.insertListEdit(tree, site, 'parameter')));
+    assert.equal(tree.root.fields.items[0].fields.members[1].fields.members.length, 1);
+    assert(!flat(tree.root).some(n => n.kind === 'error'));
+}));
+
+test('parallel binding deletion removes the matching target and written value together', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const deletion = load('graphDelete.ts'), assignments = load('graphAssignments.ts'), calls = load('graphCalls.ts');
+    for (const source of ['let^a,b,c=1,2,3', 'let^a,b,c=(1,2,3)',
+        'var^a=0\nvar^b=0\nvar^c=0\na,b,c:=1,2,3', 'var^a=0\nvar^b=0\nvar^c=0\na,b,c+=(1+2),3,4']) {
+        for (let index = 0; index < 3; index++) for (const side of ['target', 'value']) {
+            const tree = await parse(source), node = tree.root.fields.items.at(-1);
+            const selected = side === 'target' ? node.fields.targets[index] : calls.bindingValues(node, tree.source)[index];
+            const site = deletion.deleteSites(tree).find(s => s.category === 'element' && s.start === selected.start && s.end === selected.end);
+            assert(site, source);
+            const changed = await parse(apply(tree.source, deletion.deleteFromGraph(tree, site))), updated = changed.root.fields.items.at(-1);
+            assert.equal(updated.fields.targets.length, 2, changed.source);
+            assert.equal(calls.bindingValues(updated, changed.source).length, 2, changed.source);
+            assert.deepEqual(updated.fields.targets.map(n => changed.source.slice(n.start, n.end)), ['a', 'b', 'c'].filter((_, i) => i !== index));
+            if (node.kind === 'reassign') assert.equal(assignments.assignmentOperator(updated, changed.source).text, assignments.assignmentOperator(node, tree.source).text);
+            assert(!flat(changed.root).some(n => n.kind === 'error'), changed.source);
+        }
+    }
+    const call = await parse('let^f=f^{(1,2)}\nlet^a,b=f()');
+    assert(!deletion.deleteSites(call).some(s => s.category === 'element' && s.start === call.root.fields.items[1].fields.targets[0].start));
+}));
+
+test('deleting grouped list items preserves neighboring written groups and comment text', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const deletion = load('graphDelete.ts'), lists = load('graphLists.ts');
+    for (const source of ['let^t={a=(1),#[keep]#b=(2)}', 'let^t={(1),(2),(3)}', 'let^f=f^{return^((1),(2),(3))}']) {
+        const tree = await parse(source);
+        const list = lists.commaLists(tree).find(s => ['table', 'return'].includes(s.node.kind));
+        assert(list?.items.length > 1, source);
+        for (const selected of list.items) {
+            const site = deletion.deleteSites(tree).find(s => s.category === 'element' && s.start === selected.start && s.end === selected.end);
+            assert(site, source);
+            const changed = await parse(apply(tree.source, deletion.deleteFromGraph(tree, site)));
+            const updated = lists.commaLists(changed).find(s => s.node.kind === list.node.kind);
+            assert.equal(updated.items.length, list.items.length - 1, changed.source);
+            assert(!flat(changed.root).some(n => n.kind === 'error'), changed.source);
+            if (source.includes('#[keep]#')) assert(changed.source.includes('#[keep]#'));
+        }
+    }
+}));

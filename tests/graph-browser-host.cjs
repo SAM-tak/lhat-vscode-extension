@@ -103,7 +103,12 @@ async function graphUi(host, { evaluate, until, call }) {
         const resultType = message.type === 'rename' ? 'renameResult' : ['applyType', 'removeType'].includes(message.type) ? 'typeResult' : 'statementResult';
         await evaluate(`window.postMessage({type:${JSON.stringify(resultType)},id:${JSON.stringify(message.id)}},'*')`);
         await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(host.tree)},uri:'file:///svg-example.lh',version:${host.version}},'*')`);
-        await until(`document.querySelector('#app')?.dataset.graphVersion==='${host.version}' && ${ready}`);
+        try {
+            await until(`document.querySelector('#app')?.dataset.graphVersion==='${host.version}' && ${ready}`);
+        } catch (error) {
+            const state = await evaluate(`({version:document.querySelector('#app')?.dataset.graphVersion,status:document.querySelector('#status')?.textContent,disabled:document.querySelector('.svg-export>button')?.disabled})`);
+            throw new Error(`${error.message}\nGraph state: ${JSON.stringify(state)}\nSource: ${host.tree.source}`, { cause: error });
+        }
     };
     const choose = async (selector, choices, id) => {
         await until(`document.querySelector(${JSON.stringify(selector)}) && ${ready}`);

@@ -1730,12 +1730,19 @@ function App() {
     }, [nodes, version, layoutPending, laidSourceKey, sourceKey, onFold, reply, showAnnotationBox]);
     const updateNodeInternals = useUpdateNodeInternals();
     const handleGeometry = useRef(new Map<string, string>());
+    const [settledNodes, setSettledNodes] = useState(nodes);
     useEffect(() => {
         const { changed, geometry } = changedHandles(nodes, handleGeometry.current);
         handleGeometry.current = geometry;
         // Each call updates all absolute positions and notifies every store
         // subscriber. A per-BoxNode call made graph initialization quadratic.
         if (changed.length) updateNodeInternals(changed);
+        // React Flow measures ports on the next animation frame. Export only
+        // after those measurements and the resulting edge render have settled.
+        let frame = requestAnimationFrame(() => {
+            frame = requestAnimationFrame(() => setSettledNodes(nodes));
+        });
+        return () => cancelAnimationFrame(frame);
     }, [nodes, updateNodeInternals]);
     slideBounds.current = new Map(nodes.flatMap(({ data }) =>
         data.slideOwner && data.slideKey !== undefined &&
@@ -2035,7 +2042,7 @@ function App() {
                     onMouseDown={keepFocusOff}
                     onClick={() => setFontPx(DEFAULT_FONT_PX)}
                 >A↺</button>
-                <SvgExport flow={flowRef} disabled={!laid || layoutPending || laidSourceKey !== sourceKey}
+                <SvgExport flow={flowRef} disabled={!laid || layoutPending || laidSourceKey !== sourceKey || settledNodes !== nodes}
                     title={view?.path.map(step => titleOf(step, reply?.source ?? "", vocabulary)).join(" / ") || uri}
                     post={post} />
                 <span id="status">{note}</span>

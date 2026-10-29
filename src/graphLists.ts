@@ -161,7 +161,7 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
     }
     if (list.mode === "name") return [choice("name", name("value"))];
     if (list.mode === "enum") return [choice("enum", name("Item"))];
-    if (list.mode === "error") return [choice("error", `${name("Problem")} {}`)];
+    if (list.mode === "error") return [choice("error", name("Problem"))];
     if (list.mode === "type") {
         const types = [choice("number", "number^"), choice("string", "string^"), choice("boolean", "bool^"), choice("any", "any^")];
         return list.node.kind === "type-table" ? [choice("typeMember", `${name("value")}: number^`), ...types] : types;

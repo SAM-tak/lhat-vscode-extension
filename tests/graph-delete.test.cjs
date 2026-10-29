@@ -36,3 +36,11 @@ test('statement deletion removes an entire source-backed statement but leaves ad
     assert.equal(apply(tree, deleteSites(tree)[1]), 'first();\r\n');
     assert.equal(deleteFromGraph(tree, { category: 'statement', start: 1, end: 7 }), undefined);
 });
+
+test('list deletion includes grouping omitted from AST spans and keeps adjacent comments', () => {
+    const source = '{((1)),# first\n(2),#[last]#(3)}';
+    const items = ['1', '2', '3'].map(text => n('int', source.indexOf(text), source.indexOf(text) + 1));
+    const tree = { source, root: n('table', 0, source.length, { items }) };
+    const expected = ['{# first\n(2),#[last]#(3)}', '{((1)),# first\n#[last]#(3)}', '{((1)),# first\n(2)#[last]#}'];
+    deleteSites(tree).forEach((site, index) => assert.equal(apply(tree, site), expected[index]));
+});

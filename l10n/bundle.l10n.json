@@ -372,5 +372,13 @@
     "Use string key": "Use string key",
     "Use numeric key": "Use numeric key",
     "Use identifier key": "Use identifier key",
-    "Tuple": "Tuple"
+    "Tuple": "Tuple",
+    "Use descending range": "Use descending range",
+    "Use ascending range": "Use ascending range",
+    "Remove range step": "Remove range step",
+    "Set range step": "Set range step",
+    "Assign an existing loop variable": "Assign an existing loop variable",
+    "Declare a mutable loop variable": "Declare a mutable loop variable",
+    "Remove loop advance": "Remove loop advance",
+    "Add loop advance": "Add loop advance"
 }

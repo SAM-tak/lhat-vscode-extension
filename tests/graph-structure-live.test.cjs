@@ -88,3 +88,53 @@ test('real pattern match branches and pattern shapes can be created and removed'
         }
     }
 }));
+
+test('loop focus and advance controls preserve grouped initializers, conditions and complete bodies', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const body = '{ pre^: print("pre") main^: print(i) epilog^: print("end") }';
+    for (const initial of ['0', '(1 + 2)']) {
+        let tree = await parse(`var^i=5\nfor^var^i = ${initial} while^i<5 next^i+=1 ${body}`);
+        for (const action of ['focus:existing', 'next:remove', 'next:add', 'focus:mutable']) {
+            const site = structureSites(tree).find(s => s.kind === 'for');
+            const change = editStructure(tree, site, action); assert(change, action);
+            tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
+            const loop = tree.root.fields.items[1];
+            assert.equal(loop.fields.focus[0].kind, action === 'focus:mutable' ? 'define' : 'reassign');
+            assert.equal(loop.fields.advance?.length ?? 0, action === 'next:remove' ? 0 : 1);
+            assert.equal(tree.source.slice(loop.fields.body.start, loop.fields.body.end), body);
+            assert(tree.source.includes(initial)); assert(tree.source.includes('while^i<5'));
+            assert(!nodes(tree.root).some(n => n.kind === 'error'), tree.source);
+        }
+    }
+}));
+
+test('range direction and step controls retain bounds and all body sections', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const body = '{ first^: print(i) main^: print(i) last^: print(i) }';
+    let tree = await parse(`for^i from^10 to^20 ${body}`);
+    for (const action of ['direction', 'step:add', 'direction', 'step:remove']) {
+        const site = structureSites(tree).find(s => s.kind === 'for');
+        const change = editStructure(tree, site, action); assert(change, action);
+        tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
+        const loop = tree.root.fields.items[0];
+        assert.equal(tree.source.slice(loop.fields.body.start, loop.fields.body.end), body);
+        assert.equal(tree.source.slice(loop.fields.bound.start, loop.fields.bound.end), '20');
+        assert.equal(tree.source.slice(loop.fields.focus[0].fields.values[0].start, loop.fields.focus[0].fields.values[0].end), '10');
+        assert(!nodes(tree.root).some(n => n.kind === 'error'), tree.source);
+    }
+    assert(!tree.source.includes('step^'));
+}));
+
+test('while and until switching preserves the written header including grouping and comments', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    for (const source of ['repeat^while^(1+2)*3>4{}', 'for^var^i=(1+2)*3 while^(i+1)>0 #[condition]# next^i+=1{}']) {
+        const tree = await parse(source), site = structureSites(tree).find(s => ['repeat', 'for'].includes(s.kind));
+        const change = editStructure(tree, site, 'mode:until'); assert(change);
+        const updated = source.slice(0, change.start) + change.text + source.slice(change.end);
+        assert.equal(updated, source.replace('while^', 'until^'));
+        assert(!nodes((await parse(updated)).root).some(n => n.kind === 'error'), updated);
+    }
+    for (const [source, action] of [['for^i from^0 to^5{}', 'step:add'], ['for^var^i=0 while^i<5{}', 'next:add']]) {
+        const tree = await parse(source), site = structureSites(tree).find(s => s.kind === 'for');
+        const change = editStructure(tree, site, action); assert(change);
+        const updated = source.slice(0, change.start) + change.text + source.slice(change.end);
+        assert(!nodes((await parse(updated)).root).some(n => n.kind === 'error'), updated);
+    }
+}));

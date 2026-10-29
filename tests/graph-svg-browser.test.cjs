@@ -382,7 +382,8 @@ test('operator expressions embed primitives and route external operands outside 
         for (const value of ['1', '2', '3', '4', '5', '6']) assert(first.literalValues.includes(value));
         await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='A+').click()`);
         await until(`!document.querySelector('.svg-export>button').disabled`);
-        assert.equal((await inspect()).collisions, 0);
+        const enlarged = await inspect();
+        assert.equal(enlarged.collisions, 0, JSON.stringify(enlarged));
         assert.equal(errors.length, 0, JSON.stringify(errors));
     });
 });
@@ -2405,6 +2406,164 @@ test('parallel reassignment adds its target and value in one edit', { timeout: 6
             await ui.expression(assignment().fields.values[1], 'number');
             assert.equal(assignment().fields.targets.length, 2);
             assert.equal(assignment().fields.values.length, 2);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('multiple-returns sample is reconstructed through calls, parallel bindings and error handling', { timeout: 240000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = fs.readFileSync(path.join(__dirname, '../testing/multiple-returns.lh'), 'utf8').replace(/\r\n/g, '\n');
+        const expected = normalizedAst(await parse(source));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), items = () => host.tree.root.fields.items;
+            const rename = (node, text) => ui.input(`.name-input[data-reference-start="${node.start}"]`, text);
+            const literal = (node, text) => ui.input(`.box[data-source-start="${node.start}"] .literal-input`, text);
+            const unfold = async () => {
+                await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            };
+            const define = async (kind, name) => {
+                await ui.add(kind); const index = items().length - 1;
+                await rename(items()[index].fields.targets[0], name);
+                return () => items()[index];
+            };
+            const fn = async (name, params = []) => {
+                const declaration = await define('function', name); await unfold();
+                const value = () => declaration().fields.values[0];
+                for (const param of params) {
+                    await ui.addElement('parameter', value(), 'params');
+                    await rename(value().fields.params.at(-1).fields.name, param);
+                    await ui.type(value().fields.params.at(-1).fields.name, undefined);
+                }
+                return value;
+            };
+            const returned = f => f().fields.body.fields.items[0];
+            const call = async (value, name, args) => {
+                await ui.expression(value(), `reference:${name}`);
+                await ui.expression(value(), 'call');
+                for (const [index, arg] of args.entries()) {
+                    if (!value().fields.argument?.[index]) await ui.addElement('default', value(), 'argument');
+                    const argument = () => value().fields.argument[index];
+                    if (typeof arg === 'number') {
+                        if (argument().kind !== 'int') await ui.expression(argument(), 'number');
+                        if (host.tree.source.slice(argument().start, argument().end) !== String(arg)) await literal(argument(), String(arg));
+                    } else await ui.expression(argument(), `reference:${arg}`);
+                }
+            };
+            const print = async names => {
+                await ui.add('call'); const index = items().length - 1, value = () => items()[index].fields.value;
+                for (let i = 0; i < names.length; i++) {
+                    if (i) await ui.addElement('default', value(), 'argument');
+                    await ui.expression(value().fields.argument[i], `reference:${names[i]}`);
+                }
+                return value;
+            };
+            const bindCall = async (names, name, args) => {
+                const binding = await define('let', names[0]);
+                for (const next of names.slice(1)) {
+                    await ui.addElement('binding', binding(), 'targets'); await rename(binding().fields.targets.at(-1), next);
+                }
+                await ui.initializers(binding(), `reference:${name}`);
+                const value = () => binding().fields.values[0];
+                await call(value, name, args);
+            };
+            const f = await fn('f');
+            await ui.addElement('number', returned(f), 'value'); await ui.addElement('number', returned(f), 'value');
+            for (let i = 0; i < 3; i++) await literal(returned(f).fields.value[i], String(i + 1));
+            await ui.structure(returned(f), 'return:implicit');
+            await bindCall(['a', 'b', 'c'], 'f', []); await print(['a', 'b', 'c']);
+            const f3 = await fn('f3', ['x']);
+            const f3result = () => returned(f3).fields.value[0];
+            await ui.expression(f3result(), 'reference:x'); await ui.expression(f3result(), 'add');
+            await ui.operator(f3result(), '*'); await literal(f3result().fields.right, '10');
+            await ui.structure(returned(f3), 'return:implicit');
+            const f2 = await fn('f2', ['x', 'y', 'z']);
+            await ui.addElement('number', returned(f2), 'value'); await ui.addElement('number', returned(f2), 'value');
+            const result = i => returned(f2).fields.value[i];
+            await ui.expression(result(0), 'reference:x'); await ui.expression(result(0), 'add');
+            await ui.operator(result(0), '*'); await literal(result(0).fields.right, '2');
+            await ui.expression(result(0), 'add'); await literal(result(0).fields.right, '1');
+            await call(() => result(1), 'f3', ['y']); await ui.expression(result(1), 'add'); await literal(result(1).fields.right, '2');
+            await ui.expression(result(2), 'reference:z'); await ui.expression(result(2), 'add'); await literal(result(2).fields.right, '3');
+            await ui.structure(returned(f2), 'return:implicit');
+            await bindCall(['a1', 'b1', 'c1'], 'f2', [3, 4, 5]); await print(['a1', 'b1', 'c1']);
+            await ui.add('error'); await rename(items().at(-1).fields.name, 'E'); await unfold();
+            await rename(items().at(-1).fields.members[0].fields.name, 'Err1');
+            const f4 = await fn('f4', ['x']);
+            const conditional = () => returned(f4).fields.value[0];
+            await ui.expression(conditional(), 'conditional');
+            const branch = i => conditional().fields.items[i];
+            await ui.expression(branch(0).fields.condition, 'reference:x'); await ui.expression(branch(0).fields.condition, 'compare');
+            await ui.operator(branch(0).fields.condition, '>');
+            await ui.expression(branch(0).fields.body, 'reference:x');
+            await ui.expression(branch(1).fields.body, 'error'); await unfold();
+            await ui.expression(branch(1).fields.body.fields.name, 'reference:E.Err1');
+            await ui.structure(returned(f4), 'return:implicit');
+            const a2 = await define('var', 'a2'), a2value = () => a2().fields.values[0];
+            await call(a2value, 'f4', [10]); await ui.expression(a2value(), 'try'); await print(['a2']);
+            const b2 = await define('var', 'b2'); await call(() => b2().fields.values[0], 'f4', [10]);
+            const printB2 = await print(['b2']); await ui.expression(printB2().fields.argument[0], 'try');
+            const a3 = await define('var', 'a3'), a3value = () => a3().fields.values[0];
+            await call(a3value, 'f4', [10]); await ui.expression(a3value(), 'fallback');
+            await ui.operator(a3value(), 'catch^'); await ui.expression(a3value().fields.right, 'number');
+            const b3 = await define('let', 'b3'); await call(() => b3().fields.values[0], 'print', ['a3']);
+            await ui.add('assign'); const assignment = () => items().at(-1);
+            await ui.expression(assignment().fields.targets[0], 'reference:a2');
+            await ui.addElement('binding', assignment(), 'targets');
+            await ui.expression(assignment().fields.targets[1], 'reference:a3'); await ui.expression(assignment().fields.values[1], 'number');
+            await ui.add('call'); const final = () => items().at(-1).fields.value.fields.argument[0];
+            await ui.expression(final(), 'function'); await unfold();
+            await literal(final().fields.body.fields.items[0].fields.value[0], '100');
+            await ui.structure(final().fields.body.fields.items[0], 'return:implicit'); await ui.expression(final(), 'call');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('deleting a parallel value removes its binding and keeps the remaining graph editable', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'let^a,b,c=(1,(2),3)');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), binding = () => host.tree.root.fields.items[0];
+            const values = () => binding().fields.values[0].fields.items;
+            await ui.remove(values()[1]);
+            assert.equal(host.version, 2);
+            assert.equal(binding().fields.targets.length, 2);
+            assert.deepEqual(values().map(n => host.tree.source.slice(n.start, n.end)), ['1', '3']);
+            await ui.addElement('binding', binding(), 'targets');
+            assert.equal(binding().fields.targets.length, 3);
+            assert.equal(values().length, 3);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('loop controls edit focus initialization, advance, direction and step through the live document', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'var^m=5');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), loop = () => host.tree.root.fields.items[1];
+            await ui.add('for');
+            await ui.input(`.name-input[data-reference-start="${loop().fields.focus[0].fields.targets[0].start}"]`, 'm');
+            await ui.add('call', loop().fields.body);
+            const body = host.tree.source.slice(loop().fields.body.start, loop().fields.body.end);
+            await ui.structure(loop(), 'mode:while');
+            await ui.structure(loop(), 'focus:existing');
+            assert.equal(loop().fields.focus[0].kind, 'reassign');
+            await ui.structure(loop(), 'next:remove'); assert(!loop().fields.advance);
+            await ui.structure(loop(), 'next:add'); assert.equal(loop().fields.advance.length, 1);
+            await ui.structure(loop(), 'focus:mutable'); assert.equal(loop().fields.focus[0].kind, 'define');
+            await ui.structure(loop(), 'mode:range');
+            await ui.structure(loop(), 'direction'); assert(host.tree.source.includes('downto^'));
+            await ui.structure(loop(), 'step:add'); assert(host.tree.source.includes('step^1'));
+            await ui.structure(loop(), 'step:remove'); assert(!host.tree.source.includes('step^'));
+            assert.equal(host.tree.source.slice(loop().fields.body.start, loop().fields.body.end), body);
             assert.deepEqual(client.errors, []);
         });
     });

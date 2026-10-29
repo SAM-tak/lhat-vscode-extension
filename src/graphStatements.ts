@@ -110,7 +110,7 @@ export function statementTemplates(tree: AstReply, site: StatementInsertion): St
         template("type", `let^ ${name("Type")} = t^{}`),
         template("tableDefinition", `let^ ${name("Item")} = def^{}`),
         template("enumeration", `enum^ ${name("Kind")} { Item }`),
-        template("error", `errordef^ ${name("Problem")} { Failure {} }`),
+        template("error", `errordef^ ${name("Problem")} { Failure }`),
     ];
     if (list.context.callable === "procedure") choices.push(template("yield", "yield^ 0"), template("await", "await^ nil^"));
     if (list.node === tree.root) {

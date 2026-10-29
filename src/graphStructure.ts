@@ -199,8 +199,14 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         const mode = (id: string, label: string, text: string) => add(`mode:${id}`, label,
             { start: node!.start, end: body.start, text: `${text} ` });
         const prefix = node.kind === "for" ? `for^${focusText} ` : "repeat^";
-        mode("while", "Use while loop", `${prefix}while^${conditional ? textOf(bound, "true^") : "true^"}${step}`);
-        mode("until", "Use until loop", `${prefix}until^${conditional ? textOf(bound, "false^") : "false^"}${step}`);
+        const condition = header.find(t => ["while^", "until^"].includes(t.text));
+        if (condition) {
+            add("mode:while", "Use while loop", { start: condition.start, end: condition.end, text: "while^" });
+            add("mode:until", "Use until loop", { start: condition.start, end: condition.end, text: "until^" });
+        } else {
+            mode("while", "Use while loop", `${prefix}while^true^${step}`);
+            mode("until", "Use until loop", `${prefix}until^false^${step}`);
+        }
         if (node.kind === "repeat") {
             mode("count", "Use counted loop", `repeat^${conditional ? "1" : textOf(bound, "1")}`);
             mode("forever", "Use infinite loop", "repeat^");
@@ -235,6 +241,29 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
             const text = keepMain || needsMain ? `main^:${newline}` : "";
             add(`remove-section:${header.name}`, `${keepMain ? "Clear" : "Remove"} ${header.name} section`, { start: header.start, end, text });
         });
+        if (ranged) {
+            const direction = header.find(t => ["to^", "downto^"].includes(t.text));
+            if (direction) add("direction", direction.text === "to^" ? "Use descending range" : "Use ascending range",
+                { start: direction.start, end: direction.end, text: direction.text === "to^" ? "downto^" : "to^" });
+            const step = header.find(t => t.text === "step^");
+            if (step) add("step:remove", "Remove range step", { start: step.start, end: body.start, text: "" });
+            else add("step:add", "Set range step", { start: body.start, end: body.start, text: " step^1 " });
+        }
+        if (conditional && node.kind === "for" && focus.length === 1 && target?.kind === "ident") {
+            const value = array(binding.fields?.values)[0], marker = syntaxTokens(source, binding.start, binding.end)[0];
+            const operator = value && header.find(t => t.start >= target.end && t.end <= value.start && ["=", ":="].includes(t.text));
+            if (operator && array(binding.fields?.values).length === 1) {
+                if (binding.kind === "define" && ["var^", "let^"].includes(marker?.text))
+                    add("focus:existing", "Assign an existing loop variable", { start: binding.start, end: operator.end,
+                        text: `${source.slice(marker.end, operator.start)}:=` });
+                else if (binding.kind === "reassign" && operator.text === ":=")
+                    add("focus:mutable", "Declare a mutable loop variable", { start: binding.start, end: operator.end,
+                        text: `var^${source.slice(binding.start, operator.start)}=` });
+            }
+            const next = header.find(t => t.text === "next^");
+            if (next) add("next:remove", "Remove loop advance", { start: next.start, end: body.start, text: "" });
+            else add("next:add", "Add loop advance", { start: body.start, end: body.start, text: ` next^${name} += 1 ` });
+        }
     }
     return result;
 }
