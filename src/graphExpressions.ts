@@ -10,7 +10,7 @@ import { iteratorNames, forExpression, freshFocus } from "./graphLoops";
 export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean; errorName?: boolean; delegateName?: boolean;
     owner?: SourceSpan; callArguments?: string[]; spreadAllowed?: boolean; operand?: SourceSpan }
 const kinds = new Set(["int", "float", "string", "bool", "nil", "ident", "hat-ident", "hole",
-    "typeof", "type", "box", "spread", "scope", "name", "binary", "unary", "as", "call", "member", "index", "tuple", "table", "def", "self-table", "func", "interp", "if-expr", "try", "pack", "error-new", "require"]);
+    "compare-chain", "import", "typeof", "type", "box", "spread", "scope", "name", "binary", "unary", "as", "call", "member", "index", "tuple", "table", "def", "self-table", "func", "interp", "if-expr", "try", "pack", "error-new", "require"]);
 
 /** Declaration names, type syntax and member keys are not replaceable value expressions. */
 export function expressionSites(tree: AstReply): ExpressionSite[] {
@@ -32,16 +32,17 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
 
         const pattern = patterns.get(node);
         if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(child => visit(child)); return; }
-        if (["disabled", "module", "annotation", "import", "import-stmt", "require-stmt"].includes(node.kind) || node.kind.startsWith("type-")) return;
+        if (["disabled", "module", "annotation", "import-stmt", "require-stmt"].includes(node.kind) || node.kind.startsWith("type-")) return;
         if (value && (kinds.has(node.kind) || forExpression(node, tree.source)) && node.start < node.end) {
             const info = callInfo({ kind: "call", start: node.start, end: node.end, line: node.line, column: node.column, fields: { target: node } });
-            const operand = ["typeof", "box", "spread", "try", "pack"].includes(node.kind) && node.fields?.value;
+            const operand = ["typeof", "box", "spread", "try", "pack", "unary"].includes(node.kind) && (node.fields?.operand ?? node.fields?.value);
             sites.push({ kind: node.kind, start: node.start, end: node.end,
                 ...(operand && !Array.isArray(operand) ? { operand: { start: operand.start, end: operand.end } } : {}),
                 ...(spreadAllowed && node.kind !== "spread" ? { spreadAllowed: true } : {}),
                 ...(info ? { callArguments: info.inputs.map(input => input.default ?? (input.type === "number^" ? "0" : input.type === "string^" ? '\"\"' : input.type === "bool^" ? "false^" : "nil^")) } : {}),
                 ...assignmentTarget ? { assignmentTarget: true } : {}, ...memberKey ? { memberKey: true } : {} });
         }
+        if (node.kind === "import") return;
         if (["define", "reassign"].includes(node.kind)) {
             const values = node.kind === "reassign" ? assignmentValues(node, tree.source) : node.fields?.values, targets = node.fields?.targets;
             if (Array.isArray(values) && (values.length > 1 || values[0]?.kind === "tuple" && Array.isArray(targets) && targets.length > 1))
@@ -58,7 +59,7 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
                     sites.push({ kind: child.kind, start: child.start, end: child.end, errorName: true });
                 continue;
             }
-            const declaration = ["name", "type", "return_type", "annotations"].includes(field)
+            const declaration = ["name", "type", "return_type", "annotations"].includes(field) || node.kind === "compare-chain" && field === "operators"
                 || field === "key" && !(node.kind === "table-entry" && node.computed)
                 || node.kind === "define" && field === "targets"
                 || node.kind === "func" && field === "params";
@@ -139,6 +140,7 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         ["typeValue", "Type value", "number^"],
         ["name", "Identifier value", "id^name"],
         ["error", "Error value", "error^Problem.Failure{}"],
+        ["import", "Import module", "import^std.io"],
         ["require", "Require file", 'require^"./module.lh"'],
         ["member", "Access a member", `(${current}).value`],
         ["call", "Call this value", `(${current})(${(currentSite.callArguments ?? ["nil^"]).join(", ")})`],
@@ -146,6 +148,7 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         ["add", "Add to this value", `((${current}) + 0)`],
         ["fits", "Check type compatibility", `((${current}) fits^ number^)`],
         ["cast", "Convert to a type", `((${current}) as^ number^)`],
+        ["chain", "Chained comparisons", `((${current}) < 0 < 0)`],
         ["compare", "Compare values", `((${current}) = 0)`],
         ["logical", "Combine conditions", `((${current}) and^ true^)`],
         ["fallback", "Default a missing value", `((${current}) ?? nil^)`],

@@ -14,7 +14,7 @@
 import type { AstNode, AstReply, TypeSite, SourceSpan } from "../protocol.js";
 import { declaredEntry, typeSites } from "../graphTypes";
 import { commaLists, listIdentity, listInsertions, groupedOperatorSites, type CommaList, type InsertionSite, type ListInsertion, type OperatorSite } from "../graphLists";
-import { callInfo, callReceiver, canInsertBinding, outputTypes } from "../graphCalls";
+import { callInfo, callReceiver, accessOperator, canInsertBinding, outputTypes } from "../graphCalls";
 import { reorderSites, type ReorderSite } from "../graphReorder";
 import { statementSites, statementInsertions, type StatementSite, type StatementInsertion } from "../graphStatements";
 import { literalOf, textLiteralRows, type LiteralValue } from "./literals";
@@ -1182,7 +1182,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             columns.lhat = { kind: "call-groups", start: node.start, end: node.end, layoutOnly: true, noExecutionHandles: true };
             children.push(columns);
         }
-        const id = nextId(node.kind), caption = receiver ? vocabulary.methodCall ?? "Method Call" : vocabulary.call ?? "Call";
+        const id = nextId(node.kind), caption = (receiver ? vocabulary.methodCall ?? "Method Call" : vocabulary.call ?? "Call") + (accessOperator(node, source)?.optional ? " ?" : "");
         const built = container(id, { text: caption, parts: [{ text: caption }] }, "DOWN", children, chain(id, children), node);
         built.labels = [{ text: labelFor(node, []).text }];
         built.lhat = { ...built.lhat!, invocation: true, definitionOutputs: outputs.map(output => output.id) };

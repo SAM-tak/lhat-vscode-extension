@@ -440,5 +440,10 @@
     "Allow any final result type": "終了時に返す型を任意にする",
     "Omit final result type": "終了時に返す型を省略",
     "Coroutine never finishes": "終了しないコルーチンにする",
-    "Use procedure type": "手続き型にする"
+    "Use procedure type": "手続き型にする",
+    "Use ordinary access": "通常のアクセスにする",
+    "Use nil-checked access": "nil を確認するアクセスにする",
+    "Chained comparisons": "比較を連鎖させる",
+    "Add a comparison": "比較を追加",
+    "Remove last comparison": "最後の比較を削除"
 }

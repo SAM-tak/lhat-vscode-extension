@@ -2937,6 +2937,78 @@ test('a typed variadic function is constructed through parameter, reference and 
     });
 });
 
+test('nil-checked member, index and call forms are constructed through live access controls', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = {};
+        for (const [kind, expression] of [['member','obj?.value'], ['index','obj?[0]'], ['call','fn?(nil^)']])
+            expected[kind] = normalizedAst(await parse(`let^value=${expression}`));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), value = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('let');
+            for (const kind of ['member', 'index', 'call']) {
+                await ui.expression(value(), `reference:${kind === 'call' ? 'fn' : 'obj'}`);
+                await ui.expression(value(), kind);
+                await ui.structure(value(), 'access:nil-check');
+                assert.deepEqual(normalizedAst(host.tree), expected[kind], host.tree.source);
+                if (kind === 'call') await client.until(`[...document.querySelectorAll('.boxlabel')].some(e=>e.textContent===${JSON.stringify(ja.Call + ' ?')})`);
+                await ui.structure(value(), 'access:nil-check');
+                assert(!host.tree.source.includes('?.') && !host.tree.source.includes('?[') && !host.tree.source.includes('?('));
+            }
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('comparison chains build and change their operands and operators through live graph controls', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^value=0<=4<0'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), value = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('let');
+            await ui.expression(value(), 'chain');
+            await ui.input(`.box[data-source-start="${value().fields.operands[1].start}"] .literal-input`, '4');
+            await ui.operator(value(), '<=');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.operator(value(), '≦');
+            assert(host.tree.source.includes('≦'));
+            await ui.operator(value(), '<=');
+            await ui.structure(value(), 'chain:append');
+            assert.equal(value().fields.operands.length, 4);
+            await ui.structure(value(), 'chain:remove-last');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.structure(value(), 'chain:remove-last');
+            assert.equal(value().kind, 'binary');
+            await ui.structure(value(), 'chain:append');
+            assert.equal(value().kind, 'compare-chain');
+            await ui.expression(value(), 'nil');
+            assert.equal(value().kind, 'hat-ident');
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('module values import and edit their path through the shared source input', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^value=import^std.math'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), value = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('let');
+            await ui.expression(value(), 'import');
+            await ui.input(`.box[data-source-start="${value().start}"] .interpolation-input`, 'std.math');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.expression(value(), 'nil');
+            assert.equal(value().kind, 'hat-ident');
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('coroutine kind, omitted slots and wildcard or endless results edit through the live type label', { timeout: 90000 }, async () => {
     const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
@@ -3254,6 +3326,9 @@ test('postfix nil checks are created, displayed and edited through the live sour
             await ui.input(`.box[data-source-start="${operand.start}"] .literal-input`, 'available');
             assert(host.tree.source.includes('"available")?'));
             await client.until(visibleCheck());
+            await ui.expression(value(), 'unwrap');
+            assert.equal(value().kind, 'string');
+            assert(host.tree.source.includes('"available"'));
             await ui.expression(value(), 'nil');
             assert.equal(value().kind, 'hat-ident');
             assert.deepEqual(client.errors, []);

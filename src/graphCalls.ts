@@ -4,6 +4,16 @@ import { assignmentOperator, assignmentValues } from "./graphAssignments";
 
 const nodes = (value: AstNode | AstNode[] | undefined): AstNode[] => value ? Array.isArray(value) ? value : [value] : [];
 
+/** Locate only this access's punctuation, beyond any grouped target. */
+export function accessOperator(node: AstNode, source: string) {
+    const target = nodes(node.fields?.target)[0];
+    const punctuation = node.kind === "member" ? "." : node.kind === "index" ? "[" : node.kind === "call" ? "(" : undefined;
+    if (!target || !punctuation) return undefined;
+    const tokens = syntaxTokens(source, target.end, node.end), index = tokens.findIndex(token => token.text === punctuation);
+    if (index < 0) return undefined;
+    return { delimiter: tokens[index], optional: tokens[index - 1]?.text === "?" ? tokens[index - 1] : undefined };
+}
+
 /** Only the first parameter of the resolved signature denotes a receiver.
  * Nested callback types and ordinary functions stored in members are not methods.
  */

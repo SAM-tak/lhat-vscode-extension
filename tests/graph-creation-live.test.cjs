@@ -12,6 +12,89 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('every offered operator reparses while retaining its written operands, including type RHS and unary removal', { timeout: 60000 }, async () => withLhatServer(async parse => {
+    const operators = load('graphLists.ts');
+    for (const expression of ['a + b', 'a = b', 'a bitand^ b', 'a dot^ b', 'a ?? b', 'a and^ b', 'a fits^ number^', '-a']) {
+        const initial = await parse(`let^a=1 let^b=2 let^value=${expression}`);
+        const value = tree => tree.root.fields.items[2].fields.values[0];
+        const site = operators.operatorSites(initial).find(s => s.owner.start === value(initial).start && s.owner.end === value(initial).end);
+        assert(site, expression);
+        assert(!site.choices.includes("=="));
+        for (const operator of site.choices) {
+            const changed = await parse(apply(initial.source, operators.replaceOperatorEdit(initial, site, operator)));
+            assert(!flat(changed.root).some(n => n.kind === 'error'), changed.source);
+            assert(operators.operatorSites(changed).some(s => s.text === operator), changed.source);
+            const left = value(changed).fields.left ?? value(changed).fields.operand ?? value(changed).fields.value;
+            assert.equal(changed.source.slice(left.start, left.end), 'a', changed.source);
+            const right = value(changed).fields.right ?? value(changed).fields.type;
+            if (right) assert.equal(changed.source.slice(right.start, right.end), expression.includes('fits^') ? 'number^' : 'b', changed.source);
+        }
+    }
+    for (const expression of ['!a', 'bitnot^a', '-a', '(a)?']) {
+        const initial = await parse(`let^a=1 let^value=${expression}`), value = initial.root.fields.items[1].fields.values[0];
+        const changed = await parse(apply(initial.source, expressions.replaceExpression(initial, value, 'unwrap')));
+        assert.equal(changed.root.fields.items[1].fields.values[0].kind, 'ident', changed.source);
+    }
+}));
+
+test('nil-checked access toggles its own punctuation while preserving grouped targets and arguments', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts');
+    for (const expression of ['obj.value', 'obj?.value', 'obj[0]', 'obj?[0]', 'fn(0)', 'fn?(0)', '((fn()))(0)', '((fn()))[0]', '((obj)).value']) {
+        const source = `let^value=${expression}`, initial = await parse(source);
+        const value = tree => tree.root.fields.items[0].fields.values[0];
+        const first = structure.editStructure(initial, value(initial), 'access:nil-check');
+        assert(first, expression);
+        const changed = await parse(apply(source, first));
+        assert(!flat(changed.root).some(n => n.kind === 'error'), changed.source);
+        const originalTarget = value(initial).fields.target, changedTarget = value(changed).fields.target;
+        assert.equal(changed.source.slice(changedTarget.start, changedTarget.end), source.slice(originalTarget.start, originalTarget.end));
+        const restored = await parse(apply(changed.source, structure.editStructure(changed, value(changed), 'access:nil-check')));
+        assert.equal(restored.source, source);
+    }
+    const delegate = await parse('let^Item=def^{delegate^self^.base}');
+    const target = delegate.root.fields.items[0].fields.values[0].fields.items[0].fields.value;
+    assert.equal(structure.editStructure(delegate, target, 'access:nil-check'), undefined);
+}));
+
+test('comparison chains create, extend, shrink and replace without exposing synthetic operator expressions', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts');
+    for (const source of ['let^value=(1<2<3)', 'let^value=((1)<(2)<(3))', 'let^value=(1<2 #[keep]# <3)']) {
+        let tree = await parse(source);
+        const value = () => tree.root.fields.items[0].fields.values[0];
+        const operators = value().fields.operators;
+        assert(!expressions.expressionSites(tree).some(s => operators.some(op => s.start === op.start && s.end === op.end)));
+        tree = await parse(apply(tree.source, structure.editStructure(tree, value(), 'chain:append')));
+        assert.equal(value().fields.operands.length, 4, tree.source);
+        tree = await parse(apply(tree.source, structure.editStructure(tree, value(), 'chain:remove-last')));
+        assert.equal(value().fields.operands.length, 3, tree.source);
+        tree = await parse(apply(tree.source, structure.editStructure(tree, value(), 'chain:remove-last')));
+        assert.equal(value().kind, 'binary');
+        if (source.includes('#[keep]#')) assert(tree.source.includes('#[keep]#'));
+        tree = await parse(apply(tree.source, structure.editStructure(tree, value(), 'chain:append')));
+        assert.equal(value().kind, 'compare-chain');
+        tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value(), 'nil')));
+        assert.equal(value().kind, 'hat-ident');
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    }
+    const tree = await parse('let^value=0'), value = tree.root.fields.items[0].fields.values[0];
+    const constructed = await parse(apply(tree.source, expressions.replaceExpression(tree, value, 'chain')));
+    assert.equal(constructed.root.fields.items[0].fields.values[0].kind, 'compare-chain');
+}));
+
+test('module import values create and edit the module path while keeping the path outside value replacement', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const fields = load('graphTextFields.ts');
+    let tree = await parse('let^value=0');
+    const value = () => tree.root.fields.items[0].fields.values[0];
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value(), 'import')));
+    assert.equal(value().kind, 'import');
+    assert(!expressions.expressionSites(tree).some(s => s.start === value().fields.value.start));
+    const site = fields.textFields(tree).find(field => field.site.field === 'import').site;
+    tree = await parse(apply(tree.source, fields.editTextField(tree, site, 'std.math')));
+    assert.equal(tree.source.slice(value().fields.value.start, value().fields.value.end), 'std.math');
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value(), 'nil')));
+    assert.equal(value().kind, 'hat-ident');
+}));
+
 test('procedure signatures keep their parameter and result lists while adding and removing a trailing variadic type', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structure = load('graphStructure.ts');
     let tree = await parse('let^read=f^x:number^{0}');

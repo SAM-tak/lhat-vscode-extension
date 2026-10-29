@@ -262,7 +262,7 @@ function insertAt(source: string, list: CommaList, index: number, text: string):
 
 export interface OperatorSite extends SourceSpan { owner: SourceSpan; text: string; choices: string[]; members?: SourceSpan[] }
 const numeric = ["+", "-", "*", "/", "//", "%", "**"];
-const comparison = ["=", "!=", "<", "<=", ">", ">=", "is^", "==", "=/", "≠", "≤", "≥", "≦", "≧"];
+export const comparison = ["=", "!=", "<", "<=", ">", ">=", "is^", "=/", "≠", "≤", "≥", "≦", "≧"];
 const bitwise = ["bitand^", "bitor^", "bitxor^", "bitshift^"];
 const products = ["cross^", "dot^", "×", "⋅"];
 export function operatorSites(tree: AstReply): OperatorSite[] {
@@ -289,7 +289,7 @@ export function operatorSites(tree: AstReply): OperatorSite[] {
             if (!token) continue;
             const choices = ["fits^", "as^"].includes(token.text) ? ["fits^", "as^"]
                 : numeric.includes(token.text) || token.text === ".." || token.text === "<=>" ? [...numeric, "..", "<=>"]
-                : comparison.includes(token.text) || ["==", "=/", "≠", "≤", "≥", "≦", "≧"].includes(token.text) ? comparison
+                : comparison.includes(token.text) ? comparison
                 : bitwise.includes(token.text) ? bitwise : products.includes(token.text) ? products
                 : ["??", "catch^"].includes(token.text) ? ["??", "catch^"]
                 : ["and^", "or^"].includes(token.text) ? ["and^", "or^"] : [token.text];

@@ -1,5 +1,6 @@
+import { accessOperator } from "./graphCalls";
 import { replacementSpan } from "./graphExpressions";
-import { commaLists, insertListEdit, removeListElement } from "./graphLists";
+import { commaLists, insertListEdit, removeListElement, comparison } from "./graphLists";
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import type { StatementTemplate } from "./graphStatements";
@@ -19,7 +20,7 @@ export function structureSites(tree: AstReply): StructureSite[] {
     const sites: StructureSite[] = [];
     const visit = (node: AstNode) => {
         if (node.kind === "disabled") return;
-        if (node.kind.startsWith("type-") || ["if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string", "scope", "box"].includes(node.kind))
+        if (node.kind.startsWith("type-") || ["if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string", "scope", "box", "member", "index", "call", "compare-chain", "binary"].includes(node.kind))
             sites.push({ start: node.start, end: node.end, kind: node.kind });
         Object.values(node.fields ?? {}).flat().forEach(visit);
     };
@@ -38,6 +39,27 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     const source = tree.source, result: Action[] = [], newline = source.includes("\r\n") ? "\r\n" : "\n";
     const add = (id: string, label: string, edit: SourceEdit, preview = edit.text || label) => result.push({ id, label, text: preview, edit });
     const head = syntaxTokens(source, node.start, node.end);
+    if (parent?.kind === "table-entry" && syntaxTokens(source, parent.start, parent.end)[0]?.text === "delegate^") return [];
+    const access = accessOperator(node, source);
+    if (access) add("access:nil-check", access.optional ? "Use ordinary access" : "Use nil-checked access", access.optional
+        ? { start: access.optional.start, end: access.optional.end, text: "" }
+        : { start: access.delimiter.start, end: access.delimiter.start, text: "?" });
+    const left = one(node, "left"), right = one(node, "right");
+    const op = left && right && syntaxTokens(source, left.end, right.start).find(t => !["(", ")"].includes(t.text))?.text;
+    if (node.kind === "compare-chain" || node.kind === "binary" && (comparison.includes(op || "") || op === "fits^")) {
+        const span = replacementSpan(tree, node);
+        if (span) {
+            add("chain:append", "Add a comparison", { start: span.end, end: span.end, text: " < 0" });
+            const operators = array(node.fields?.operators), last = operators[operators.length - 1];
+            if (last) {
+                let gap = source.slice(last.start, span.end);
+                for (const token of syntaxTokens(source, last.start, span.end).reverse())
+                    gap = gap.slice(0, token.start - last.start) + gap.slice(token.end - last.start);
+                add("chain:remove-last", "Remove last comparison", { start: last.start, end: span.end, text: gap });
+            }
+        }
+        return result;
+    }
     if (node.kind === "scope") {
         const name = one(node, "name");
         if (!name) return [];

@@ -440,5 +440,10 @@
     "Allow any final result type": "Allow any final result type",
     "Omit final result type": "Omit final result type",
     "Coroutine never finishes": "Coroutine never finishes",
-    "Use procedure type": "Use procedure type"
+    "Use procedure type": "Use procedure type",
+    "Use ordinary access": "Use ordinary access",
+    "Use nil-checked access": "Use nil-checked access",
+    "Chained comparisons": "Chained comparisons",
+    "Add a comparison": "Add a comparison",
+    "Remove last comparison": "Remove last comparison"
 }
