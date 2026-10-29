@@ -1,5 +1,5 @@
 import { replacementSpan } from "./graphExpressions";
-import { commaLists, insertListEdit, removeListItem } from "./graphLists";
+import { commaLists, insertListEdit, removeListElement } from "./graphLists";
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import type { StatementTemplate } from "./graphStatements";
@@ -8,6 +8,8 @@ import { literalOf, quoteString } from "./webview/literals";
 import { assignmentOperator, ASSIGNMENT_LABELS } from "./graphAssignments";
 import { typeSites } from "./graphTypes";
 import { iteratorNames, freshFocus } from "./graphLoops";
+
+export const validTypeMemberName = (name: string) => /^[\p{L}_][\p{L}\p{N}_]*$/u.test(name);
 
 export interface StructureSite extends SourceSpan { kind: string }
 interface Action extends StatementTemplate { edit: SourceEdit }
@@ -103,16 +105,66 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
                 ["tuple", "Use tuple type", `(${current}, any^)`],
                 ["intersection", "Use intersection type", `(${current})&t^{}`],
                 ["function", "Use function type", `f^any^ -> (${current});`],
+                ["procedure", "Use procedure type", `p^any^ -> (${current});`],
                 ["coroutine", "Use coroutine type", `c^{f^any^ -> any^ -> (${current})}`],
                 ["apply", "Use type descriptor type", `type^<${current}>`],
             ]) replace(`type:${id}`, label, text);
-            const list = lists.find(list => list.node === target);
-            if (list && ["type-tuple", "type-apply"].includes(target.kind)) {
-                list.items.forEach((_, item) => {
-                    if (list.items.length > 1) change(`type:remove:${item}`, "Remove type element", removeListItem(source, list, item));
+            for (const list of lists.filter(list => list.node === target)) {
+                const field = ["type-tuple", "type-apply"].includes(target.kind) ? "" : `${list.field}:`;
+                list.items.forEach((item, i) => {
+                    if (!["type-tuple", "type-apply"].includes(target.kind) || list.items.length > 1) {
+                        const remove = removeListElement(source, list, i);
+                        if (remove) change(`type:remove:${field}${i}`, "Remove type element", remove);
+                    }
+                    const key = one(item, "key") ?? one(item, "name");
+                    if (target.kind === "type-table" && key) {
+                        change(`type:rename:${i}`, "Rename type member", { start: key.start, end: key.end, text: source.slice(key.start, key.end) });
+                        result[result.length - 1].input = { value: source.slice(key.start, key.end) };
+                    }
                 });
-                const append = insertListEdit(tree, { category: "list", kind: target.kind, start: target.start, end: target.end, field: list.field }, "any");
-                if (append) change("type:append", "Add type element", append);
+                const append = insertListEdit(tree, { category: "list", kind: target.kind, start: target.start, end: target.end, field: list.field },
+                    target.kind === "type-table" ? "typeMember" : "any");
+                if (append) change(`type:append${field ? `:${list.field}` : ""}`, "Add type element", append);
+                if (target.kind === "type-func" && list.field === "params") {
+                    const variadic = insertListEdit(tree, { category: "list", kind: target.kind, start: target.start, end: target.end, field: list.field }, "variadic");
+                    if (variadic) change("type:append:variadic", "Variadic parameter", variadic);
+                }
+            }
+            if (target.kind === "type-func") {
+                const marker = syntaxTokens(source, target.start, target.end).find(t => ["f^", "p^"].includes(t.text));
+                if (marker) for (const [id, label, text] of [["function", "Use function type", "f^"], ["procedure", "Use procedure type", "p^"]])
+                    change(`function:kind:${id}`, label, { start: marker.start, end: marker.end, text });
+            }
+            if (target.kind === "type-coro") {
+                const tokens = syntaxTokens(source, target.start, target.end), open = tokens.find(t => t.text === "{");
+                const close = tokens.filter(t => t.text === "}").slice(-1)[0];
+                if (open && close) {
+                    const marker = tokens.find(t => t.start >= open.end);
+                    const kind = marker && ["f^", "p^"].includes(marker.text) ? marker : undefined;
+                    for (const [id, label, text] of [["function", "Use function coroutine", "f^"], ["procedure", "Use procedure coroutine", "p^"], ["either", "Allow either coroutine kind", ""]])
+                        change(`coroutine:kind:${id}`, label, { start: kind?.start ?? open.end, end: kind?.end ?? open.end, text });
+                    const fields = ["receive", "produce", "result"], parts = fields.map(field => one(target, field));
+                    const arrows = tokens.filter(t => t.text === "->" && !parts.some(part => part && t.start >= part.start && t.end <= part.end));
+                    const labels = [["Set receive type", "Allow any receive type", "Omit receive type"],
+                        ["Set yield type", "Allow any yield type", "Omit yield type"], ["Set final result type", "Allow any final result type", "Omit final result type"]];
+                    fields.forEach((field, i) => {
+                        const start = i ? arrows[i - 1]?.end : kind?.end ?? open.end, end = arrows[i]?.start ?? close.start;
+                        const written = start === undefined ? [] : syntaxTokens(source, start, end);
+                        const part = parts[i] && replacementSpan(tree, parts[i]!);
+                        const at = part ?? { start: written[0]?.start ?? start ?? close.start, end: written.slice(-1)[0]?.end ?? start ?? close.start };
+                        for (const [mode, text, label] of [["type", "any^", labels[i][0]], ["any", "*", labels[i][1]], ["omit", "", labels[i][2]],
+                            ...i === 2 ? [["endless", "-", "Coroutine never finishes"]] : []]) {
+                            if (mode === "omit" && !written.length) continue;
+                            if (mode === "omit" && i === 2 && arrows[1]) {
+                                let gap = source.slice(arrows[1].start, close.start);
+                                for (const token of syntaxTokens(source, arrows[1].start, close.start).reverse())
+                                    gap = gap.slice(0, token.start - arrows[1].start) + gap.slice(token.end - arrows[1].start);
+                                change(`coroutine:${field}:${mode}`, label, { start: arrows[1].start, end: close.start, text: gap });
+                            } else change(`coroutine:${field}:${mode}`, label, { ...at,
+                                text: `${start === undefined ? " -> ".repeat(i - arrows.length) : ""}${text}` });
+                        }
+                    });
+                }
             }
             if (["type-union", "type-intersect"].includes(target.kind)) for (const field of ["left", "right"]) {
                 const child = one(target, field), inner = child && replacementSpan(tree, child);
@@ -403,5 +455,10 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
 }
 
 export const structureTemplates = (tree: AstReply, site: StructureSite): StatementTemplate[] => actions(tree, site);
-export const editStructure = (tree: AstReply, site: StructureSite, action: string): SourceEdit | undefined =>
-    actions(tree, site).find(choice => choice.id === action)?.edit;
+export function editStructure(tree: AstReply, site: StructureSite, action: string): SourceEdit | undefined {
+    const choices = actions(tree, site), choice = choices.find(choice => choice.id === action);
+    if (choice && !choice.input) return choice.edit;
+    const input = choices.find(choice => choice.input && action.startsWith(`${choice.id}:`));
+    const name = input && action.slice(input.id.length + 1);
+    return input && name && validTypeMemberName(name) ? { ...input.edit, text: name } : undefined;
+}

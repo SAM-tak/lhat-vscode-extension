@@ -1,4 +1,4 @@
-import { structureSites, structureTemplates, type StructureSite } from "../../graphStructure";
+import { structureSites, structureTemplates, validTypeMemberName, type StructureSite } from "../../graphStructure";
 import { deleteSites, type DeleteSite } from "../../graphDelete";
 import { expressionSites, expressionTemplates, validExpressionReference, type ExpressionSite } from "../../graphExpressions";
 import type { AnnotationOwner } from "../../graphAnnotations";
@@ -14,7 +14,7 @@ type Host = { tree?: AstReply; uri: string; version?: number; post: (message: Fr
 type FoldContext = { foldable: boolean; foldKey?: string };
 type Picker = { id: string; site?: InsertionSite; operator?: OperatorSite; anchor: HTMLElement; version: number;
     structure?: StructureSite; interpolation?: InterpolationSite; expression?: ExpressionSite;
-    choices: StatementTemplate[]; saving?: boolean; error?: string };
+    choices: StatementTemplate[]; input?: StatementTemplate; saving?: boolean; error?: string };
 const Statements = createContext({
     version: undefined as number | undefined,
     context: (_site?: StatementSite, _fold?: FoldContext, _annotation?: AnnotationOwner): string | undefined => undefined,
@@ -68,6 +68,8 @@ export function StatementProvider({ value, children }: { value: Host; children: 
     const select = (template: string) => {
         const current = active.current;
         if (!current || current.saving || host.current.version !== current.version) return;
+        const input = current.choices.find(choice => choice.id === template && choice.input);
+        if (input) { setPicker({ ...current, input }); return; }
         setPicker({ ...current, saving: true, error: undefined });
         const common = { id: current.id, version: current.version };
         if (current.structure) host.current.post({ ...common, type: "editStructure", site: current.structure, action: template });
@@ -109,7 +111,7 @@ export function StatementProvider({ value, children }: { value: Host; children: 
             lhatCanAddAnnotation: !!annotation?.canAdd && value.version !== undefined,
             lhatAnnotationStart: annotation?.start, lhatAnnotationEnd: annotation?.end, lhatAnnotationKind: annotation?.kind }) }}>
         {children}
-        {picker && createPortal(<TemplateMenu key={picker.id} picker={picker} close={close} select={select} />, document.body)}
+        {picker && createPortal(<TemplateMenu key={`${picker.id}:${picker.input?.id ?? ""}`} picker={picker} close={close} select={select} />, document.body)}
     </Statements.Provider>;
 }
 
@@ -147,11 +149,13 @@ export function InsertionButton({ site, title, append = true, floating = false, 
 
 function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus?: boolean) => void; select: (template: string) => void }) {
     const menu = useRef<HTMLDivElement>(null), input = useRef<HTMLInputElement>(null);
-    const [query, setQuery] = useState(""), [index, setIndex] = useState(0);
+    const [query, setQuery] = useState(picker.input?.input?.value ?? ""), [index, setIndex] = useState(0);
     const [position, setPosition] = useState({ left: 0, top: 0 });
-    const title = picker.structure ? l10n.t("Edit structure") : picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
+    const title = picker.input ? l10n.t("Rename type member") : picker.structure ? l10n.t("Edit structure") : picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
         ? l10n.t("Choose an element template") : l10n.t("Choose a statement template");
-    const choices = picker.expression && validExpressionReference(picker.expression, query.trim()) && !picker.choices.some(c => c.id === `reference:${query.trim()}`)
+    const choices = picker.input ? validTypeMemberName(query.trim())
+        ? [{ id: `${picker.input.id}:${query.trim()}`, label: "Use member name", text: query.trim() }] : []
+        : picker.expression && validExpressionReference(picker.expression, query.trim()) && !picker.choices.some(c => c.id === `reference:${query.trim()}`)
         ? [...picker.choices, { id: `reference:${query.trim()}`, label: query.trim(), text: query.trim() }] : picker.choices;
     const words = query.toLocaleLowerCase().trim().split(/\s+/);
     const filtered = choices.filter(choice => words.every(word =>
@@ -170,6 +174,7 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
     }, [picker.anchor]);
     useEffect(() => {
         input.current?.focus();
+        if (picker.input) input.current?.select();
         const outside = (event: Event) => { if (!menu.current?.contains(event.target as Node)) close(); };
         const key = (event: KeyboardEvent) => {
             if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(true); }
@@ -196,7 +201,8 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
             <button type="button" aria-label={l10n.t("Close menu")} onClick={() => close(true)}>×</button></div>
         <input ref={input} role="combobox" aria-expanded="true" aria-controls={`${picker.id}-options`}
             aria-activedescendant={filtered.length ? `${picker.id}-${selected}` : undefined}
-            placeholder={picker.expression ? l10n.t("Filter choices or enter a reference name") : l10n.t("Filter choices")} aria-label={l10n.t("Filter choices")}
+            data-name-input={picker.input ? true : undefined}
+            placeholder={picker.input ? l10n.t("Enter member name") : picker.expression ? l10n.t("Filter choices or enter a reference name") : l10n.t("Filter choices")} aria-label={picker.input ? l10n.t("Enter member name") : l10n.t("Filter choices")}
             disabled={picker.saving} value={query} onChange={event => { setQuery(event.target.value); setIndex(0); }}
             onKeyDown={event => {
                 if (event.nativeEvent.isComposing || picker.saving) return;

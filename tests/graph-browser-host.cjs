@@ -109,7 +109,7 @@ function normalizedAst(tree) {
             const raw = tree.source.slice(node.start, node.end);
             result.text = (node.block ? raw.slice(2, -2) : raw.slice(1)).trim();
         } else if (node.kind && node.kind !== 'block' && !Object.keys(node.fields ?? {}).length)
-            result.text = node.kind === 'type-name'
+            result.text = node.kind.startsWith('type-')
                 ? syntaxTokens(tree.source, node.start, node.end).filter(t => !['(', ')'].includes(t.text)).map(t => t.text).join('')
                 : tree.source.slice(node.start, node.end);
         return result;
@@ -166,7 +166,15 @@ async function graphUi(host, { evaluate, until, call }) {
         await evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].at(-1).${contextMenu
             ? "dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}))" : 'click()'}`);
         await until(`document.querySelector('.statement-menu [role=option]')`);
-        if (!choices.some(c => c.id === id) && id.startsWith('reference:')) {
+        const input = choices.find(c => c.input && id.startsWith(`${c.id}:`));
+        if (input) {
+            await evaluate(`document.querySelector('.statement-menu [data-template-index="${choices.indexOf(input)}"]').click()`);
+            await until(`document.querySelector('.statement-menu [data-name-input]')`);
+            await evaluate(`document.querySelector('.statement-menu [data-name-input]').select()`);
+            await call('Input.insertText', { text: id.slice(input.id.length + 1) });
+            await until(`document.querySelector('.statement-menu [role=option]')`);
+            await evaluate(`document.querySelector('.statement-menu [role=option]').click()`);
+        } else if (!choices.some(c => c.id === id) && id.startsWith('reference:')) {
             await call('Input.insertText', { text: id.slice(10) });
             await until(`document.querySelector('.statement-menu [role=option]')`);
             await evaluate(`document.querySelector('.statement-menu [role=option]').click()`);

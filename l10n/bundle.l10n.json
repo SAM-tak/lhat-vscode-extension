@@ -423,5 +423,22 @@
     "Remove type element": "Remove type element",
     "Add type element": "Add type element",
     "Keep left type": "Keep left type",
-    "Keep right type": "Keep right type"
+    "Keep right type": "Keep right type",
+    "Rename type member": "Rename type member",
+    "Use member name": "Use member name",
+    "Enter member name": "Enter member name",
+    "Use function coroutine": "Use function coroutine",
+    "Use procedure coroutine": "Use procedure coroutine",
+    "Allow either coroutine kind": "Allow either coroutine kind",
+    "Set receive type": "Set receive type",
+    "Allow any receive type": "Allow any receive type",
+    "Omit receive type": "Omit receive type",
+    "Set yield type": "Set yield type",
+    "Allow any yield type": "Allow any yield type",
+    "Omit yield type": "Omit yield type",
+    "Set final result type": "Set final result type",
+    "Allow any final result type": "Allow any final result type",
+    "Omit final result type": "Omit final result type",
+    "Coroutine never finishes": "Coroutine never finishes",
+    "Use procedure type": "Use procedure type"
 }

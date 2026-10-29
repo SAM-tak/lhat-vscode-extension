@@ -80,7 +80,7 @@ export function commaLists(tree: AstReply): CommaList[] {
             if (marker) add("params", node.kind === "func" ? "parameter" : "type", marker.end, arrow?.start ?? end);
             const items = annotation?.kind === "type-tuple" ? array(annotation.fields?.items) : annotation ? [annotation] : [];
             add("return_type", "type", annotation?.start ?? end, annotation?.end ?? end, items,
-                annotation ? undefined : node.inferredReturnType ? resultTypes(node.inferredReturnType) : marker?.text === "f^" ? ["?"] : []);
+                annotation ? undefined : node.inferredReturnType ? resultTypes(node.inferredReturnType) : node.kind === "func" && marker?.text === "f^" ? ["?"] : []);
         } else if (node.kind === "for") {
             for (const field of ["focus", "advance"]) {
                 if (field === "focus" && iteratorNames(node, source).length) continue;
@@ -110,7 +110,7 @@ export function listInsertions(tree: AstReply): ListInsertion[] {
 }
 
 function editableList(list: CommaList, site: ListInsertion, lists: CommaList[], source: string): boolean {
-    if (list.node.kind === "func" && list.field === "params" && site.before === undefined &&
+    if (["func", "type-func"].includes(list.node.kind) && list.field === "params" && site.before === undefined &&
         list.items.some(item => syntaxTokens(source, item.start, item.end)[0]?.text === "...")) return false;
     if (list.node.kind === "for" && list.field === "focus" && iteratorNames(list.node, source).length) return false;
     if (["define", "reassign"].includes(list.node.kind)) return list.field === "targets" && canInsertBinding(list.node, source);
@@ -181,7 +181,8 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
     if (list.mode === "error") return [choice("error", name("Problem"))];
     if (list.mode === "type") {
         const types = [choice("number", "number^"), choice("string", "string^"), choice("boolean", "bool^"), choice("any", "any^")];
-        return list.node.kind === "type-table" ? [choice("typeMember", `${name("value")}: number^`), ...types] : types;
+        return list.node.kind === "type-table" ? [choice("typeMember", `${name("value")}: number^`), ...types]
+            : list.node.kind === "type-func" && list.field === "params" && site.before === undefined ? [...types, choice("variadic", "...:any^")] : types;
     }
     const values = [choice("number", "0"), choice("string", '""'), choice("boolean", "false^"), choice("nil", "nil^"),
         choice("table", "{}"), choice("function", "f^{ return^ 0 }"), choice("procedure", "p^{}")];
@@ -375,4 +376,35 @@ export function removeListItem(source: string, list: CommaList, index: number): 
     return comma.start >= site.end
         ? { start: site.start, end: comma.end, text: source.slice(site.end, comma.start) }
         : { start: comma.start, end: site.end, text: source.slice(comma.end, site.start) };
+}
+
+export function removeListElement(source: string, list: CommaList, index: number): SourceEdit | undefined {
+    if (list.field === "return_type") {
+        const annotation = list.node.fields!.return_type;
+        if (!annotation || Array.isArray(annotation)) return undefined;
+        const arrow = syntaxTokens(source, list.node.start, annotation.start).filter(t => t.text === "->").slice(-1)[0];
+        if (!arrow) return undefined;
+        let start = arrow.end, end = annotation.end;
+        for (const token of syntaxTokens(source, end, list.node.end)) {
+            if (token.text !== ")") break;
+            end = token.end;
+        }
+        if (list.items.length === 1) {
+            // Keep comments before the type, but discard its grouping punctuation.
+            let gap = source.slice(start, annotation.start);
+            for (const token of syntaxTokens(source, start, annotation.start).reverse())
+                gap = gap.slice(0, token.start - start) + gap.slice(token.end - start);
+            return { start: arrow.start, end, text: gap };
+        }
+        let tokens = syntaxTokens(source, start, end);
+        // A group around the whole result list belongs to the remaining types.
+        while (tokens[0]?.text === "(" && tokens[tokens.length - 1]?.text === ")") {
+            let depth = 0;
+            const close = tokens.findIndex(t => { if (t.text === "(") depth++; else if (t.text === ")") depth--; return depth === 0; });
+            if (close !== tokens.length - 1) break;
+            start = tokens[0].end; end = tokens[tokens.length - 1].start; tokens = tokens.slice(1, -1);
+        }
+        return removeListItem(source, { ...list, start, end }, index);
+    }
+    return removeListItem(source, list, index);
 }

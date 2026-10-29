@@ -12,6 +12,94 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('procedure signatures keep their parameter and result lists while adding and removing a trailing variadic type', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts');
+    let tree = await parse('let^read=f^x:number^{0}');
+    const type = () => tree.root.fields.items[0].fields.values[0].fields.params[0].fields.type;
+    const edit = async id => {
+        tree = await parse(apply(tree.source, structure.editStructure(tree, type(), id)));
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    };
+    await edit('type:procedure');
+    assert.equal(type().kind, 'type-func');
+    await edit('type:append:variadic');
+    assert.equal(type().fields.params.length, 2);
+    assert(!structure.structureTemplates(tree, type()).some(c => c.id === 'type:append:params' || c.id === 'type:append:variadic'));
+    await edit('function:kind:function');
+    assert.equal(type().fields.params.length, 2);
+    assert(type().fields.return_type);
+    await edit('type:remove:params:1');
+    assert(structure.structureTemplates(tree, type()).some(c => c.id === 'type:append:params'));
+}));
+
+test('AST comparison ignores coroutine type layout but retains kind and slot markers', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { normalizedAst } = require('./graph-browser-host.cjs');
+    const original = normalizedAst(await parse('let^f=f^x:c^{p^* -> -> -}{0}'));
+    assert.deepEqual(normalizedAst(await parse('let^f=f^x:c^{ p^ * ->  -> - }{0}')), original);
+    for (const type of ['c^{f^* -> -> -}', 'c^{p^* -> -> *}', 'c^{p^* -> -}'])
+        assert.notDeepEqual(normalizedAst(await parse(`let^f=f^x:${type}{0}`)), original);
+}));
+
+test('coroutine type modes preserve slot boundaries across omitted, wildcard and nested signature forms', { timeout: 60000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts');
+    for (const spelling of ['c^{f^number^ -> string^ -> bool^}', 'c^{p^* -> * -> -}', 'c^{}', 'c^{p^number^}',
+        'c^{number^ -> string^}', 'c^{f^(f^number^ -> string^;) -> (number^,string^) -> type^<number^>}',
+        'c^{p^number^ #[receive]# -> string^ #[yield]# -> bool^ #[end]#}']) {
+        const source = `let^read=f^x:${spelling}{0}`, initial = await parse(source);
+        const type = tree => tree.root.fields.items[0].fields.values[0].fields.params[0].fields.type;
+        assert(!flat(initial.root).some(n => n.kind === 'error'), source);
+        const choices = structure.structureTemplates(initial, type(initial)).filter(c => c.id.startsWith('coroutine:'));
+        for (const choice of choices) {
+            const tree = await parse(apply(initial.source, structure.editStructure(initial, type(initial), choice.id)));
+            assert(!flat(tree.root).some(n => n.kind === 'error'), `${choice.id}: ${tree.source}`);
+            assert.equal(type(tree).kind, 'type-coro', tree.source);
+            const content = (tree, field) => {
+                const part = type(tree).fields?.[field];
+                return part && tree.source.slice(part.start, part.end);
+            };
+            for (const field of ['receive', 'produce', 'result']) if (field !== choice.id.split(':')[1])
+                assert.equal(content(tree, field), content(initial, field), `${choice.id}: ${field}`);
+            if (source.includes('#[')) for (const comment of ['#[receive]#', '#[yield]#', '#[end]#']) assert(tree.source.includes(comment), tree.source);
+            assert(tree.source.endsWith('{0}'));
+        }
+    }
+}));
+
+test('annotated table and function types add, rename and remove their actual list elements', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts');
+    let tree = await parse('let^read=f^x:t^{}{0}');
+    const type = () => tree.root.fields.items[0].fields.values[0].fields.params[0].fields.type;
+    const edit = async id => {
+        const change = structure.editStructure(tree, type(), id);
+        assert(change, id);
+        tree = await parse(apply(tree.source, change));
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    };
+    await edit('type:append:items');
+    assert.equal(type().fields.items.length, 1);
+    assert.equal(structure.editStructure(tree, type(), 'type:rename:0:bad.name'), undefined);
+    await edit('type:rename:0:日本語');
+    const key = type().fields.items[0].fields.key;
+    assert.equal(tree.source.slice(key.start, key.end), '日本語');
+    await edit('type:append:items');
+    await edit('type:remove:items:0');
+    await edit('type:remove:items:0');
+    assert.equal(type().fields?.items?.length ?? 0, 0);
+    await edit('type:function');
+    await edit('type:append:params');
+    assert.equal(type().fields.params.length, 2);
+    await edit('type:remove:params:1');
+    await edit('type:remove:params:0');
+    assert.equal(type().fields?.params?.length ?? 0, 0);
+    await edit('type:append:return_type');
+    assert.equal(type().fields.return_type.kind, 'type-tuple');
+    await edit('type:remove:return_type:1');
+    await edit('type:remove:return_type:0');
+    assert.equal(type().fields?.return_type, undefined);
+    await edit('type:append:return_type');
+    assert.equal(type().fields.return_type.kind, 'type-name');
+}));
+
 test('type constructors and nested variants edit grouped components and preserve list comments', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structure = load('graphStructure.ts'), deletion = load('graphDelete.ts');
     for (const [id, kind] of [['tuple', 'type-tuple'], ['intersection', 'type-intersect'], ['function', 'type-func'], ['coroutine', 'type-coro'], ['apply', 'type-apply']]) {

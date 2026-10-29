@@ -423,5 +423,22 @@
     "Remove type element": "型の要素を削除",
     "Add type element": "型の要素を追加",
     "Keep left type": "左側の型を使う",
-    "Keep right type": "右側の型を使う"
+    "Keep right type": "右側の型を使う",
+    "Rename type member": "型のメンバー名を変更",
+    "Use member name": "このメンバー名を使う",
+    "Enter member name": "メンバー名を入力",
+    "Use function coroutine": "関数コルーチンにする",
+    "Use procedure coroutine": "手続きコルーチンにする",
+    "Allow either coroutine kind": "コルーチンの種別を指定しない",
+    "Set receive type": "受信する型を指定",
+    "Allow any receive type": "受信する型を任意にする",
+    "Omit receive type": "受信する型を省略",
+    "Set yield type": "中断時に返す型を指定",
+    "Allow any yield type": "中断時に返す型を任意にする",
+    "Omit yield type": "中断時に返す型を省略",
+    "Set final result type": "終了時に返す型を指定",
+    "Allow any final result type": "終了時に返す型を任意にする",
+    "Omit final result type": "終了時に返す型を省略",
+    "Coroutine never finishes": "終了しないコルーチンにする",
+    "Use procedure type": "手続き型にする"
 }

@@ -2937,6 +2937,76 @@ test('a typed variadic function is constructed through parameter, reference and 
     });
 });
 
+test('coroutine kind, omitted slots and wildcard or endless results edit through the live type label', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^function=f^value:c^{p^* -> -> -}{return^0}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), fn = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('function');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.addElement('parameter', fn(), 'params');
+            const name = () => fn().fields.params[0].fields.name, type = () => fn().fields.params[0].fields.type;
+            await ui.typeStructure(name(), 'type:coroutine');
+            await ui.typeStructure(name(), 'coroutine:kind:procedure');
+            await ui.typeStructure(name(), 'coroutine:receive:any');
+            await ui.typeStructure(name(), 'coroutine:produce:omit');
+            await ui.typeStructure(name(), 'coroutine:result:endless');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.typeStructure(name(), 'coroutine:result:omit');
+            assert.equal(type().fields, undefined);
+            await ui.typeStructure(name(), 'coroutine:receive:type');
+            await ui.typeStructure(name(), 'coroutine:produce:any');
+            await ui.typeStructure(name(), 'coroutine:result:type');
+            await ui.typeStructure(name(), 'coroutine:kind:either');
+            assert.equal(type().fields.receive.kind, 'type-name');
+            assert.equal(type().fields.result.kind, 'type-name');
+            await ui.typeStructure(name(), 'coroutine:receive:omit');
+            assert.equal(type().fields.receive, undefined);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('table member names and function type arities edit from the annotation menu through live source changes', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^function=f^value:t^{日本語:number^}{return^0}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), fn = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('function');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.addElement('parameter', fn(), 'params');
+            const name = () => fn().fields.params[0].fields.name, type = () => fn().fields.params[0].fields.type;
+            await ui.typeStructure(name(), 'type:name:t^{}');
+            await ui.typeStructure(name(), 'type:append:items');
+            await ui.typeStructure(name(), 'type:rename:0:日本語');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.typeStructure(name(), 'type:remove:items:0');
+            await ui.typeStructure(name(), 'type:function');
+            await ui.typeStructure(name(), 'type:append:params');
+            assert.equal(type().fields.params.length, 2);
+            await ui.typeStructure(name(), 'type:remove:params:0');
+            await ui.typeStructure(name(), 'type:append:return_type');
+            assert.equal(type().fields.return_type.kind, 'type-tuple');
+            await ui.typeStructure(name(), 'type:remove:return_type:0');
+            await ui.typeStructure(name(), 'type:remove:return_type:0');
+            assert.equal(type().fields.return_type, undefined);
+            await ui.typeStructure(name(), 'type:append:return_type');
+            assert.equal(type().fields.return_type.kind, 'type-name');
+            await ui.typeStructure(name(), 'function:kind:procedure');
+            await ui.typeStructure(name(), 'type:append:variadic');
+            assert.equal(type().fields.params.length, 2);
+            await ui.typeStructure(name(), 'function:kind:function');
+            await ui.typeStructure(name(), 'type:remove:params:1');
+            assert.equal(type().fields.params.length, 1);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('nested tuple, applied and coroutine types are constructed from a parameter type label through live menus', { timeout: 90000 }, async () => {
     const { graphHost, graphUi, load } = require('./graph-browser-host.cjs'), structure = load('graphStructure.ts');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
