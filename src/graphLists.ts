@@ -48,12 +48,12 @@ export function commaLists(tree: AstReply): CommaList[] {
                 : node.kind === "error-kind" ? "parameter" : "member", open.end, close.start);
             else if (node.kind === "error-kind") add("members", "parameter", node.end, node.end, [], undefined,
                 { prefix: " { ", suffix: " }" });
-        } else if (["call", "index", "tuple", "type-tuple"].includes(node.kind)) {
-            const target = one(node, "target"), opening = node.kind === "index" ? "[" : "(";
+        } else if (["call", "index", "tuple", "type-tuple", "type-apply"].includes(node.kind)) {
+            const target = one(node, "target"), opening = node.kind === "index" ? "[" : node.kind === "type-apply" ? "<" : "(";
             const open = tokens.find(t => t.start >= (target?.end ?? node.start) && t.text === opening);
             const close = tokens.slice(-1)[0];
-            if (open && close?.text === (opening === "[" ? "]" : ")")) add(target ? "argument" : "items",
-                node.kind === "type-tuple" ? "type" : "value", open.end, close.start);
+            if (open && close?.text === (opening === "[" ? "]" : opening === "<" ? ">" : ")")) add(target ? "argument" : "items",
+                ["type-tuple", "type-apply"].includes(node.kind) ? "type" : "value", open.end, close.start);
         } else if (["return", "yield"].includes(node.kind)) {
             // A parser-generated implicit return has no keyword, but its values still form a list.
             const explicit = tokens[0]?.text === `${node.kind}^`, marker = explicit ? tokens[0].end : node.start;
@@ -140,7 +140,7 @@ export const LIST_TEMPLATE_LABELS = {
     function: "Function", procedure: "Procedure", member: "Named member", parameter: "Parameter",
     typeMember: "Typed member", name: "Variable", enum: "Enumeration member", error: "Error kind", any: "Any type",
     binding: "Variable binding", default: "Default argument", self: "Self table", operator: "Operator member",
-    abstract: "Abstract member",
+    abstract: "Abstract member", delegate: "Delegated member",
     typePattern: "Type pattern", rangePattern: "Range pattern",
     receiver: "Receiver parameter", constructor: "Constructor member", variadic: "Variadic parameter",
 } as const;
@@ -188,11 +188,14 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
     if (list.node.kind === "pattern-list") return [...values, choice("typePattern", "fits^number^"), choice("rangePattern", "0 to^1")];
     if (list.mode === "member") {
         const member = choice("member", `${name("value")} = 0`);
+        const delegate = list.items.map(item => one(item, "key")).find(key => key?.kind === "ident" && /^[\p{L}_][\p{L}\p{N}_]*$/u.test(sourceText(key)));
         if (list.node.kind === "def") return [member, choice("typeMember", `${name("value")}: number^`),
             choice("abstract", `abstract^${name("value")}: number^`),
             choice("operator", "op^<=> = f^self^, rhs:Self^ { return^0 }"),
             ...(list.items.some(item => { const key = one(item, "key"); return key && sourceText(key) === "new"; })
                 ? [] : [choice("constructor", "override^new = f^{}")]),
+            ...(list.items.some(item => syntaxTokens(tree.source, item.start, item.end)[0]?.text === "delegate^") ? []
+                : [choice("delegate", `delegate^${delegate ? sourceText(delegate) : "value"}`)]),
             ...(list.items.some(item => one(item, "value")?.kind === "self-table") ? [] : [choice("self", "self^{}")])];
         if (["self-table", "error-new"].includes(list.node.kind)) return [member];
         values.unshift(member);
@@ -346,4 +349,30 @@ export function groupedOperatorSites(tree: AstReply): OperatorSite[] {
     };
     visit(tree.root);
     return result;
+}
+
+export function removeListItem(source: string, list: CommaList, index: number): SourceEdit {
+    const item = list.items[index];
+    const next = list.items[index + 1], previous = list.items[index - 1];
+    // AST spans omit grouping parentheses. Remove the written slot, including its groups.
+    const leading = syntaxTokens(source, previous?.end ?? list.start, item.start);
+    const trailing = syntaxTokens(source, item.end, next?.start ?? list.end);
+    const before = leading.filter(t => t.text === ",").slice(-1)[0];
+    const after = trailing.find(t => t.text === ",");
+    let start = item.start, end = item.end;
+    for (const token of leading.slice().reverse()) {
+        if (token.text !== "(") break;
+        start = token.start;
+    }
+    for (const token of trailing) {
+        if (token.text !== ")") break;
+        end = token.end;
+    }
+    const site = { start, end };
+    const comma = after ?? before;
+    if (!comma) return { start: site.start, end: site.end, text: "" };
+    // Preserve comments and whitespace between the item and its separator.
+    return comma.start >= site.end
+        ? { start: site.start, end: comma.end, text: source.slice(site.end, comma.start) }
+        : { start: comma.start, end: site.end, text: source.slice(comma.end, site.start) };
 }

@@ -413,5 +413,15 @@
     "Look one more scope outward": "Look one more scope outward",
     "Look one more scope inward": "Look one more scope inward",
     "Reduce scope distance": "Reduce scope distance",
-    "Use a mutable box": "Use a mutable box"
+    "Use a mutable box": "Use a mutable box",
+    "Delegated member": "Delegated member",
+    "Use tuple type": "Use tuple type",
+    "Use intersection type": "Use intersection type",
+    "Use function type": "Use function type",
+    "Use coroutine type": "Use coroutine type",
+    "Use type descriptor type": "Use type descriptor type",
+    "Remove type element": "Remove type element",
+    "Add type element": "Add type element",
+    "Keep left type": "Keep left type",
+    "Keep right type": "Keep right type"
 }

@@ -2937,6 +2937,68 @@ test('a typed variadic function is constructed through parameter, reference and 
     });
 });
 
+test('nested tuple, applied and coroutine types are constructed from a parameter type label through live menus', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, load } = require('./graph-browser-host.cjs'), structure = load('graphStructure.ts');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), fn = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('function');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.addElement('parameter', fn(), 'params');
+            const name = () => fn().fields.params[0].fields.name, type = () => fn().fields.params[0].fields.type;
+            await ui.typeStructure(name(), 'type:tuple');
+            assert.equal(type().kind, 'type-tuple');
+            await ui.typeStructure(name(), 'type:part:2:type:name:string^');
+            assert(host.tree.source.includes('string^'));
+            await ui.typeStructure(name(), 'type:append');
+            assert.equal(type().fields.items.length, 3);
+            await ui.typeStructure(name(), 'type:remove:0');
+            assert.equal(type().fields.items.length, 2);
+            await ui.typeStructure(name(), 'type:apply');
+            assert.equal(type().kind, 'type-apply');
+            await ui.typeStructure(name(), 'type:coroutine');
+            assert.equal(type().kind, 'type-coro');
+            const variant = structure.structureTemplates(host.tree, type()).find(c => c.id.startsWith('type:part:') && c.id.endsWith('type:name:bool^'));
+            assert(variant);
+            await ui.typeStructure(name(), variant.id);
+            assert(host.tree.source.includes('bool^'));
+            await ui.typeStructure(name(), 'type:name:number^');
+            assert.equal(type().kind, 'type-name');
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('delegated members are created, retargeted and removed through the live definition controls', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^Item=def^{base=0,delegate^base}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), def = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('tableDefinition');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.addElement('member', def());
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            await ui.input(`.name-input[data-reference-start="${def().fields.items[0].fields.key.start}"]`, 'base');
+            await ui.addElement('delegate', def());
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            const entry = () => def().fields.items[1];
+            await ui.expression(entry().fields.value, 'reference:self^.base');
+            assert.equal(entry().fields.value.kind, 'member');
+            await client.until(`[...document.querySelectorAll('.boxlabel')].some(e=>e.textContent.includes('委譲'))`);
+            await ui.expression(entry().fields.value, 'reference:base');
+            await ui.remove(entry());
+            assert.equal(def().fields.items.length, 1);
+            await ui.addElement('delegate', def());
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('type queries, boxes and type values are created and edited through their shared graph controls', { timeout: 90000 }, async () => {
     const { graphHost, graphUi } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {

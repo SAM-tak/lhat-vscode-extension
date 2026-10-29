@@ -1573,6 +1573,13 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             const built = binding(node, unfold, avail);
             if (built) return built;
         }
+        if (node.kind === "table-entry" && node.fields?.value && !Array.isArray(node.fields.value)) {
+            const marker = syntaxTokens(source, node.start, node.end)[0];
+            if (marker?.text === "delegate^") {
+                const keyword = { ...node, kind: "delegate", ...marker, fields: undefined };
+                return inlineBox(node, [leaf(keyword, makeLabel(keyword, [], MAX_LABEL)), build(node.fields.value, "expr", unfold, avail)]);
+            }
+        }
         // A keyless entry is just its value, not another visible wrapper.
         // In particular, a def^ field template must expose its own members.
         const positional = node.fields?.value;

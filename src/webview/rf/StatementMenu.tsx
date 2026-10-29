@@ -32,7 +32,7 @@ let sequence = 0;
 export const useStatementActions = () => useContext(Statements);
 
 export function StatementProvider({ value, children }: { value: Host; children: React.ReactNode }) {
-    const structures = useMemo(() => value.tree ? structureSites(value.tree).filter(site => structureTemplates(value.tree!, site).length) : [], [value.tree]);
+    const structures = useMemo(() => value.tree ? structureSites(value.tree).filter(site => site.kind.startsWith("type-") || structureTemplates(value.tree!, site).length) : [], [value.tree]);
     const deletions = useMemo(() => value.tree ? deleteSites(value.tree) : [], [value.tree]);
     const expressions = useMemo(() => value.tree ? expressionSites(value.tree) : [], [value.tree]);
     const [picker, setPicker] = useState<Picker>();

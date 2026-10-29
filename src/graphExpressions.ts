@@ -7,7 +7,7 @@ import { assignmentValues } from "./graphAssignments";
 import { patternLists, patternExpressions } from "./graphPatterns";
 import { iteratorNames, forExpression, freshFocus } from "./graphLoops";
 
-export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean; errorName?: boolean;
+export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean; errorName?: boolean; delegateName?: boolean;
     owner?: SourceSpan; callArguments?: string[]; spreadAllowed?: boolean; operand?: SourceSpan }
 const kinds = new Set(["int", "float", "string", "bool", "nil", "ident", "hat-ident", "hole",
     "typeof", "type", "box", "spread", "scope", "name", "binary", "unary", "as", "call", "member", "index", "tuple", "table", "def", "self-table", "func", "interp", "if-expr", "try", "pack", "error-new", "require"]);
@@ -24,6 +24,12 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
     collectNames(tree.root);
     const visit = (node: AstNode, value = true, assignmentTarget = false, memberKey = false, spreadAllowed = false) => {
         if (names.has(node)) return;
+        if (node.kind === "table-entry" && syntaxTokens(tree.source, node.start, node.end)[0]?.text === "delegate^") {
+            const target = node.fields?.value;
+            if (target && !Array.isArray(target)) sites.push({ kind: target.kind, start: target.start, end: target.end, delegateName: true });
+            return;
+        }
+
         const pattern = patterns.get(node);
         if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(child => visit(child)); return; }
         if (["disabled", "module", "annotation", "import", "import-stmt", "require-stmt"].includes(node.kind) || node.kind.startsWith("type-")) return;
@@ -69,12 +75,14 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
 
 export const validMember = (text: string) => /^(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+)$/u.test(text);
 export const validReference = (text: string) => text === "..." || /^(?:(?:\$+|\$\^+)?[\p{L}_][\p{L}\p{N}_]*|self\^|it\^)(?:\.(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+))*$/u.test(text);
-export const validExpressionReference = (site: ExpressionSite, text: string) => site.errorName
+export const validExpressionReference = (site: ExpressionSite, text: string) => site.delegateName
+    ? /^(?:self\^\.)?[\p{L}_][\p{L}\p{N}_]*$/u.test(text)
+    : site.errorName
     ? /^[\p{L}_][\p{L}\p{N}_]*(?:\.[\p{L}_][\p{L}\p{N}_]*)*$/u.test(text)
     : (site.memberKey ? validMember : validReference)(text);
 
 /** Grouping has no AST node. A binary span may start inside a grouped left operand. */
-function replacementSpan(tree: AstReply, site: SourceSpan): SourceSpan | undefined {
+export function replacementSpan(tree: AstReply, site: SourceSpan): SourceSpan | undefined {
     const source = tree.source;
     let start = site.start, end = site.end, opens = 0, closes = 0;
     for (const token of syntaxTokens(source, start, end)) {
@@ -156,7 +164,7 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         const name = current.replace(/^\$(?:\^+|\$*)/, "");
         choices.push(["scope:file", "Reference the unit scope", `$${name}`], ["scope:outer", "Reference the enclosing scope", `$^${name}`]);
     }
-    const references = new Set<string>(currentSite.errorName ? ["Problem.Failure"] : currentSite.memberKey ? ["value", "0"] : ["self^", "it^"]);
+    const references = new Set<string>(currentSite.errorName ? ["Problem.Failure"] : currentSite.delegateName ? ["value", "self^.value"] : currentSite.memberKey ? ["value", "0"] : ["self^", "it^"]);
     const names = (node: AstNode) => {
         if (["ident", "hat-ident", "member", "scope"].includes(node.kind)) {
             const name = tree.source.slice(node.start, node.end);
@@ -165,7 +173,7 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         for (const child of Object.values(node.fields ?? {}).flat()) names(child);
     };
     names(tree.root);
-    return [...choices.filter(([id]) => !currentSite.errorName && !currentSite.memberKey && (!currentSite.assignmentTarget || ["index", "member"].includes(id))).map(([id, label, text]) => ({ id, label, text })),
+    return [...choices.filter(([id]) => !currentSite.errorName && !currentSite.delegateName && !currentSite.memberKey && (!currentSite.assignmentTarget || ["index", "member"].includes(id))).map(([id, label, text]) => ({ id, label, text })),
         ...[...references].sort().map(name => ({ id: `reference:${name}`, label: name, text: name }))];
 }
 

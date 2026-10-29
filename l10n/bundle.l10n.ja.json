@@ -413,5 +413,15 @@
     "Look one more scope outward": "さらに1つ外側のスコープを参照",
     "Look one more scope inward": "さらに1つ内側のスコープを参照",
     "Reduce scope distance": "スコープの距離を減らす",
-    "Use a mutable box": "変更可能なボックスにする"
+    "Use a mutable box": "変更可能なボックスにする",
+    "Delegated member": "委譲先",
+    "Use tuple type": "タプル型にする",
+    "Use intersection type": "交差型にする",
+    "Use function type": "関数型にする",
+    "Use coroutine type": "コルーチン型にする",
+    "Use type descriptor type": "型記述子の型にする",
+    "Remove type element": "型の要素を削除",
+    "Add type element": "型の要素を追加",
+    "Keep left type": "左側の型を使う",
+    "Keep right type": "右側の型を使う"
 }

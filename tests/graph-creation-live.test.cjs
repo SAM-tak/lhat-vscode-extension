@@ -12,6 +12,59 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('type constructors and nested variants edit grouped components and preserve list comments', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts'), deletion = load('graphDelete.ts');
+    for (const [id, kind] of [['tuple', 'type-tuple'], ['intersection', 'type-intersect'], ['function', 'type-func'], ['coroutine', 'type-coro'], ['apply', 'type-apply']]) {
+        let tree = await parse('let^read=f^x:number^{0}');
+        const type = () => tree.root.fields.items[0].fields.values[0].fields.params[0].fields.type;
+        tree = await parse(apply(tree.source, structure.editStructure(tree, type(), `type:${id}`)));
+        assert.equal(type().kind, kind, tree.source);
+        const variant = structure.structureTemplates(tree, type()).find(c => c.id.endsWith('type:name:string^') && c.id.startsWith('type:part:') && c.text.includes('string^'));
+        assert(variant, id);
+        tree = await parse(apply(tree.source, structure.editStructure(tree, type(), variant.id)));
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+        assert(tree.source.includes('string^'), tree.source);
+    }
+    for (const source of ['let^f=f^x:(number^,#[keep]#string^){0}', 'let^f=f^x:((number^)|nil^,string^){0}']) {
+        let tree = await parse(source);
+        const type = () => tree.root.fields.items[0].fields.values[0].fields.params[0].fields.type;
+        const replaced = structure.structureTemplates(tree, type()).find(c => c.id.startsWith('type:part:1:') && c.id.endsWith('type:name:bool^'));
+        assert(replaced);
+        tree = await parse(apply(tree.source, structure.editStructure(tree, type(), replaced.id)));
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+        tree = await parse(apply(tree.source, structure.editStructure(tree, type(), 'type:append')));
+        assert.equal(type().fields.items.length, 3, tree.source);
+        const second = type().fields.items[1];
+        tree = await parse(apply(tree.source, deletion.deleteFromGraph(tree, { ...second, category: 'element' })));
+        assert.equal(type().fields.items.length, 2, tree.source);
+        if (source.includes('#[keep]#')) assert(tree.source.includes('#[keep]#'));
+        tree = await parse(apply(tree.source, structure.editStructure(tree, type(), 'type:remove:0')));
+        assert.equal(type().kind, 'type-name', tree.source);
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    }
+}));
+
+test('delegate entries allow one plain or self member target and preserve neighboring definitions', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const lists = load('graphLists.ts'), deletion = load('graphDelete.ts');
+    let tree = await parse('let^Item=def^{base={}}');
+    const def = () => tree.root.fields.items[0].fields.values[0];
+    const insertion = () => lists.listInsertions(tree).find(s => s.kind === 'def' && s.before === undefined);
+    tree = await parse(apply(tree.source, lists.insertListEdit(tree, insertion(), 'delegate')));
+    assert(!lists.listTemplates(tree, insertion()).some(c => c.id === 'delegate'));
+    const entry = () => def().fields.items[1], target = () => entry().fields.value;
+    assert.equal(tree.source.slice(target().start, target().end), 'base');
+    assert(expressions.expressionTemplates(tree, target()).every(c => c.id.startsWith('reference:')));
+    for (const invalid of ['number', 'call', 'reference:self^', 'reference:other.child', 'reference:self^.child.more', 'reference:$base'])
+        assert.equal(expressions.replaceExpression(tree, target(), invalid), undefined);
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, target(), 'reference:self^.base')));
+    assert.equal(target().kind, 'member');
+    tree = await parse(apply(tree.source, deletion.deleteFromGraph(tree, { ...entry(), category: 'element' })));
+    assert.equal(def().fields.items.length, 1);
+    assert(lists.listTemplates(tree, insertion()).some(c => c.id === 'delegate'));
+    tree = await parse('let^Item=def^{op^+ = f^self^,rhs:Self^{0}}');
+    assert.equal(lists.listTemplates(tree, insertion()).find(c => c.id === 'delegate').text, 'delegate^value');
+}));
+
 test('typeof, boxes and type values retain editable roots and operands through real parsing', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structure = load('graphStructure.ts');
     for (const template of ['typeof', 'box', 'constbox']) {

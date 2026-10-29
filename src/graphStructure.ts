@@ -1,3 +1,5 @@
+import { replacementSpan } from "./graphExpressions";
+import { commaLists, insertListEdit, removeListItem } from "./graphLists";
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import type { StatementTemplate } from "./graphStatements";
@@ -78,11 +80,45 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
             Object.values(scope.fields ?? {}).flat().filter(child => child.start <= node!.start && child.end >= node!.end).forEach(collect);
         };
         collect(tree.root);
-        for (const name of names) if (name !== owner?.name)
-            add(`type:name:${name}`, "Use type", { start: node.start, end: node.end, text: name });
-        const current = source.slice(node.start, node.end);
-        add("type:nullable", "Allow nil", { start: node.start, end: node.end, text: `(${current})|nil^` });
-        add("type:sequence", "Use sequence type", { start: node.start, end: node.end, text: `t^{(${current})[]}` });
+        const rootSpan = replacementSpan(tree, node) ?? node;
+        const original = source.slice(rootSpan.start, rootSpan.end);
+        const targets: AstNode[] = [];
+        const gather = (child: AstNode) => {
+            if (child.kind.startsWith("type-")) targets.push(child);
+            Object.values(child.fields ?? {}).flat().forEach(gather);
+        };
+        gather(node);
+        const lists = commaLists(tree);
+        targets.forEach((target, index) => {
+            const span = replacementSpan(tree, target);
+            if (!span || span.start < rootSpan.start || span.end > rootSpan.end) return;
+            const current = source.slice(span.start, span.end), prefix = index ? `type:part:${index}:` : "";
+            const change = (id: string, label: string, edit: SourceEdit) => add(prefix + id, label, edit,
+                original.slice(0, edit.start - rootSpan.start) + edit.text + original.slice(edit.end - rootSpan.start));
+            const replace = (id: string, label: string, text: string) => change(id, label, { ...span, text });
+            for (const name of names) if (name !== owner?.name) replace(`type:name:${name}`, "Use type", name);
+            for (const [id, label, text] of [
+                ["nullable", "Allow nil", `(${current})|nil^`],
+                ["sequence", "Use sequence type", `t^{(${current})[]}`],
+                ["tuple", "Use tuple type", `(${current}, any^)`],
+                ["intersection", "Use intersection type", `(${current})&t^{}`],
+                ["function", "Use function type", `f^any^ -> (${current});`],
+                ["coroutine", "Use coroutine type", `c^{f^any^ -> any^ -> (${current})}`],
+                ["apply", "Use type descriptor type", `type^<${current}>`],
+            ]) replace(`type:${id}`, label, text);
+            const list = lists.find(list => list.node === target);
+            if (list && ["type-tuple", "type-apply"].includes(target.kind)) {
+                list.items.forEach((_, item) => {
+                    if (list.items.length > 1) change(`type:remove:${item}`, "Remove type element", removeListItem(source, list, item));
+                });
+                const append = insertListEdit(tree, { category: "list", kind: target.kind, start: target.start, end: target.end, field: list.field }, "any");
+                if (append) change("type:append", "Add type element", append);
+            }
+            if (["type-union", "type-intersect"].includes(target.kind)) for (const field of ["left", "right"]) {
+                const child = one(target, field), inner = child && replacementSpan(tree, child);
+                if (inner) replace(`type:keep:${field}`, field === "left" ? "Keep left type" : "Keep right type", source.slice(inner.start, inner.end));
+            }
+        });
         return result;
     }
     if (node.kind === "reassign") {

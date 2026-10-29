@@ -1,7 +1,7 @@
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import { statementSites } from "./graphStatements";
-import { commaLists, type CommaList } from "./graphLists";
+import { commaLists, removeListItem as deleteItem, type CommaList } from "./graphLists";
 import { canInsertBinding, hasCallInitializer } from "./graphCalls";
 import { assignmentOperator } from "./graphAssignments";
 import { syntaxTokens } from "./graphSyntax";
@@ -51,7 +51,7 @@ function removableLists(tree: AstReply) {
         && (list.node.kind !== "pattern-list" || list.items.length > 1)
         && (list.node.kind !== "index" || list.items.length > 1)
         && !(list.node.kind === "for" && list.field === "focus" && list.items.length < 2)
-        && !list.implicit && list.node.kind !== "type-tuple"
+        && !list.implicit && (!["type-tuple", "type-apply"].includes(list.node.kind) || list.items.length > 1)
         && !(list.node.kind === "tuple" && lists.some(parent => ["define", "reassign"].includes(parent.node.kind)
             && parent.field === "values" && parent.items[0] === list.node
             && Array.isArray(parent.node.fields?.targets) && parent.node.fields.targets.length > 1)));
@@ -143,30 +143,4 @@ export function deleteFromGraph(tree: AstReply, site: DeleteSite): SourceEdit | 
         return deleteItem(tree.source, { ...list, start, end }, index);
     }
     return deleteItem(tree.source, list, index);
-}
-
-function deleteItem(source: string, list: CommaList, index: number): SourceEdit {
-    const item = list.items[index];
-    const next = list.items[index + 1], previous = list.items[index - 1];
-    // AST spans omit grouping parentheses. Remove the written slot, including its groups.
-    const leading = syntaxTokens(source, previous?.end ?? list.start, item.start);
-    const trailing = syntaxTokens(source, item.end, next?.start ?? list.end);
-    const before = leading.filter(t => t.text === ",").slice(-1)[0];
-    const after = trailing.find(t => t.text === ",");
-    let start = item.start, end = item.end;
-    for (const token of leading.slice().reverse()) {
-        if (token.text !== "(") break;
-        start = token.start;
-    }
-    for (const token of trailing) {
-        if (token.text !== ")") break;
-        end = token.end;
-    }
-    const site = { start, end };
-    const comma = after ?? before;
-    if (!comma) return { start: site.start, end: site.end, text: "" };
-    // Preserve comments and whitespace between the item and its separator.
-    return comma.start >= site.end
-        ? { start: site.start, end: comma.end, text: source.slice(site.end, comma.start) }
-        : { start: comma.start, end: site.end, text: source.slice(comma.end, site.start) };
 }
