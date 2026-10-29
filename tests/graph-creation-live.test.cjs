@@ -12,6 +12,25 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('qualified type references replace the whole type and never expose value access controls', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structures = load('graphStructure.ts');
+    const type = tree => tree.root.fields.items[0].fields.values[0].fields.params[0].fields.type;
+    const initial = await parse('let^read=f^x:godot.Node2D{0}');
+    assert.equal(type(initial).kind, 'member');
+    assert(!structures.structureTemplates(initial, type(initial)).some(c => c.id === 'access:nil-check'));
+    for (const reference of ['godot.Node2D', 'module.Item^', 'Self^', 'Self^^', '日本語.型']) {
+        const edit = structures.editStructure(initial, type(initial), `type:reference:${reference}`);
+        assert(edit, reference);
+        const tree = await parse(apply(initial.source, edit));
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+        assert.equal(tree.source.slice(type(tree).start, type(tree).end), reference);
+    }
+    for (const reference of ['f^', 'p^', 'Item^^', 'godot..Node', 'godot.0', 'Item;print(1)', 't^{}'])
+        assert.equal(structures.editStructure(initial, type(initial), `type:reference:${reference}`), undefined, reference);
+    const edit = structures.editStructure(initial, type(initial), 'type:name:string^');
+    assert.equal(apply(initial.source, edit), 'let^read=f^x:string^{0}');
+}));
+
 test('positional type counts and tails preserve their type and comments while rejecting invalid limits', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structures = load('graphStructure.ts');
     const type = tree => tree.root.fields.items[0].fields.values[0].fields.params[0].fields.type;

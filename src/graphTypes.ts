@@ -4,6 +4,12 @@ import { resultTypes, syntaxTokens } from "./graphSyntax";
 const one = (value: AstNode | AstNode[] | undefined): AstNode | undefined => Array.isArray(value) ? value[0] : value;
 const list = (value: AstNode | AstNode[] | undefined): AstNode[] => value === undefined ? [] : Array.isArray(value) ? value : [value];
 
+/** A qualified type uses the same member node as a value access. */
+export function isTypeNode(node: AstNode): boolean {
+    const target = one(node.fields?.target);
+    return node.kind.startsWith("type-") || node.kind === "member" && !!target && isTypeNode(target);
+}
+
 /** Ignore modifiers on nested parameter signatures. */
 export function freshMarker(node: AstNode, source: string) {
     const annotation = one(node.fields?.return_type);

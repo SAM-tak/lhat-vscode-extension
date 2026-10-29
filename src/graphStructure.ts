@@ -7,12 +7,16 @@ import type { StatementTemplate } from "./graphStatements";
 import { syntaxTokens, templateMarker, resultTypes } from "./graphSyntax";
 import { literalOf, quoteString, isNumberLiteral } from "./webview/literals";
 import { assignmentOperator, ASSIGNMENT_LABELS } from "./graphAssignments";
-import { typeSites, freshMarker } from "./graphTypes";
+import { typeSites, freshMarker, isTypeNode } from "./graphTypes";
 import { iteratorNames, freshFocus } from "./graphLoops";
 
 export const validTypeMemberName = (name: string) => /^[\p{L}_][\p{L}\p{N}_]*\^?$/u.test(name);
 
+export const validTypeReference = (name: string) => /^(?:[\p{L}_][\p{L}\p{N}_]*\^?|Self\^+)(?:\.[\p{L}_][\p{L}\p{N}_]*\^?)*$/u.test(name)
+    && !["f^", "p^"].includes(name.split(".")[0]);
+
 export function validStructureInput(input: NonNullable<StatementTemplate["input"]>, value: string): boolean {
+    if (input.kind === "typeName") return validTypeReference(value);
     if (input.kind !== "count") return validTypeMemberName(value);
     if (!/^[0-9]/.test(value) || !isNumberLiteral(value)) return false;
     try { const count = BigInt(value.replace(/_/g, "")); return count > 0n && count <= 256n; } catch { return false; }
@@ -66,7 +70,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     const add = (id: string, label: string, edit: SourceEdit, preview = edit.text || label) => result.push({ id, label, text: preview, edit });
     const head = syntaxTokens(source, node.start, node.end);
     if (parent?.kind === "table-entry" && syntaxTokens(source, parent.start, parent.end)[0]?.text === "delegate^") return [];
-    const access = accessOperator(node, source);
+    const access = !isTypeNode(node) && accessOperator(node, source);
     if (access) add("access:nil-check", access.optional ? "Use ordinary access" : "Use nil-checked access", access.optional
         ? { start: access.optional.start, end: access.optional.end, text: "" }
         : { start: access.delimiter.start, end: access.delimiter.start, text: "?" });
@@ -116,7 +120,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         if (fresh) add("function:fresh", fresh.label, fresh.edit);
         return result;
     }
-    if (node.kind.startsWith("type-")) {
+    if (isTypeNode(node)) {
         const names = new Set(["number^", "string^", "bool^", "nil^", "any^", "t^{}"]);
         const owner = typeSites(tree).find(site => site.annotation && site.annotation.start <= node!.start && site.annotation.end >= node!.end);
         const collect = (scope: AstNode) => {
@@ -144,7 +148,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         if (parent && one(parent, "return_type") === node && freshMarker(parent, source)) freshTypes.add(node);
         const gather = (child: AstNode, owner?: AstNode) => {
             if (owner?.kind === "param" && source.slice(child.start, child.end) === "self^") return;
-            if (child.kind.startsWith("type-") || child.kind === "self-table") targets.push(child);
+            if (isTypeNode(child) || child.kind === "self-table") targets.push(child);
             if (freshMarker(child, source)) freshTypes.add(one(child, "return_type")!);
             Object.values(child.fields ?? {}).flat().forEach(part => gather(part, child));
         };
@@ -158,6 +162,8 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
                 original.slice(0, edit.start - rootSpan.start) + edit.text + original.slice(edit.end - rootSpan.start));
             const replace = (id: string, label: string, text: string) => change(id, label, { ...span, text });
             if (target.kind !== "self-table") {
+                change("type:reference", "Use a named type", { ...span, text: current });
+                result[result.length - 1].input = { kind: "typeName", value: validTypeReference(current) ? current : "any^" };
                 for (const name of names) if (name !== owner?.name) replace(`type:name:${name}`, "Use type", name);
                 for (const [id, label, text] of [
                     ["nullable", "Allow nil", `(${current})|nil^`],

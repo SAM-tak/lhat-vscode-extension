@@ -460,5 +460,9 @@
     "Use unbounded positions": "末尾の位置要素を可変長にする",
     "Use a single position": "位置要素を1つにする",
     "Indexed member type": "索引でアクセスする要素の型",
-    "Instance fields type": "インスタンスのフィールド型"
+    "Instance fields type": "インスタンスのフィールド型",
+    "Use a named type": "名前付きの型を使う",
+    "Named type": "名前付きの型",
+    "Enter a type name": "型名を入力",
+    "Use type name": "この型名を使う"
 }

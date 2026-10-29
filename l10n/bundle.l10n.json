@@ -460,5 +460,9 @@
     "Use unbounded positions": "Use unbounded positions",
     "Use a single position": "Use a single position",
     "Indexed member type": "Indexed member type",
-    "Instance fields type": "Instance fields type"
+    "Instance fields type": "Instance fields type",
+    "Use a named type": "Use a named type",
+    "Named type": "Named type",
+    "Enter a type name": "Enter a type name",
+    "Use type name": "Use type name"
 }

@@ -189,7 +189,7 @@ function TypeMenu({ picker, close, select, retry }: {
 export function TypeLabel({ label, site }: { label: string; site?: TypeSite }) {
     const context = useContext(Types);
     const statements = useStatementActions();
-    const structure = site?.annotation && statements.structures.filter(s => s.kind.startsWith("type-") &&
+    const structure = site?.annotation && statements.structures.filter(s => (s.kind.startsWith("type-") || s.kind === "member") &&
         s.start >= site.annotation!.start && s.end <= site.annotation!.end).sort((a, b) => (b.end - b.start) - (a.end - a.start))[0];
     const vocabulary = graphVocabulary();
     const fullType = useMemo(() => site ? displayType(site.typeText, vocabulary) : label,

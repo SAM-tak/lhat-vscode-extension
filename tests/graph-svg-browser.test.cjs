@@ -3011,6 +3011,30 @@ test('a typed variadic function is constructed through parameter, reference and 
     });
 });
 
+test('qualified type names remain complete editable annotations through the live type menu', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        const expected = normalizedAst(await parse('let^function=f^value:string^{return^0}'));
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), fn = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('function');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.addElement('parameter', fn(), 'params');
+            const name = () => fn().fields.params[0].fields.name, type = () => fn().fields.params[0].fields.type;
+            for (const reference of ['godot.Node2D','Self^^','日本語.型']) {
+                await ui.typeStructure(name(), `type:reference:${reference}`);
+                assert.equal(host.tree.source.slice(type().start, type().end), reference);
+                const title = await client.evaluate(`document.querySelector('.type-label[data-type-start="${name().start}"]').title`);
+                assert(title.includes(reference === "Self^^" ? "自身の型" : reference), title);
+            }
+            await ui.typeStructure(name(), 'type:name:string^');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('positional counts, type indexers and instance fields are built from the live type menu', { timeout: 90000 }, async () => {
     const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs'), structures = load('graphStructure.ts');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {

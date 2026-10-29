@@ -251,7 +251,7 @@ async function graphUi(host, { evaluate, until, call }) {
         async typeStructure(name, id) {
             const site = load('graphTypes.ts').typeSites(host.tree).find(s => s.start === name.start && s.end === name.end);
             assert(site?.annotation);
-            const structure = structures.structureSites(host.tree).filter(s => s.kind.startsWith('type-') &&
+            const structure = structures.structureSites(host.tree).filter(s => (s.kind.startsWith('type-') || s.kind === 'member') &&
                 s.start >= site.annotation.start && s.end <= site.annotation.end).sort((a, b) => (b.end - b.start) - (a.end - a.start))[0];
             assert(structure);
             await choose(`.type-label[data-type-start="${name.start}"][data-type-end="${name.end}"]`, structures.structureTemplates(host.tree, structure), id, true);
