@@ -5,7 +5,7 @@ import { syntaxTokens } from "./graphSyntax";
 import { callInfo } from "./graphCalls";
 import { assignmentValues } from "./graphAssignments";
 import { patternLists, patternExpressions } from "./graphPatterns";
-import { iteratorNames } from "./graphLoops";
+import { iteratorNames, forExpression, freshFocus } from "./graphLoops";
 
 export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean; errorName?: boolean;
     owner?: SourceSpan; callArguments?: string[] }
@@ -27,7 +27,7 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
         const pattern = patterns.get(node);
         if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(child => visit(child)); return; }
         if (["disabled", "module", "annotation", "import", "import-stmt", "require-stmt"].includes(node.kind) || node.kind.startsWith("type-")) return;
-        if (value && kinds.has(node.kind) && node.start < node.end) {
+        if (value && (kinds.has(node.kind) || forExpression(node, tree.source)) && node.start < node.end) {
             const info = callInfo({ kind: "call", start: node.start, end: node.end, line: node.line, column: node.column, fields: { target: node } });
             sites.push({ kind: node.kind, start: node.start, end: node.end,
                 ...(info ? { callArguments: info.inputs.map(input => input.default ?? (input.type === "number^" ? "0" : input.type === "string^" ? '\"\"' : input.type === "bool^" ? "false^" : "nil^")) } : {}),
@@ -114,6 +114,7 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         ["function", "Function", "f^{ return^ 0 }"], ["procedure", "Procedure", "p^{}"],
         ["definition", "Table definition", "def^{}"],
         ["selfTable", "Self table", "self^{}"],
+        ["local", "Expression with a local value", `(for^let^${freshFocus(tree.source)} = 0 do^: (${current});)`],
         ["conditional", "Conditional expression", "(if^true^: 0 el^: 0;)"],
         ["interpolation", "Interpolated string", '$"text{0}"'],
         ["try", "Propagate an error", `try^(${current})`],

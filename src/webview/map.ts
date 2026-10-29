@@ -26,7 +26,7 @@ import { assignmentOperator } from "../graphAssignments";
 import { syntaxTokens } from "../graphSyntax";
 import { interpolationFields, interpolationParts, type InterpolationField } from "../graphInterpolation";
 import { patternLists } from "../graphPatterns";
-import { iteratorNames } from "../graphLoops";
+import { iteratorNames, forExpression } from "../graphLoops";
 import { expressionCells, isInlineValue } from "./operatorExpression";
 import { structuralDeletions } from "../graphDelete";
 
@@ -2071,7 +2071,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 childVoice = "expr"; // a statement's expression
             }
             if (VOICE_TURN.has(kind) && field === "body") childVoice = "stmt";
-            if (BODY_STATEMENT.has(kind) && field === "body") childVoice = "stmt";
+            if (BODY_STATEMENT.has(kind) && field === "body") childVoice = forExpression(node, source) ? "expr" : "stmt";
             if (matchExpressions.has(node) && field === "body") childVoice = "expr";
             if (kind === "if-clause" && field === "body") childVoice = voice;
             inner.push(build(c, childVoice, childUnfold, inner_avail));
@@ -2088,7 +2088,8 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         const match = matchStatements.has(node);
         const focusedCondition = kind === "for" && node.fields?.bound &&
             kids.some(child => child.field === "body" && child.node.kind === "if-stmt");
-        const sequential = voice === "stmt" && (STATEMENT_LIST.has(kind) || kind === "with" || match || focusedCondition);
+        const focusChain = kind === "for" && kids.some(child => child.field === "body" && child.node.kind === "for");
+        const sequential = voice === "stmt" && (STATEMENT_LIST.has(kind) || kind === "with" || match || focusedCondition || focusChain);
         if (loopBodies.has(node)) return loopBody(node, inner, kids, childUnfold, avail);
         const built = container(id, label, dir, inner,
             sequential ? flow(id, inner) : chain(id, inner), node);

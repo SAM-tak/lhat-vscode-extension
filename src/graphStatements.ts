@@ -1,3 +1,4 @@
+import { forExpression } from "./graphLoops";
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import { syntaxTokens } from "./graphSyntax";
@@ -49,7 +50,7 @@ function lists(tree: AstReply): StatementList[] {
             loop: false,
         };
         if (node.kind === "repeat" || (node.kind === "for" &&
-            !["if-stmt", "if-expr"].includes((node.fields?.body as AstNode | undefined)?.kind ?? ""))) {
+            (node.fields?.body as AstNode | undefined)?.kind === "block" && !forExpression(node, tree.source))) {
             context = { ...context, loop: true };
         }
         const field = node.kind === "block" ? "items" : node.kind === "loop-clause" ? "body" : undefined;

@@ -12,6 +12,28 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('local expression scopes and shared for drivers preserve their inner source and avoid name capture', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const loops = load('graphLoops.ts'), structure = load('graphStructure.ts');
+    let tree = await parse('let^local=7 let^answer=local');
+    const answer = () => tree.root.fields.items[1].fields.values[0];
+    tree = await parse(apply(tree.source, expressions.replaceExpression(tree, answer(), 'local')));
+    assert(loops.forExpression(answer(), tree.source));
+    assert(tree.source.includes('let^local2 = 0'));
+    assert.equal(tree.source.slice(answer().fields.body.start, answer().fields.body.end), 'local');
+    assert(expressions.expressionSites(tree).some(s => s.kind === 'for' && s.start === answer().start));
+    for (const source of ['for^i from^0 to^3 {print(i)}', 'let^answer=(for^let^x=1 do^:(x+2);)',
+        'let^answer=(for^let^x=1 if^true^:x el^:0;)']) {
+        tree = await parse(source);
+        const root = () => source.startsWith('let^') ? tree.root.fields.items[0].fields.values[0] : tree.root.fields.items[0];
+        const before = tree.source.slice(root().start, root().end);
+        tree = await parse(apply(tree.source, structure.editStructure(tree, root(), 'focus:wrap')));
+        assert.equal(tree.source.slice(root().fields.body.start, root().fields.body.end), before);
+        assert.equal(loops.forExpression(root(), tree.source), source.startsWith('let^'));
+        tree = await parse(apply(tree.source, structure.editStructure(tree, root(), 'focus:unwrap')));
+        assert.equal(tree.source, source);
+    }
+}));
+
 test('type tests and casts retain editable values, type syntax and operator conversions', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const lists = load('graphLists.ts'), structure = load('graphStructure.ts');
     for (const template of ['fits', 'cast']) {

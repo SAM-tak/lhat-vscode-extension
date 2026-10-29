@@ -18,3 +18,21 @@ export function iteratorNames(node: AstNode, source: string): AstNode[] {
     const names = focus.length === 1 && focus[0].kind === "define" ? array(focus[0].fields?.values) : focus;
     return names.map(name => array(name.fields?.name)[0] ?? name).filter(name => name.kind === "ident");
 }
+
+/** A focus chain takes its expression/statement form from its driving clause. */
+export function forExpression(node: AstNode, source: string): boolean {
+    if (node.kind !== "for") return false;
+    const body = array(node.fields?.body)[0];
+    if (!body) return false;
+    return body.kind === "for" ? forExpression(body, source)
+        : body.kind === "if-expr" || !node.fields?.bound &&
+            syntaxTokens(source, array(node.fields?.focus).slice(-1)[0]?.end ?? node.start, body.start).some(token => token.text === "do^");
+}
+
+/** Wrapping a scope must not capture any existing reference. */
+export function freshFocus(source: string): string {
+    const used = new Set(syntaxTokens(source).map(token => token.text));
+    let name = "local", index = 2;
+    while (used.has(name)) name = `local${index++}`;
+    return name;
+}

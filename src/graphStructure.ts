@@ -5,7 +5,7 @@ import { syntaxTokens } from "./graphSyntax";
 import { literalOf, quoteString } from "./webview/literals";
 import { assignmentOperator, ASSIGNMENT_LABELS } from "./graphAssignments";
 import { typeSites } from "./graphTypes";
-import { iteratorNames } from "./graphLoops";
+import { iteratorNames, freshFocus } from "./graphLoops";
 
 export interface StructureSite extends SourceSpan { kind: string }
 interface Action extends StatementTemplate { edit: SourceEdit }
@@ -34,6 +34,12 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     const source = tree.source, result: Action[] = [], newline = source.includes("\r\n") ? "\r\n" : "\n";
     const add = (id: string, label: string, edit: SourceEdit, preview = edit.text || label) => result.push({ id, label, text: preview, edit });
     const head = syntaxTokens(source, node.start, node.end);
+    if (node.kind === "for") {
+        add("focus:wrap", "Add an outer local value", { start: node.start, end: node.start, text: `for^let^${freshFocus(source)} = 0 ` });
+        const body = one(node, "body");
+        if (body?.kind === "for") add("focus:unwrap", "Remove the outer local scope", { start: node.start, end: body.start, text: "" });
+    }
+
     if (node.kind.startsWith("type-")) {
         const names = new Set(["number^", "string^", "bool^", "nil^", "any^", "t^{}"]);
         const owner = typeSites(tree).find(site => site.annotation && site.annotation.start <= node!.start && site.annotation.end >= node!.end);
@@ -247,7 +253,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         });
     } else if (["repeat", "for"].includes(node.kind)) {
         const body = one(node, "body");
-        if (body?.kind !== "block") return [];
+        if (body?.kind !== "block") return result;
         const tokens = syntaxTokens(source, body.start, body.end), open = tokens[0], close = tokens.slice(-1)[0];
         if (open?.text !== "{" || close?.text !== "}") return [];
         if (!body.comments?.length) add("body:comment", "Add body comment", {

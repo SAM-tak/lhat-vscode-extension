@@ -2867,6 +2867,63 @@ test('a typed variadic function is constructed through parameter, reference and 
     });
 });
 
+test('local expressions are built and nested through focus controls while retaining editable bindings and results', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^value=(for^let^amount=2 do^:(amount+3);)'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), value = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('let');
+            await ui.expression(value(), 'local');
+            const focus = () => value().fields.focus[0];
+            await ui.input(`.name-input[data-reference-start="${focus().fields.targets[0].start}"]`, 'amount');
+            await ui.input(`.box[data-source-start="${focus().fields.values[0].start}"] .literal-input`, '2');
+            await ui.expression(value().fields.body, 'reference:amount');
+            await ui.expression(value().fields.body, 'add');
+            await ui.input(`.box[data-source-start="${value().fields.body.fields.right.start}"] .literal-input`, '3');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.structure(value(), 'focus:wrap');
+            assert.equal(value().fields.body.kind, 'for');
+            await ui.structure(value().fields.body, 'focus:wrap');
+            assert.equal(value().fields.body.fields.body.kind, 'for');
+            await ui.structure(value(), 'focus:unwrap');
+            await ui.structure(value(), 'focus:unwrap');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.expression(value(), 'nil');
+            assert.equal(value().kind, 'hat-ident');
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('a shared for driver is constructed through outer focus controls and stays editable after scope removal', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('for^let^limit=0 for^i from^1 downto^limit {print(nil^)}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), loop = () => host.tree.root.fields.items[0];
+            await ui.add('for');
+            await ui.structure(loop(), 'focus:wrap');
+            const name = loop().fields.focus[0].fields.targets[0];
+            await ui.input(`.name-input[data-reference-start="${name.start}"]`, 'limit');
+            await ui.expression(loop().fields.body.fields.bound, 'reference:limit');
+            await ui.structure(loop().fields.body, 'direction');
+            assert(host.tree.source.includes('downto^'));
+            await ui.add('call', loop().fields.body.fields.body);
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.expression(loop().fields.body.fields.bound, 'number');
+            await ui.structure(loop(), 'focus:unwrap');
+            assert.equal(loop().fields.body.kind, 'block');
+            assert.equal(loop().fields.body.fields.items.length, 1);
+            await ui.remove(loop());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('type tests and casts use editable type operands and preserve values across operator changes', { timeout: 60000 }, async () => {
     const { graphHost, graphUi } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {

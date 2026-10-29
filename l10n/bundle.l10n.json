@@ -397,5 +397,8 @@
     "Use iterator loop": "Use iterator loop",
     "Include iterator key": "Include iterator key",
     "Omit iterator key": "Omit iterator key",
-    "Condition with a local value": "Condition with a local value"
+    "Condition with a local value": "Condition with a local value",
+    "Expression with a local value": "Expression with a local value",
+    "Add an outer local value": "Add an outer local value",
+    "Remove the outer local scope": "Remove the outer local scope"
 }

@@ -397,5 +397,8 @@
     "Use iterator loop": "イテレーターで繰り返す",
     "Include iterator key": "イテレーターのキーも受け取る",
     "Omit iterator key": "イテレーターのキーを省く",
-    "Condition with a local value": "ローカルな値を持つ条件分岐"
+    "Condition with a local value": "ローカルな値を持つ条件分岐",
+    "Expression with a local value": "ローカル値を持つ式",
+    "Add an outer local value": "外側にローカル値を追加",
+    "Remove the outer local scope": "外側のローカルスコープを削除"
 }
