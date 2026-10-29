@@ -19,6 +19,7 @@ export const STATEMENT_TEMPLATE_LABELS = {
     handled: "Exception handling block", yield: "Yield statement", await: "Await statement",
     type: "Type definition", tableDefinition: "Table definition", enumeration: "Enumeration definition",
     error: "Error definition", module: "Module declaration", import: "Import module", require: "Require file",
+    focusedIf: "Condition with a local value",
 } as const;
 interface Context { callable?: "function" | "procedure"; loop: boolean }
 interface StatementList {
@@ -124,6 +125,7 @@ export function statementTemplates(tree: AstReply, site: StatementInsertion): St
         template("tableDefinition", `let^ ${name("Item")} = def^{}`),
         template("enumeration", `enum^ ${name("Kind")} { Item }`),
         template("error", `errordef^ ${name("Problem")} { Failure }`),
+        template("focusedIf", `for^let^${name("value")} = 0 if^true^ {\n}`),
     ];
     if (list.context.callable === "procedure") choices.push(template("yield", "yield^ 0"), template("await", "await^ nil^"));
     if (list.node === tree.root) {

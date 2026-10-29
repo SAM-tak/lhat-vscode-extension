@@ -26,6 +26,7 @@ import { assignmentOperator } from "../graphAssignments";
 import { syntaxTokens } from "../graphSyntax";
 import { interpolationFields, interpolationParts, type InterpolationField } from "../graphInterpolation";
 import { patternLists } from "../graphPatterns";
+import { iteratorNames } from "../graphLoops";
 import { expressionCells, isInlineValue } from "./operatorExpression";
 
 const CH = 7.2; // mono advance at 12px
@@ -251,8 +252,12 @@ function allChildren(node: AstNode): Child[] {
 function drawnChildren(node: AstNode): Child[] {
     if (ALWAYS_LEAF.has(node.kind)) return [];
     const skip = NOT_DRAWN_FIELDS[node.kind] ?? [];
+    const body = node.fields?.body;
+    const focusedCondition = node.kind === "for" && body && !Array.isArray(body) && ["if-stmt", "if-expr"].includes(body.kind) && node.fields?.bound;
     return allChildren(node).filter((c) => c.field !== "arms" && c.field !== "annotations" && c.node.kind !== "annotation" && !skip.includes(c.field) &&
+        !(focusedCondition && c.field === "bound") &&
         (!NOT_DRAWN.has(c.node.kind) ||
+            (node.kind === "for" && c.field === "focus" && c.node.kind === "param") ||
             (node.kind === "type" && ["type-table", "type-func", "type-tuple"].includes(c.node.kind)) ||
             (node.kind === "type-table" && c.node.kind === "member-decl") ||
             // Error payloads are the contents being inspected, not a
@@ -581,6 +586,16 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     const source = reply.source;
     const lists = commaLists(reply);
     const patterns = patternLists(reply);
+    const iteratorFocus = new Map<AstNode, AstNode>();
+    const iteratorBindings = new Set<AstNode>();
+    const collectIterators = (node: AstNode) => {
+        const names = iteratorNames(node, source);
+        names.forEach(name => iteratorBindings.add(name));
+        const focus = node.fields?.focus;
+        if (names.length === 1 && Array.isArray(focus) && focus[0]?.kind === "define") iteratorFocus.set(focus[0], names[0]);
+        Object.values(node.fields ?? {}).flat().forEach(collectIterators);
+    };
+    collectIterators(reply.root);
     const editableLists = listInsertions(reply);
     const commaList = (node: AstNode, field: string) => lists.find(list => listIdentity(list.node, list.field) === listIdentity(node, field))
         ?? commaLists({ source, root: node }).find(list => list.node === node && list.field === field);
@@ -1498,6 +1513,8 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
 
     function buildNodeContents(node: AstNode, voice: "stmt" | "expr",
                        unfold: boolean, avail: number): ElkNode {
+        const iteratorName = iteratorFocus.get(node) ?? (iteratorBindings.has(node) ? node : undefined);
+        if (iteratorName) return leaf({ ...node, kind: "iterator-name" }, labelFor(iteratorName, []));
         if (node.kind === "pattern-range") {
             const lower = node.fields!.lower as AstNode, upper = node.fields!.upper as AstNode;
             const token = syntaxTokens(source, lower.end, upper.start).find(t => ["to^", "downto^"].includes(t.text))!;
@@ -2053,7 +2070,9 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         // dispatching. Connect these steps, not just their outer borders.
         // Expressions, branch alternatives, and member lists stay unlinked.
         const match = matchStatements.has(node);
-        const sequential = voice === "stmt" && (STATEMENT_LIST.has(kind) || kind === "with" || match);
+        const focusedCondition = kind === "for" && node.fields?.bound &&
+            kids.some(child => child.field === "body" && child.node.kind === "if-stmt");
+        const sequential = voice === "stmt" && (STATEMENT_LIST.has(kind) || kind === "with" || match || focusedCondition);
         if (loopBodies.has(node)) return loopBody(node, inner, kids, childUnfold, avail);
         const built = container(id, label, dir, inner,
             sequential ? flow(id, inner) : chain(id, inner), node);

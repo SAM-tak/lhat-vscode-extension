@@ -2,6 +2,7 @@ import type { AstNode, SourceSpan, TypeSite } from "../protocol";
 import { typeSites } from "../graphTypes";
 import { HATS, type LabelCategory } from "./vocabulary";
 import { ASSIGNMENT_LABELS, assignmentOperator } from "../graphAssignments";
+import { iteratorNames } from "../graphLoops";
 
 export type LabelRole = "variableDefinition" | "mutableVariableDefinition" |
     "variableDeclaration" | "mutableVariableDeclaration" | "string" | "number";
@@ -67,6 +68,11 @@ function semanticTokens(source: string, root: AstNode,
     const visit = (node: AstNode) => {
         // Disabled statements have their own parsed display context, not live bindings.
         if (node.kind === "disabled") { disabled.push(node); return; }
+        iteratorNames(node, source).forEach(name => {
+            protectName(name);
+            tokens.push({ start: name.start, end: name.end,
+                name: { start: name.start, end: name.end, value: source.slice(name.start, name.end) } });
+        });
         if (node.kind === "ident" || node.kind === "hat-ident") {
             const text = source.slice(node.start, node.end);
             if (/^[\p{L}_][\p{L}\p{N}_]*\^*$/u.test(text) || /^`(?:[^`]|``)+`$/u.test(text)) {

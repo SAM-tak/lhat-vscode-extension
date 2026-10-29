@@ -29,8 +29,9 @@ export function analyzeExecution(root: AstNode, source: string) {
             const arms = field(node, "items").filter(child => child.kind === "if-clause");
             result = arms.some(arm => arm.fields?.condition === undefined) && arms.every(stops);
         } else if (node.kind === "for") {
-            // Pattern dispatch is a branch, unlike an ordinary possibly-empty loop.
-            result = field(node, "body").some(body => body.kind === "if-stmt" && source[body.start] === "{" && stops(body));
+            // Pattern dispatch and focused conditions choose branches;
+            // ordinary loops have block bodies and may execute zero times.
+            result = field(node, "body").some(body => body.kind === "if-stmt" && stops(body));
         }
         mainMemo.set(node, result);
         // A handled error may leave the block normally even when its main

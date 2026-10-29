@@ -4,6 +4,8 @@ import type { StatementTemplate } from "./graphStatements";
 import { syntaxTokens } from "./graphSyntax";
 import { literalOf, quoteString } from "./webview/literals";
 import { assignmentOperator, ASSIGNMENT_LABELS } from "./graphAssignments";
+import { typeSites } from "./graphTypes";
+import { iteratorNames } from "./graphLoops";
 
 export interface StructureSite extends SourceSpan { kind: string }
 interface Action extends StatementTemplate { edit: SourceEdit }
@@ -13,7 +15,7 @@ export function structureSites(tree: AstReply): StructureSite[] {
     const sites: StructureSite[] = [];
     const visit = (node: AstNode) => {
         if (node.kind === "disabled") return;
-        if (["if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string"].includes(node.kind))
+        if (node.kind.startsWith("type-") || ["if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string"].includes(node.kind))
             sites.push({ start: node.start, end: node.end, kind: node.kind });
         Object.values(node.fields ?? {}).flat().forEach(visit);
     };
@@ -32,6 +34,35 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     const source = tree.source, result: Action[] = [], newline = source.includes("\r\n") ? "\r\n" : "\n";
     const add = (id: string, label: string, edit: SourceEdit, preview = edit.text || label) => result.push({ id, label, text: preview, edit });
     const head = syntaxTokens(source, node.start, node.end);
+    if (node.kind.startsWith("type-")) {
+        const names = new Set(["number^", "string^", "bool^", "nil^", "any^", "t^{}"]);
+        const owner = typeSites(tree).find(site => site.annotation && site.annotation.start <= node!.start && site.annotation.end >= node!.end);
+        const collect = (scope: AstNode) => {
+            if (scope.kind === "def") names.add("Self^");
+            if (scope.kind === "block") for (const declaration of array(scope.fields?.items)) {
+                if (["enumdef", "errordef"].includes(declaration.kind)) {
+                    const name = one(declaration, "name"); if (name) names.add(source.slice(name.start, name.end));
+                }
+                if (declaration.kind === "define") array(declaration.fields?.targets).forEach((target, index) => {
+                    const value = array(declaration.fields?.values)[index], name = one(target, "name") ?? target;
+                    const text = source.slice(name.start, name.end);
+                    if (value && ["def", "type"].includes(value.kind)) names.add(text);
+                    else names.delete(text);
+                });
+            }
+            if (scope.kind === "func") array(scope.fields?.params).forEach(parameter => {
+                const name = one(parameter, "name"); if (name) names.delete(source.slice(name.start, name.end));
+            });
+            Object.values(scope.fields ?? {}).flat().filter(child => child.start <= node!.start && child.end >= node!.end).forEach(collect);
+        };
+        collect(tree.root);
+        for (const name of names) if (name !== owner?.name)
+            add(`type:name:${name}`, "Use type", { start: node.start, end: node.end, text: name });
+        const current = source.slice(node.start, node.end);
+        add("type:nullable", "Allow nil", { start: node.start, end: node.end, text: `(${current})|nil^` });
+        add("type:sequence", "Use sequence type", { start: node.start, end: node.end, text: `t^{(${current})[]}` });
+        return result;
+    }
     if (node.kind === "reassign") {
         const operator = assignmentOperator(node, source);
         if (!operator) return [];
@@ -130,7 +161,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         return result;
     }
     const match = node.kind === "for" ? one(node, "body") : undefined;
-    if (match && ["if-stmt", "if-expr"].includes(match.kind)) {
+    if (match && ["if-stmt", "if-expr"].includes(match.kind) && ["{", ":"].includes(source[match.start])) {
         const focus = array(node.fields?.focus), marker = head[0];
         const binding = focus[0], targets = binding && array(binding.fields?.targets);
         const header = syntaxTokens(source, node.start, match.start);
@@ -218,8 +249,9 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         let fresh = "i", serial = 2;
         while (used.has(fresh)) fresh = `i${serial++}`;
         const binding = focus[0], target = binding && array(binding.fields?.targets)[0];
-        const name = textOf(target, fresh), initial = textOf(binding && array(binding.fields?.values)[0], "0");
-        const focusText = ranged ? `var^${name} = ${initial}` : focus.map(n => textOf(n, "")).join(", ");
+        const iterator = iteratorNames(node, source);
+        const name = textOf(iterator[iterator.length - 1] ?? target, fresh), initial = iterator.length ? "0" : textOf(binding && array(binding.fields?.values)[0], "0");
+        const focusText = ranged || iterator.length ? `var^${name} = ${initial}` : focus.map(n => textOf(n, "")).join(", ");
         const step = advance.length ? ` next^${advance.map(n => textOf(n, "")).join(", ")}`
             : ranged ? ` next^${name} += 1` : "";
         const mode = (id: string, label: string, text: string) => add(`mode:${id}`, label,
@@ -229,7 +261,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         if (condition) {
             add("mode:while", "Use while loop", { start: condition.start, end: condition.end, text: "while^" });
             add("mode:until", "Use until loop", { start: condition.start, end: condition.end, text: "until^" });
-        } else {
+        } else if (iterator.length <= 1) {
             mode("while", "Use while loop", `${prefix}while^true^${step}`);
             mode("until", "Use until loop", `${prefix}until^false^${step}`);
         }
@@ -237,7 +269,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
             mode("count", "Use counted loop", `repeat^${conditional ? "1" : textOf(bound, "1")}`);
             mode("forever", "Use infinite loop", "repeat^");
         }
-        if (node.kind === "repeat" || focus.length === 1 && target?.kind === "ident")
+        if (node.kind === "repeat" || iterator.length === 1 || focus.length === 1 && target?.kind === "ident")
             mode("range", "Use range loop", `for^${name} from^${initial} to^${ranged || !conditional && node.kind === "repeat" ? textOf(bound, "1") : "1"}`);
         const order = ["prolog^", "pre^", "first^", "main^", "last^", "epilog^", "finally^"];
         const headers: { name: string; start: number; end: number }[] = [];
@@ -290,6 +322,12 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
             if (next) add("next:remove", "Remove loop advance", { start: next.start, end: body.start, text: "" });
             else add("next:add", "Add loop advance", { start: body.start, end: body.start, text: ` next^${name} += 1 ` });
         }
+        mode("iterator", "Use iterator loop", `for^${iterator.length ? iterator.map(n => textOf(n, "")).join(", ") : name} in^${iterator.length ? `(${textOf(bound, "{}")})` : "({})"}`);
+        if (iterator.length === 1) {
+            let key = "key", serial = 2; while (used.has(key)) key = `key${serial++}`;
+            add("iterator:key:add", "Include iterator key", { start: iterator[0].start, end: iterator[0].start, text: `${key}, ` });
+        } else if (iterator.length === 2) add("iterator:key:remove", "Omit iterator key", {
+            start: iterator[0].start, end: iterator[1].start, text: "" });
     }
     return result;
 }

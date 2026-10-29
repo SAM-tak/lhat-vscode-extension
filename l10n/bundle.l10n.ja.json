@@ -385,5 +385,13 @@
     "Use ordinary assignment": "通常の代入にする",
     "Use nil-checked assignment": "nilを確認する代入にする",
     "Name the matched value": "照合する値に名前を付ける",
-    "Use an unnamed matched value": "照合する値の名前を外す"
+    "Use an unnamed matched value": "照合する値の名前を外す",
+    "Use type": "型を使う",
+    "Allow nil": "nilを許す",
+    "Use sequence type": "配列のテーブル型にする",
+    "Right-click to construct a type": "右クリックで型を組み立てる",
+    "Use iterator loop": "イテレーターで繰り返す",
+    "Include iterator key": "イテレーターのキーも受け取る",
+    "Omit iterator key": "イテレーターのキーを省く",
+    "Condition with a local value": "ローカルな値を持つ条件分岐"
 }

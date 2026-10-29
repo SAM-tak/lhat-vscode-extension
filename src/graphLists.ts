@@ -5,6 +5,7 @@ import { resultTypes, syntaxTokens } from "./graphSyntax";
 import { callInfo, canInsertBinding } from "./graphCalls";
 import { assignmentOperator, assignmentValues } from "./graphAssignments";
 import { patternLists, patternExpressions } from "./graphPatterns";
+import { iteratorNames } from "./graphLoops";
 
 export interface ListInsertion extends StatementInsertion { category: "list" }
 export type InsertionSite = StatementInsertion | ListInsertion;
@@ -82,11 +83,15 @@ export function commaLists(tree: AstReply): CommaList[] {
                 annotation ? undefined : node.inferredReturnType ? resultTypes(node.inferredReturnType) : marker?.text === "f^" ? ["?"] : []);
         } else if (node.kind === "for") {
             for (const field of ["focus", "advance"]) {
+                if (field === "focus" && iteratorNames(node, source).length) continue;
                 const items = array(node.fields?.[field]);
                 if (items.length) add(field, "value", items[0].start, items[items.length - 1].end, items);
             }
         }
-        for (const child of Object.values(node.fields ?? {}).flat()) visit(child);
+        for (const [field, children] of Object.entries(node.fields ?? {})) {
+            if (field === "focus" && iteratorNames(node, source).length) continue;
+            for (const child of Array.isArray(children) ? children : [children]) visit(child);
+        }
     };
     visit(tree.root);
     // A function's return tuple is already represented by its signature list.
@@ -105,6 +110,7 @@ export function listInsertions(tree: AstReply): ListInsertion[] {
 }
 
 function editableList(list: CommaList, site: ListInsertion, lists: CommaList[], source: string): boolean {
+    if (list.node.kind === "for" && list.field === "focus" && iteratorNames(list.node, source).length) return false;
     if (["define", "reassign"].includes(list.node.kind)) return list.field === "targets" && canInsertBinding(list.node, source);
     if (list.node.kind === "tuple" && lists.some(parent => (parent.node.kind === "define" ||
         parent.node.kind === "reassign" && assignmentOperator(parent.node, source)?.base === ":=") && parent.field === "values" &&
@@ -246,7 +252,7 @@ function insertAt(source: string, list: CommaList, index: number, text: string):
 
 export interface OperatorSite extends SourceSpan { owner: SourceSpan; text: string; choices: string[]; members?: SourceSpan[] }
 const numeric = ["+", "-", "*", "/", "//", "%", "**"];
-const comparison = ["=", "!=", "<", "<=", ">", ">=", "is^"];
+const comparison = ["=", "!=", "<", "<=", ">", ">=", "is^", "==", "=/", "≠", "≤", "≥", "≦", "≧"];
 const bitwise = ["bitand^", "bitor^", "bitxor^", "bitshift^"];
 const products = ["cross^", "dot^", "×", "⋅"];
 export function operatorSites(tree: AstReply): OperatorSite[] {

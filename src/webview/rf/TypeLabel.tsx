@@ -4,6 +4,7 @@ import * as l10n from "@vscode/l10n";
 import type { FromWebview, ToWebview, TypeSite } from "../../protocol";
 import { displayType } from "../labels";
 import { graphVocabulary } from "../localization";
+import { useStatementActions } from "./StatementMenu";
 
 type TypeContext = { version?: number; post: (message: FromWebview) => void };
 type Picker = {
@@ -187,6 +188,9 @@ function TypeMenu({ picker, close, select, retry }: {
 /** One visual language for literal types, binding types and member types. */
 export function TypeLabel({ label, site }: { label: string; site?: TypeSite }) {
     const context = useContext(Types);
+    const statements = useStatementActions();
+    const structure = site?.annotation && statements.structures.filter(s => s.kind.startsWith("type-") &&
+        s.start >= site.annotation!.start && s.end <= site.annotation!.end).sort((a, b) => (b.end - b.start) - (a.end - a.start))[0];
     const vocabulary = graphVocabulary();
     const fullType = useMemo(() => site ? displayType(site.typeText, vocabulary) : label,
         [site?.typeText, label, vocabulary]);
@@ -197,8 +201,15 @@ export function TypeLabel({ label, site }: { label: string; site?: TypeSite }) {
         data-type-start={site.start} data-type-end={site.end} data-result-index={site.result?.index}
         data-category="type" aria-label={l10n.t("{0}: {1}. Choose type", site.name, label)} aria-haspopup="dialog"
         disabled={context.version === undefined}
-        title={`${origin}: ${fullType}\n${l10n.t("Click to choose a type")}`}
+        title={`${origin}: ${fullType}\n${l10n.t("Click to choose a type")}${structure ? `\n${l10n.t("Right-click to construct a type")}` : ""}`}
         onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
-        onDoubleClick={event => event.stopPropagation()} onKeyDown={event => event.stopPropagation()}
+        onDoubleClick={event => event.stopPropagation()}
+        onContextMenu={structure ? event => { event.preventDefault(); event.stopPropagation(); statements.structure(structure, event.currentTarget); } : undefined}
+        onKeyDown={event => {
+            event.stopPropagation();
+            if (structure && (event.key === "ContextMenu" || event.key === "F10" && event.shiftKey)) {
+                event.preventDefault(); statements.structure(structure, event.currentTarget);
+            }
+        }}
         onClick={event => { event.stopPropagation(); context.open(site, event.currentTarget); }}>{label}</button>;
 }

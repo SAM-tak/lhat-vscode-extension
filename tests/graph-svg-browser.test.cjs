@@ -2771,3 +2771,74 @@ test('real pattern alternatives show only written values and support deletion fo
         });
     });
 });
+
+test('type labels construct named, sequence and nullable types through the live source', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), items = () => host.tree.root.fields.items;
+            await ui.add('tableDefinition');
+            await ui.add('procedure');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            const fn = () => items()[1].fields.values[0];
+            await ui.addElement('parameter', fn(), 'params');
+            const name = () => fn().fields.params[0].fields.name;
+            await ui.typeStructure(name(), 'type:name:Item');
+            assert.equal(fn().fields.params[0].fields.type.kind, 'type-name');
+            await ui.typeStructure(name(), 'type:sequence');
+            assert.equal(fn().fields.params[0].fields.type.kind, 'type-table');
+            await ui.typeStructure(name(), 'type:nullable');
+            assert.equal(fn().fields.params[0].fields.type.kind, 'type-union');
+            assert(host.tree.source.includes('(t^{(Item)[]})|nil^'));
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('iterator loop names rename through LSP and key selection preserves the live body', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, load } = require('./graph-browser-host.cjs'), loops = load('graphLoops.ts');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'let^items={1,2}');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), loop = () => host.tree.root.fields.items[1];
+            const names = () => loops.iteratorNames(loop(), host.tree.source);
+            await ui.add('for'); await ui.structure(loop(), 'mode:iterator');
+            await ui.expression(loop().fields.bound, 'reference:items');
+            await ui.input(`.name-input[data-reference-start="${names()[0].start}"]`, 'entry');
+            await ui.add('call', loop().fields.body);
+            await ui.expression(loop().fields.body.fields.items[0].fields.value.fields.argument[0], 'reference:entry');
+            await ui.input(`.name-input[data-reference-start="${names()[0].start}"]`, 'item');
+            assert(host.tree.source.includes('print(item)'));
+            await ui.structure(loop(), 'iterator:key:add'); assert.equal(names().length, 2);
+            await ui.input(`.name-input[data-reference-start="${names()[0].start}"]`, 'index');
+            await ui.structure(loop(), 'iterator:key:remove'); assert.equal(names().length, 1);
+            assert(host.tree.source.includes('print(item)'));
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('focused conditional statements are created with one editable predicate and live local bindings', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('for^let^delta=7 if^delta>0{print(delta)}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), focused = () => host.tree.root.fields.items[0];
+            await ui.add('focusedIf');
+            await ui.input(`.name-input[data-reference-start="${focused().fields.focus[0].fields.targets[0].start}"]`, 'delta');
+            await ui.input(`.box[data-source-start="${focused().fields.focus[0].fields.values[0].start}"] .literal-input`, '7');
+            const branch = () => focused().fields.body.fields.items[0];
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            await ui.expression(branch().fields.condition, 'reference:delta'); await ui.expression(branch().fields.condition, 'compare');
+            await ui.operator(branch().fields.condition, '>'); await ui.add('call', branch().fields.body);
+            await ui.expression(branch().fields.body.fields.items[0].fields.value.fields.argument[0], 'reference:delta');
+            assert.equal(await client.evaluate(`document.querySelectorAll('.condition-node').length`), 1);
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});

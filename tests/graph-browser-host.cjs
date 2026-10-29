@@ -110,9 +110,10 @@ async function graphUi(host, { evaluate, until, call }) {
             throw new Error(`${error.message}\nGraph state: ${JSON.stringify(state)}\nSource: ${host.tree.source}`, { cause: error });
         }
     };
-    const choose = async (selector, choices, id) => {
+    const choose = async (selector, choices, id, contextMenu = false) => {
         await until(`document.querySelector(${JSON.stringify(selector)}) && ${ready}`);
-        await evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].at(-1).click()`);
+        await evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})].at(-1).${contextMenu
+            ? "dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}))" : 'click()'}`);
         await until(`document.querySelector('.statement-menu [role=option]')`);
         if (!choices.some(c => c.id === id) && id.startsWith('reference:')) {
             await call('Input.insertText', { text: id.slice(10) });
@@ -183,6 +184,14 @@ async function graphUi(host, { evaluate, until, call }) {
             await until(`document.querySelectorAll('.type-menu [role=option]').length===${candidates.length}`);
             await evaluate(`[...document.querySelectorAll('.type-menu [role=option]')][${candidates.indexOf(text)}].click()`);
             await accept();
+        },
+        async typeStructure(name, id) {
+            const site = load('graphTypes.ts').typeSites(host.tree).find(s => s.start === name.start && s.end === name.end);
+            assert(site?.annotation);
+            const structure = structures.structureSites(host.tree).filter(s => s.kind.startsWith('type-') &&
+                s.start >= site.annotation.start && s.end <= site.annotation.end).sort((a, b) => (b.end - b.start) - (a.end - a.start))[0];
+            assert(structure);
+            await choose(`.type-label[data-type-start="${name.start}"][data-type-end="${name.end}"]`, structures.structureTemplates(host.tree, structure), id, true);
         },
         async input(selector, text, index = 0) {
             await until(`document.querySelectorAll(${JSON.stringify(selector)}).length>${index} && ${ready}`);

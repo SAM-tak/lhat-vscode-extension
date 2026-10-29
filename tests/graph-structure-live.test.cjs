@@ -173,3 +173,62 @@ test('assignment structure controls change the written operator and keep paired 
     }
     assert.equal(assignments.assignmentOperator(tree.root.fields.items[2], tree.source).text, ':=');
 }));
+
+test('type construction uses scoped definitions and builds nullable and sequence annotations', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { load } = require('./graph-browser-host.cjs'), types = load('graphTypes.ts'), structure = load('graphStructure.ts');
+    let tree = await parse('let^Item=def^{self^{name=""}}\nlet^f=f^items:any^{}');
+    const name = () => tree.root.fields.items[1].fields.values[0].fields.params[0].fields.name;
+    const site = () => {
+        const annotation = types.typeSites(tree).find(s => s.start === name().start).annotation;
+        return structureSites(tree).filter(s => s.kind.startsWith('type-') && s.start >= annotation.start && s.end <= annotation.end)
+            .sort((a, b) => (b.end - b.start) - (a.end - a.start))[0];
+    };
+    for (const action of ['type:name:Item', 'type:sequence', 'type:nullable']) {
+        const change = editStructure(tree, site(), action); assert(change, action);
+        tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
+        assert(!nodes(tree.root).some(n => n.kind === 'error'), tree.source);
+    }
+    assert(tree.source.includes('t^{(Item)[]}'));
+    assert(tree.source.includes('|nil^'));
+    tree = await parse('let^Item=def^{}\nlet^f=f^Item:number^,x:any^{}');
+    const candidates = structure.structureTemplates(tree, structureSites(tree).find(s => s.kind === 'type-name' && tree.source.slice(s.start, s.end) === 'any^'));
+    assert(!candidates.some(c => c.id === 'type:name:Item'));
+    assert.equal(editStructure(tree, site(), 'type:name:Injected; print(1)'), undefined);
+}));
+
+test('iterator mode and key controls preserve the body and expose written iterator names once', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { load } = require('./graph-browser-host.cjs'), loops = load('graphLoops.ts'), lists = load('graphLists.ts'), expressions = load('graphExpressions.ts');
+    let tree = await parse('for^i from^0 to^3{print(i)}');
+    for (const action of ['mode:iterator', 'iterator:key:add', 'iterator:key:remove', 'mode:while', 'mode:range', 'mode:iterator']) {
+        const node = tree.root.fields.items[0], change = editStructure(tree, node, action); assert(change, action);
+        tree = await parse(tree.source.slice(0, change.start) + change.text + tree.source.slice(change.end));
+        const updated = tree.root.fields.items[0], names = loops.iteratorNames(updated, tree.source);
+        assert(tree.source.includes('print(i)'));
+        assert(!nodes(tree.root).some(n => n.kind === 'error'), tree.source);
+        if (action.startsWith('iterator:') || action === 'mode:iterator') {
+            assert.equal(names.length, action === 'iterator:key:add' ? 2 : 1);
+            assert(!lists.listInsertions(tree).some(s => s.kind === 'for' && s.field === 'focus'));
+            assert(!names.some(name => expressions.expressionSites(tree).some(s => s.start === name.start && s.end === name.end)));
+        }
+    }
+    const graph = load('webview/map.ts').toElk(tree), name = loops.iteratorNames(tree.root.fields.items[0], tree.source)[0];
+    const all = node => [node, ...(node.children ?? []).flatMap(all)];
+    assert.equal(all(graph).filter(n => n.lhat?.labelParts?.some(part => part.name?.start === name.start)).length, 1);
+    const typed = await parse('let^items={1}\nfor^key:number^,value:number^ in^items{print(value)}');
+    const typedGraph = load('webview/map.ts').toElk(typed);
+    for (const name of loops.iteratorNames(typed.root.fields.items[1], typed.source))
+        assert.equal(all(typedGraph).filter(n => n.lhat?.labelParts?.some(part => part.name?.start === name.start)).length, 1);
+}));
+
+test('focused conditions draw one predicate and exhaustive arms stop the enclosing sequence', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { load } = require('./graph-browser-host.cjs');
+    const tree = await parse('let^f=p^{for^let^d=1 if^d>0{return^1 el^:return^2} print(3)}');
+    const graph = load('webview/map.ts').toElk(tree, { collapse: false });
+    const all = n => [n, ...(n.children ?? []).flatMap(all)];
+    const boxes = all(graph), focused = boxes.find(n => n.lhat?.kind === 'for');
+    assert.equal(boxes.filter(n => n.lhat?.kind === 'condition').length, 1);
+    assert.equal(boxes.filter(n => n.lhat?.operatorExpression).length, 1);
+    assert.equal(focused.lhat.executionTerminal, true);
+    const after = boxes.find(n => n.lhat?.start === tree.source.indexOf('print'));
+    assert.equal(after.lhat.unreachable, true);
+}));

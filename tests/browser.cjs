@@ -23,6 +23,8 @@ async function browser(routes, work) {
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'lhat-svg-browser-'));
     const child = spawn(browserPath, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+        '--disable-backgrounding-occluded-windows', '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
+        '--disable-extensions', '--disable-component-extensions-with-background-pages', '--disable-default-apps', '--disable-sync',
         '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { windowsHide: true, stdio: 'ignore' });
     let socket, launchError;
     child.on('error', error => { launchError = error; });
@@ -72,7 +74,8 @@ async function browser(routes, work) {
             assert(!result.exceptionDetails, JSON.stringify(result.exceptionDetails)); return result.result.value;
         };
         const until = async expression => {
-            for (let i = 0; i < 100; i++) {
+            const deadline = Date.now() + 15000;
+            while (Date.now() < deadline) {
                 // Headless Edge can background its page on Windows and pause
                 // animation frames. These tests exercise the active editor.
                 if (await evaluate(`document.visibilityState==='hidden'`)) await call('Page.bringToFront');

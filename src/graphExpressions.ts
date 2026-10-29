@@ -5,6 +5,7 @@ import { syntaxTokens } from "./graphSyntax";
 import { callInfo } from "./graphCalls";
 import { assignmentValues } from "./graphAssignments";
 import { patternLists, patternExpressions } from "./graphPatterns";
+import { iteratorNames } from "./graphLoops";
 
 export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean; errorName?: boolean;
     owner?: SourceSpan; callArguments?: string[] }
@@ -15,7 +16,14 @@ const kinds = new Set(["int", "float", "string", "bool", "nil", "ident", "hat-id
 export function expressionSites(tree: AstReply): ExpressionSite[] {
     const sites: ExpressionSite[] = [];
     const patterns = new Map(patternLists(tree).map(list => [list.condition, list.items]));
+    const names = new Set<AstNode>();
+    const collectNames = (node: AstNode) => {
+        iteratorNames(node, tree.source).forEach(name => names.add(name));
+        Object.values(node.fields ?? {}).flat().forEach(collectNames);
+    };
+    collectNames(tree.root);
     const visit = (node: AstNode, value = true, assignmentTarget = false, memberKey = false) => {
+        if (names.has(node)) return;
         const pattern = patterns.get(node);
         if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(child => visit(child)); return; }
         if (["disabled", "module", "annotation", "import", "import-stmt", "require-stmt"].includes(node.kind) || node.kind.startsWith("type-")) return;
