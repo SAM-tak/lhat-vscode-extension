@@ -12,6 +12,25 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('postfix nil checks retain their written operator and editable operand after reanalysis', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { expressionCells } = load('webview/operatorExpression.ts');
+    for (const value of ['nil^', '1', 'value', 'items[0]', 'read()']) {
+        const initial = await parse(`let^result=${value}`), site = expressions.expressionSites(initial).find(s => s.start === initial.root.fields.items[0].fields.values[0].start);
+        const tree = await parse(apply(initial.source, expressions.replaceExpression(initial, site, 'present')));
+        const check = tree.root.fields.items[0].fields.values[0];
+        assert.equal(check.kind, 'unary');
+        assert.equal(check.inferredType, 'bool^');
+        const cells = expressionCells(check, tree.source);
+        assert.equal(cells.at(-1).token.text, '?');
+        assert.equal(cells.filter(c => c.token?.text === '?').length, 1);
+        const operand = check.fields.operand;
+        const operandSite = expressions.expressionSites(tree).find(s => s.start === operand.start && s.end === operand.end);
+        assert(operandSite);
+        const changed = await parse(apply(tree.source, expressions.replaceExpression(tree, operandSite, 'string')));
+        assert.equal(changed.root.fields.items[0].fields.values[0].fields.operand.kind, 'string');
+    }
+}));
+
 test('error construction edits its qualified kind and payload without allowing value syntax in the kind', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const lists = load('graphLists.ts');
     let tree = await parse('errordef^E { Failure { value:number^ } }\nlet^e = 0');
@@ -432,4 +451,48 @@ test('written pattern lists edit real values and alternatives without exposing g
     assert.deepEqual(patterns.patternLists(tree)[0].items.map(n => n.kind), ['int', 'string']);
     assert(tree.source.includes('when^5, ""'));
     assert(!flat(tree.root).some(n => n.kind === 'error'));
+}));
+
+test('inserting before a declaration keeps its leading comments and annotations attached', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    let tree = await parse('module^sample\n# keep\n@mark\nlet^value=1');
+    const before = tree.root.fields.items[1];
+    const site = api.statementInsertions(tree).find(s => s.before === before.start);
+    tree = await parse(apply(tree.source, api.insertStatementEdit(tree, site, 'call')));
+    assert(tree.source.indexOf('print(nil^)') < tree.source.indexOf('# keep'));
+    assert(tree.source.indexOf('print(nil^)') < tree.source.indexOf('@mark'));
+    const declaration = tree.root.fields.items.at(-1);
+    assert.equal(declaration.kind, 'define');
+    assert(declaration.comments?.some(c => tree.source.slice(c.start, c.end) === '# keep'));
+}));
+
+test('AST comparison ignores comment delimiter padding while retaining comment content and style', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { normalizedAst } = require('./graph-browser-host.cjs');
+    const original = normalizedAst(await parse('######\n# Mock\n######\nlet^x=1'));
+    assert.deepEqual(normalizedAst(await parse('# #####\n#Mock \n# #####\nlet^x=1')), original);
+    assert.notDeepEqual(normalizedAst(await parse('# #####\n# Other\n# #####\nlet^x=1')), original);
+    assert.notDeepEqual(normalizedAst(await parse('#[#####]#\n# Mock\n######\nlet^x=1')), original);
+}));
+
+test('AST comparison ignores empty block whitespace and type grouping while retaining types and structure', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { normalizedAst } = require('./graph-browser-host.cjs');
+    const original = normalizedAst(await parse('let^f=p^x:string^|nil^{}'));
+    assert.deepEqual(normalizedAst(await parse('let^f=p^x:(string^)|nil^{\n}')), original);
+    assert.notDeepEqual(normalizedAst(await parse('let^f=p^x:(number^)|nil^{\n}')), original);
+    assert.notDeepEqual(normalizedAst(await parse('let^f=p^x:(string^)|nil^{print(x)}')), original);
+}));
+
+test('empty branch insertion uses the branch header rather than the parser span of its next token', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    for (const source of ['if^true^{el^false^:el^:}', 'for^n{when^0:when^1:other^:}', 'if^true^{el^false^: # keep\nel^:}']) {
+        for (let index = 0; index < 3; index++) {
+            const tree = await parse(source), statement = tree.root.fields.items[0], conditional = statement.kind === 'for' ? statement.fields.body : statement;
+            const body = conditional.fields.items[index].fields.body;
+            const site = api.statementInsertions(tree).find(s => s.kind === 'block' && s.start === body.start && s.end === body.end && s.before === undefined);
+            assert(site, source);
+            const updated = await parse(apply(tree.source, api.insertStatementEdit(tree, site, 'call')));
+            const result = updated.root.fields.items[0], branches = (result.kind === 'for' ? result.fields.body : result).fields.items;
+            assert.equal(branches[index].fields.body.fields.items?.length, 1, updated.source);
+            branches.filter((_, i) => i !== index).forEach(branch => assert.equal(branch.fields.body.fields?.items?.length ?? 0, 0, updated.source));
+            assert(!flat(updated.root).some(n => n.kind === 'error'), updated.source);
+        }
+    }
 }));

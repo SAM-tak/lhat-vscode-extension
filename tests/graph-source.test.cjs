@@ -50,7 +50,7 @@ test('statement and variable additions use remapped positions and preserve exist
     const document = source.replace(/\n/g, '\r\n'), tree = graphTreeForDocument(fixture(), document);
     const apply = edit => document.slice(0, edit.start) + edit.text + document.slice(edit.end);
     const beforeCall = statementInsertions(tree).find(site => site.before === document.indexOf('print'));
-    assert.equal(apply(insertStatementEdit(tree, beforeCall, 'let')), document.replace('print(値)', 'let^ value = 0\r\nprint(値)'));
+    assert.equal(apply(insertStatementEdit(tree, beforeCall, 'let')), document.replace('#[ 複数行', 'let^ value = 0\r\n#[ 複数行'));
     const appendBinding = listInsertions(tree).find(site => site.field === 'targets' && site.before === undefined);
     assert.equal(apply(insertListEdit(tree, appendBinding, 'binding')), document.replace('let^ 値 = 1', 'let^ 値, _^ = 1, nil^'));
 });

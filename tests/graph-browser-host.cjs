@@ -27,6 +27,7 @@ async function graphHost(parse, server, initial = '') {
     const vscode = {
         l10n: { t: text => text },
         Range: class { constructor(start, end) { Object.assign(this, { start, end }); } },
+        Position: class { constructor(line, character) { Object.assign(this, { line, character }); } },
         WorkspaceEdit,
         workspace: {
             textDocuments: [document],
@@ -53,7 +54,7 @@ async function graphHost(parse, server, initial = '') {
     };
     const statements = load('graphStatementEditor.ts', vscode), rename = load('graphRename.ts', vscode), types = load('graphTypeEditor.ts', vscode);
     let typeSelection;
-    return {
+    const host = {
         get tree() { return tree; }, get version() { return version; },
         async typeOptions(message) {
             typeSelection = await types.typeOptionsFromGraph(document, tree, message,
@@ -68,26 +69,46 @@ async function graphHost(parse, server, initial = '') {
                 await types.applyTypeFromGraph(document, typeSelection, message.typeText, () => true);
                 typeSelection = undefined;
             } else if (message.type === 'removeType') await types.removeTypeFromGraph(document, tree, message, () => true);
-            else await statements.editStatementFromGraph(document, tree, message, undefined, () => true);
+            else await statements.editStatementFromGraph(document, tree, message,
+                { sendRequest: (method, params) => server.request(method, params) }, () => true);
             tree = await parse(source);
         },
+        async toggleStatement(context) {
+            const Provider = load('graphEditor.ts', vscode).LhatGraphEditorProvider;
+            const provider = new Provider({}, () => undefined), panel = { active: true };
+            // The browser harness supplies the native shell's panel registry;
+            // command validation and source editing remain production code.
+            provider.panels.set(context.lhatGraphUri, new Set([panel]));
+            let pending;
+            provider.statementEditors.set(panel, message => { pending = host.edit(message); });
+            provider.toggleStatement(context);
+            assert(pending, 'Native context must select a registered statement');
+            await pending;
+        },
     };
+    return host;
 }
 
 /** Keep every AST property except coordinates and checker-derived metadata. */
 function normalizedAst(tree) {
     const ignored = new Set(['start', 'end', 'line', 'column', 'inferredType', 'inferredReturnType', 'callable']);
+    const { syntaxTokens } = load('graphSyntax.ts');
     const visit = node => {
         if (Array.isArray(node)) return node.map(visit);
         if (!node || typeof node !== 'object') return node;
         const result = Object.fromEntries(Object.entries(node).filter(([key]) => !ignored.has(key)).map(([key, value]) => [key, visit(value)]));
-        if ((node.kind && !Object.values(node.fields ?? {}).flat().length) || ('block' in node && !node.kind))
-            result.text = tree.source.slice(node.start, node.end);
+        if ('block' in node && !node.kind) {
+            const raw = tree.source.slice(node.start, node.end);
+            result.text = (node.block ? raw.slice(2, -2) : raw.slice(1)).trim();
+        } else if (node.kind && node.kind !== 'block' && !Object.keys(node.fields ?? {}).length)
+            result.text = node.kind === 'type-name'
+                ? syntaxTokens(tree.source, node.start, node.end).filter(t => !['(', ')'].includes(t.text)).map(t => t.text).join('')
+                : tree.source.slice(node.start, node.end);
         return result;
     };
     // AST responses omit operator/modifier tokens. Grouping is already represented
     // by the tree shape, so extra parentheses must not make equivalent trees fail.
-    const tokens = load('graphSyntax.ts').syntaxTokens(tree.source).map(t => t.text);
+    const tokens = syntaxTokens(tree.source).map(t => t.text);
     return { root: visit(tree.root), tokens: tokens.filter((t, i) => t !== '(' && t !== ')'
         && !(t === ',' && ['}', ']', ')'].includes(tokens[i + 1]))) };
 }
@@ -96,6 +117,10 @@ async function graphUi(host, { evaluate, until, call }) {
     let count = 0;
     const ready = `!document.querySelector('.svg-export>button').disabled`;
     const statements = load('graphStatements.ts'), expressions = load('graphExpressions.ts'), structures = load('graphStructure.ts'), lists = load('graphLists.ts');
+    const refresh = async () => {
+        await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(host.tree)},uri:'file:///svg-example.lh',version:${host.version}},'*')`);
+        await until(`document.querySelector('#app')?.dataset.graphVersion==='${host.version}' && ${ready}`);
+    };
     const accept = async () => {
         await until(`window.edits.length===${count + 1}`);
         const message = await evaluate(`window.edits[${count++}]`);
@@ -144,7 +169,7 @@ async function graphUi(host, { evaluate, until, call }) {
         },
         async addElement(id, owner, field = 'items') {
             const site = lists.listInsertions(host.tree).find(s => s.kind === owner.kind && s.start === owner.start && s.end === owner.end && s.field === field && s.before === undefined);
-            assert(site, `Element insertion for ${owner.kind}.${field}`);
+            assert(site, `Element insertion for ${owner.kind}.${field}: ${JSON.stringify(owner)}\n${host.tree.source}`);
             await choose(`[data-insertion-site=${JSON.stringify(JSON.stringify(site))}]`, lists.listTemplates(host.tree, site), id);
         },
         async structure(node, id) {
@@ -192,6 +217,28 @@ async function graphUi(host, { evaluate, until, call }) {
                 s.start >= site.annotation.start && s.end <= site.annotation.end).sort((a, b) => (b.end - b.start) - (a.end - a.start))[0];
             assert(structure);
             await choose(`.type-label[data-type-start="${name.start}"][data-type-end="${name.end}"]`, structures.structureTemplates(host.tree, structure), id, true);
+        },
+        async toggleStatement(node) {
+            // VS Code owns this menu. Emulate its contributed entry using only
+            // the context rendered by the webview, then invoke the real provider.
+            await evaluate(`(()=>{
+                const owner=[...document.querySelectorAll('.box[data-vscode-context]')].find(element=>{
+                    const context=JSON.parse(element.dataset.vscodeContext);
+                    return context.lhatStatement && context.lhatStatementStart===${node.start} && context.lhatStatementEnd===${node.end};
+                });
+                if(!owner)throw Error('Missing native statement context');
+                owner.addEventListener('contextmenu',event=>{
+                    event.preventDefault();
+                    const context=JSON.parse(owner.dataset.vscodeContext), button=document.createElement('button');
+                    button.id='native-toggle-statement';button.textContent='Toggle Disabled Code';
+                    button.onclick=()=>{window.nativeStatementContext=context;button.remove()};document.body.append(button);
+                },{once:true});
+                owner.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));
+            })()`);
+            await until(`document.querySelector('#native-toggle-statement')`);
+            await evaluate(`document.querySelector('#native-toggle-statement').click()`);
+            const context = await evaluate('window.nativeStatementContext');
+            await host.toggleStatement(context); await refresh();
         },
         async input(selector, text, index = 0) {
             await until(`document.querySelectorAll(${JSON.stringify(selector)}).length>${index} && ${ready}`);

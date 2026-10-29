@@ -80,7 +80,8 @@ export function expressionCells(node: AstNode, source: string): ExpressionCell[]
         const value = one(node, "value") ?? one(node, "operand");
         if (!value) return [];
         const prefix = tokens.filter(token => token.end <= value.start && token.text !== "(");
-        return [...prefix.map(token => ({ token })), ...operand(value)];
+        const suffix = tokens.filter(token => token.start >= value.end && token.text === "?");
+        return [...prefix.map(token => ({ token })), ...operand(value), ...suffix.map(token => ({ token }))];
     }
     const values = node.kind === "compare-chain" ? node.fields?.operands
         : [one(node, "left"), one(node, "right")].filter((value): value is AstNode => !!value);

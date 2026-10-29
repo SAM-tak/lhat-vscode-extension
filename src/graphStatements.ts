@@ -1,6 +1,7 @@
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import { syntaxTokens } from "./graphSyntax";
+import { annotationOwners } from "./graphAnnotations";
 
 export interface StatementSite extends SourceSpan { disabled: boolean }
 export interface StatementInsertion extends SourceSpan {
@@ -24,6 +25,7 @@ export const STATEMENT_TEMPLATE_LABELS = {
 interface Context { callable?: "function" | "procedure"; loop: boolean }
 interface StatementList {
     node: AstNode; field: string; items: AstNode[]; context: Context;
+    emptyAt?: number;
 }
 
 function mainHeading(source: string, node: AstNode): number | undefined {
@@ -40,7 +42,7 @@ function mainHeading(source: string, node: AstNode): number | undefined {
 /** Only parser-owned statement lists are insertion sites, never expression/member lists. */
 function lists(tree: AstReply): StatementList[] {
     const result: StatementList[] = [];
-    const visit = (node: AstNode, context: Context) => {
+    const visit = (node: AstNode, context: Context, parent?: AstNode) => {
         if (node.kind === "disabled") return;
         if (node.kind === "func") context = {
             callable: tree.source.slice(node.start, node.end).trimStart().startsWith("p^") ? "procedure" : "function",
@@ -53,10 +55,21 @@ function lists(tree: AstReply): StatementList[] {
         const field = node.kind === "block" ? "items" : node.kind === "loop-clause" ? "body" : undefined;
         if (field) {
             const value = node.fields?.[field];
-            result.push({ node, field, items: Array.isArray(value) ? value : value ? [value] : [], context });
+            const items = Array.isArray(value) ? value : value ? [value] : [];
+            let emptyAt: number | undefined;
+            if (!items.length && parent?.kind === "if-clause") {
+                const condition = parent.fields?.condition;
+                const start = condition && !Array.isArray(condition) ? condition.end : parent.start;
+                const marker = syntaxTokens(tree.source, start, parent.end).find(t => ["{", ":"].includes(t.text));
+                if (marker) {
+                    const comment = [...node.comments ?? [], ...parent.comments ?? []].find(c => c.start >= marker.end && !/[\r\n]/.test(tree.source.slice(marker.end, c.start)));
+                    emptyAt = comment?.end ?? marker.end;
+                }
+            }
+            result.push({ node, field, items, context, emptyAt });
         }
         for (const value of Object.values(node.fields ?? {})) {
-            for (const child of Array.isArray(value) ? value : [value]) visit(child, context);
+            for (const child of Array.isArray(value) ? value : [value]) visit(child, context, node);
         }
     };
     visit(tree.root, { loop: false });
@@ -147,6 +160,8 @@ export function insertStatementEdit(tree: AstReply, site: StatementInsertion, te
     const lineStart = (offset: number) => offset <= 0 ? 0 : source.lastIndexOf("\n", offset - 1) + 1;
     const indentation = (offset: number) => /^[\t ]*/.exec(source.slice(lineStart(offset), offset))![0];
     const before = list.items.find(item => item.start === site.before);
+    const annotations = before && annotationOwners(tree).find(owner => owner.target !== "unit" && owner.start === before.start && owner.end === before.end)?.annotations;
+    const beforeStart = before && Math.min(before.start, ...(before.comments ?? []).map(comment => comment.start), ...(annotations ?? []).map(annotation => annotation.start));
     const extra = [list.node.fields?.extra, list.node.fields?.arms]
         .flatMap(value => Array.isArray(value) ? value : value ? [value] : [])
         .sort((a, b) => a.start - b.start);
@@ -155,7 +170,7 @@ export function insertStatementEdit(tree: AstReply, site: StatementInsertion, te
     const firstExtra = extra.find(clause => clause.start >= (!list.items.length && main !== undefined ? main : lastItemEnd));
     const file = list.node === tree.root && tree.root.kind === "block";
     const closes = !file && list.node.kind === "block" && source[list.node.end - 1] === "}";
-    let offset = before?.start ?? firstExtra?.start ?? (file ? source.length : list.node.end - (closes ? 1 : 0));
+    let offset = beforeStart ?? list.emptyAt ?? firstExtra?.start ?? (file ? source.length : list.node.end - (closes ? 1 : 0));
     const baseIndent = indentation(list.node.start);
     const sibling = before ?? list.items[0];
     const inline = sibling && !/^[\t ]*$/.test(source.slice(lineStart(sibling.start), sibling.start));

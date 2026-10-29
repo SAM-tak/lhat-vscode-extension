@@ -2842,3 +2842,43 @@ test('focused conditional statements are created with one editable predicate and
         });
     });
 });
+
+test('postfix nil checks are created, displayed and edited through the live source', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), value = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('let');
+            await ui.expression(value(), 'present');
+            assert.equal(value().kind, 'unary');
+            const visibleCheck = () => `document.querySelector('.box[data-source-start="${value().end - 1}"] .boxlabel')?.textContent==='?'`;
+            await client.until(visibleCheck());
+            await ui.expression(value().fields.operand, 'string');
+            const operand = value().fields.operand;
+            await ui.input(`.box[data-source-start="${operand.start}"] .literal-input`, 'available');
+            assert(host.tree.source.includes('"available")?'));
+            await client.until(visibleCheck());
+            await ui.expression(value(), 'nil');
+            assert.equal(value().kind, 'hat-ident');
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('native statement context disables and restores a UI-created enum through the real server', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client);
+            await ui.add('enumeration');
+            const original = normalizedAst(host.tree);
+            await ui.toggleStatement(host.tree.root.fields.items[0]);
+            assert.equal(host.tree.root.fields.items[0].kind, 'disabled');
+            await ui.toggleStatement(host.tree.root.fields.items[0]);
+            assert.deepEqual(normalizedAst(host.tree), original);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});

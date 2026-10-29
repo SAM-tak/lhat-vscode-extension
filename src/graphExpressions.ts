@@ -118,6 +118,7 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         ["bitwise", "Bitwise expression", `((${current}) bitand^ 0)`],
         ["product", "Vector product", `((${current}) dot^ 0)`],
         ["not", "Negate condition", `(!(${current}))`],
+        ["present", "Check for a non-nil value", `((${current})?)`],
         ["negative", "Negate number", `(-(${current}))`],
     ];
     const references = new Set<string>(currentSite.errorName ? ["Problem.Failure"] : currentSite.memberKey ? ["value", "0"] : ["self^", "it^"]);
