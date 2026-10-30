@@ -2311,6 +2311,75 @@ test('debug-breakpoints sample is reconstructed through graph UI controls', { ti
     });
 });
 
+test('module declarations and both loading forms create, edit and delete through live controls', { timeout: 120000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = 'module^audit.描画 import^std.math require^"./読み込み.lh" let^modules={byName=import^std.thread,byFile=require^"./名前\\"付き.lh"}';
+        const expected = normalizedAst(await parse(source)), host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), items = () => host.tree.root.fields.items;
+            const table = () => items()[3].fields.values[0], entry = index => table().fields.items[index];
+            const rename = (node, text) => ui.input(`.name-input[data-reference-start="${node.start}"]`, text);
+            const path = (node, text) => ui.input(`.box[data-source-start="${node.start}"] .interpolation-input`, text);
+            await ui.add('module'); await ui.input('.interpolation-field.module textarea', 'audit.描画');
+            await ui.add('import'); await ui.input('.interpolation-field.import textarea', 'std.math');
+            await ui.add('require'); await ui.input('.interpolation-field.require textarea', './読み込み.lh');
+            await ui.add('let'); await rename(items()[3].fields.targets[0], 'modules');
+            await ui.expression(table(), 'table'); await graphToolbar(client, 'Unfold All');
+            for (const [index, key, kind, text] of [[0,'byName','import','std.thread'],[1,'byFile','require','./名前"付き.lh']]) {
+                await ui.addElement('member', table()); await rename(entry(index).fields.key, key);
+                await ui.expression(entry(index).fields.value, kind); await path(entry(index).fields.value, text);
+            }
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(items().slice(0, 3).map(n => n.kind), ['module','import-stmt','require-stmt']);
+            assert.deepEqual(table().fields.items.map(n => n.fields.value.kind), ['import','require']);
+            await ui.expression(entry(0).fields.value, 'require'); await path(entry(0).fields.value, './別の場所.lh');
+            await ui.expression(entry(0).fields.value, 'import'); await path(entry(0).fields.value, 'std.thread');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.remove(entry(0)); await ui.remove(entry(0));
+            assert.equal(table().fields?.items?.length ?? 0, 0);
+            await ui.addElement('member', table()); await ui.expression(entry(0).fields.value, 'require');
+            await path(entry(0).fields.value, './再追加.lh');
+            await ui.remove(items()[3]); await ui.remove(items()[2]); await ui.remove(items()[1]); await ui.remove(items()[0]);
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            await ui.add('module'); await ui.add('import'); await ui.add('require');
+            assert.deepEqual(items().map(n => n.kind), ['module','import-stmt','require-stmt']);
+            await ui.remove(items()[2]); await ui.remove(items()[1]); await ui.remove(items()[0]);
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('module names and loading paths remain distinct in normal folded and owner views', { timeout: 90000 }, async () => {
+    const source = 'module^audit.描画 import^std.math require^"./読み込み.lh" let^modules={byName=import^std.thread,byFile=require^"./名前\\"付き.lh"}';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), table = tree.root.fields.items[3].fields.values[0];
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
+            const header = async () => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const value of ['audit.描画','std.math','./読み込み.lh','modules']) assert.equal(text.split(value).length, 2, text);
+                for (const role of ['Module declaration','Import','Require']) assert(text.includes(ja[role]), role + ': ' + text);
+            };
+            await header(); await graphToolbar(client, 'Unfold All'); await header();
+            const contents = async () => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const value of ['byName','byFile','std.thread','./名前"付き.lh']) assert.equal(text.split(value).length, 2, text);
+                for (const role of ['Import','Require']) assert(text.includes(ja[role]), role + ': ' + text);
+            };
+            await contents(); await saveSemanticSvg(client, 'module-values');
+            await graphToolbar(client, 'Fold All'); await header();
+            const folded = (await svgTexts(client)).join('');
+            assert(!folded.includes('byName')); assert(!folded.includes('byFile'));
+            await drillGraphNode(client, table); await graphToolbar(client, 'Unfold All'); await contents();
+            const drilled = (await svgTexts(client)).join('');
+            for (const value of ['audit.描画','std.math','./読み込み.lh']) assert(!drilled.includes(value), drilled);
+            assert.equal(await client.evaluate('window.edits.length'), 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('reference-library sample is reconstructed with module and public declaration controls', { timeout: 60000 }, async () => {
     const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
@@ -4152,6 +4221,75 @@ test('mutable receivers and fresh promises are edited inside both callable bodie
     });
 });
 
+test('operator operands and complex access targets stay editable through construction and deletion', { timeout: 120000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = {};
+        for (const [key, expression] of [['unary','bitnot^(17+23)'],['index','({29,31})[1]'],['call','(({29,31})[1]).tostring()']])
+            expected[key] = normalizedAst(await parse(`let^value=${expression}`));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), value = () => host.tree.root.fields.items[0].fields.values[0];
+            const number = (node, text) => ui.input(`.box[data-source-start="${node.start}"] .literal-input`, text);
+            await ui.add('let'); await ui.expression(value(), 'add');
+            await number(value().fields.left, '17'); await number(value().fields.right, '19');
+            await ui.expression(value(), 'negative');
+            const operand = () => value().fields.operand ?? value().fields.value;
+            await number(operand().fields.right, '23'); await ui.operator(value(), 'bitnot^');
+            assert.deepEqual(normalizedAst(host.tree), expected.unary, host.tree.source);
+            await ui.expression(value(), 'unwrap'); assert.equal(value().kind, 'binary');
+            await ui.expression(value(), 'table'); await graphToolbar(client, 'Unfold All');
+            for (const text of ['29','31']) {
+                await ui.addElement('number', value()); await number(value().fields.items.at(-1), text);
+            }
+            await ui.expression(value(), 'index'); await number(value().fields.argument[0], '1');
+            assert.deepEqual(normalizedAst(host.tree), expected.index, host.tree.source);
+            await ui.structure(value(), 'access:nil-check'); await ui.structure(value(), 'access:nil-check');
+            await ui.expression(value(), 'member');
+            await ui.expression(value().fields.argument[0], 'reference:tostring');
+            await ui.expression(value(), 'call');
+            assert.deepEqual(normalizedAst(host.tree), expected.call, host.tree.source);
+            await ui.structure(value(), 'access:nil-check'); await ui.structure(value(), 'access:nil-check');
+            const receiver = () => value().fields.target.fields.target;
+            await number(receiver().fields.argument[0], '0');
+            assert.equal(receiver().fields.argument[0].kind, 'int');
+            await ui.expression(value(), 'number'); await ui.remove(host.tree.root.fields.items[0]);
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('operators and access expressions retain operands and captions across semantic views', { timeout: 90000 }, async () => {
+    const source = 'let^echo=f^x:number^{x} let^values={neg=-(17+19),sum=23+29,chain=31<37<41,member={key=43}.key,index={47,53}[1],called=echo(59),cast=61 as^number^}';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), table = tree.root.fields.items[1].fields.values[0];
+        const flat = n => [n,...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        for (const kind of ['unary','binary','compare-chain','member','index','call','as']) assert(flat(tree.root).some(n => n.kind === kind), kind);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
+            const normal = (await svgTexts(client)).join(''); assert(normal.includes('values')); assert(normal.includes(ja.Table));
+            const contents = async () => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const number of ['17','19','23','29','31','37','41','43','47','53','59','61','1'])
+                    assert.equal(texts.filter(t => t === number).length, 1, number + ': ' + JSON.stringify(texts));
+                for (const key of ['neg','sum','chain','member','index','called','cast','key','echo']) assert(text.includes(key), key + ': ' + text);
+                assert.equal(texts.filter(t => t === '+').length, 2, JSON.stringify(texts));
+                assert.equal(texts.filter(t => t === '<').length, 2, JSON.stringify(texts));
+                assert(texts.includes('-'), JSON.stringify(texts));
+                assert(text.includes(ja['As type']), text);
+            };
+            await graphToolbar(client, 'Unfold All'); await contents(); await saveSemanticSvg(client, 'operator-values');
+            await graphToolbar(client, 'Fold All');
+            const folded = (await svgTexts(client)).join(''); assert(folded.includes('values')); assert(folded.includes(ja.Table));
+            assert(!folded.includes('called')); assert(!folded.includes('chain'));
+            await drillGraphNode(client, table); await graphToolbar(client, 'Unfold All'); await contents();
+            assert.equal(await client.evaluate('window.edits.length'), 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('nil-checked member, index and call forms are constructed through live access controls', { timeout: 90000 }, async () => {
     const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
@@ -4167,6 +4305,8 @@ test('nil-checked member, index and call forms are constructed through live acce
                 await ui.expression(value(), kind);
                 await ui.structure(value(), 'access:nil-check');
                 assert.deepEqual(normalizedAst(host.tree), expected[kind], host.tree.source);
+                const text = (await svgTexts(client)).join('');
+                assert(text.includes(kind === 'member' ? '?.' : kind === 'index' ? '?[' : ja.Call + ' ?'), text);
                 if (kind === 'call') await client.until(`[...document.querySelectorAll('.boxlabel')].some(e=>e.textContent===${JSON.stringify(ja.Call + ' ?')})`);
                 await ui.structure(value(), 'access:nil-check');
                 assert(!host.tree.source.includes('?.') && !host.tree.source.includes('?[') && !host.tree.source.includes('?('));
