@@ -66,6 +66,7 @@ node --test --test-name-pattern="language AST cases render" tests/graph-svg-brow
 この検証は、各題材を各状態で描画できることと基本的な幾何・SVGの整合性を確認する。
 すべてのAST要素について必要な内容が表示されていることを個別に証明するものではない。
 位置要素・索引型・self節を含む型のPNGでは、引数が「テーブル型」と表示されることを確認した。この短縮は `06-visual-editor.md` の3.3節の表示方針に従う。完全な型をツールチップとメニューに保持することを含め、各型要素の表示内容を引き続き照合する。
+型のself節内の位置要素・個数と無制限の指定・索引型は、`typed instance sections`の実サーバーテストと`typed instance positions`のブラウザーテストで、空の文書からの作成・変更・削除と再表示を確認する。値を持つselfテーブルの追加候補は型の候補とは分け、索引型の重複と入れ子のself節は提示しない。
 `handlers` と `cleanup-transfer` のPNGで、通常経路とcatchの合流後にfinallyが表示されることを確認した。実サーバーのブロック・if・手続き・ループから作ったグラフについて、finallyを除くと後続文への経路がなくなることを `graph-execution.test.cjs` で検証する。ループのcatchは反復内で合流し、finallyはループの後に置く。
 途中離脱は通常の続行と混同しない破線で後処理への関係を示す。return・panic・break・next、多重のbreak/next、入れ子のfinallyと別の手続きへの境界を検証した。折りたたんだ内側の離脱はその箱から関係を示し、同じ箱に収まる接続は描かない。
 `cleanup transfer ports` のブラウザーテストは折りたたみ・ドリルダウン・再展開後のポートと破線、SVGの破線を確認する。`lhat-finally-transfer.png` と `lhat-finally-transfer-tail.png` を一時ディレクトリへ保存する。空のreturnの入力・後処理用ポートも確認し、表示操作でソースが変わらないことを検証する。

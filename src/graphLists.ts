@@ -185,10 +185,9 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
     if (list.mode === "error") return [choice("error", name("Problem"))];
     if (list.mode === "type") {
         const types = [choice("number", "number^"), choice("string", "string^"), choice("boolean", "bool^"), choice("any", "any^")];
-        return list.node.kind === "type-table" ? [choice("typeMember", `${name("value")}: number^`), ...types,
+        return ["type-table", "self-table"].includes(list.node.kind) ? [choice("typeMember", `${name("value")}: number^`), ...types,
             ...list.items.some(item => item.computed) ? [] : [choice("typeIndexer", "[string^]:any^")],
-            ...list.items.some(item => one(item, "value")?.kind === "self-table") ? [] : [choice("typeSelf", "self^{}")]]
-            : list.node.kind === "self-table" ? [choice("typeMember", `${name("value")}: number^`)]
+            ...list.node.kind !== "type-table" || list.items.some(item => one(item, "value")?.kind === "self-table") ? [] : [choice("typeSelf", "self^{}")]]
             : list.node.kind === "type-func" && list.field === "params" && site.before === undefined ? [...types, choice("variadic", "...:any^"),
                 ...list.items.some(param => { const type = one(param, "type"); return type && sourceText(type) === "self^"; }) ? [] : [choice("receiver", "self^")]] : types;
     }

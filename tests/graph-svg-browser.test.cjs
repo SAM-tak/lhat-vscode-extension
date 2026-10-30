@@ -3249,6 +3249,39 @@ test('qualified type names remain complete editable annotations through the live
     });
 });
 
+test('typed instance positions and indexers are constructed, changed and removed through live type menus', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs');
+    const structure = load('graphStructure.ts');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^function=f^value:t^{self^{number^[3],[string^]:any^}}{return^0}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), fn = () => host.tree.root.fields.items[0].fields.values[0];
+            const name = () => fn().fields.params[0].fields.name, type = () => fn().fields.params[0].fields.type;
+            const inner = () => type().fields.items[0].fields.value;
+            const edit = async (suffix, value = '') => {
+                const choice = structure.structureTemplates(host.tree, type()).find(c => c.id.startsWith('type:part:') && c.id.endsWith(suffix));
+                assert(choice, suffix); await ui.typeStructure(name(), choice.id + value);
+            };
+            await ui.add('function');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.addElement('parameter', fn(), 'params');
+            await ui.typeStructure(name(), 'type:name:t^{}');
+            await ui.typeStructure(name(), 'type:append:items:typeSelf');
+            await edit('type:append:items:number');
+            await edit('type:position:0:count', ':3');
+            await edit('type:append:items:typeIndexer');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await edit('type:position:0:tail');
+            assert.match(host.tree.source, /number\^\[\]/);
+            await edit('type:remove:items:1');
+            await edit('type:remove:items:0');
+            assert.equal(inner().fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('positional counts, type indexers and instance fields are built from the live type menu', { timeout: 90000 }, async () => {
     const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs'), structures = load('graphStructure.ts');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {

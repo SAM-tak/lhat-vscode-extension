@@ -208,7 +208,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
                         const mutable = receiverMutation(item, source);
                         if (mutable) change(`type:receiver:${i}:mutable`, mutable.label, mutable.edit);
                     }
-                    if (target.kind === "type-table" && !one(item, "key") && one(item, "value")?.kind !== "self-table") {
+                    if (["type-table", "self-table"].includes(target.kind) && !one(item, "key") && one(item, "value")?.kind !== "self-table") {
                         const value = one(item, "value")!;
                         const suffix = syntaxTokens(source, value.end, item.end), open = suffix.find(t => t.text === "[");
                         const close = open && suffix.find(t => t.text === "]" && t.start >= open.end);

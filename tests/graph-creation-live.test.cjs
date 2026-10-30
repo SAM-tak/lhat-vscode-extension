@@ -223,6 +223,33 @@ test('positional type counts and tails preserve their type and comments while re
     assert(tree.source.includes('(number^)#[keep]#,name:string^'), tree.source);
 }));
 
+test('typed instance sections create positions, counts and one indexer without offering nested instance sections', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structures = load('graphStructure.ts');
+    let tree = await parse('let^read=f^x:t^{self^{}}{0}');
+    const type = () => tree.root.fields.items[0].fields.values[0].fields.params[0].fields.type;
+    const inner = () => type().fields.items[0].fields.value;
+    const edit = async (suffix, value = '') => {
+        const choice = structures.structureTemplates(tree, type()).find(c => c.id.startsWith('type:part:') && c.id.endsWith(suffix));
+        assert(choice, suffix);
+        tree = await parse(apply(tree.source, structures.editStructure(tree, type(), choice.id + value)));
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    };
+    await edit('type:append:items:number');
+    await edit('type:position:0:count', ':3');
+    assert.match(tree.source, /self\^\{number\^\[3\]/);
+    await edit('type:position:0:tail');
+    assert.match(tree.source, /number\^\[\]/);
+    await edit('type:position:0:single');
+    await edit('type:append:items:typeIndexer');
+    assert(inner().fields.items[1].computed);
+    const choices = load('graphLists.ts').listTemplates(tree, { category:'list', kind:'self-table', start:inner().start, end:inner().end, field:'items' });
+    assert(choices.some(c => c.id === 'number'));
+    assert(!choices.some(c => c.id === 'typeIndexer' || c.id === 'typeSelf'));
+    await edit('type:remove:items:1');
+    await edit('type:remove:items:0');
+    assert.equal(inner().fields?.items?.length ?? 0, 0);
+}));
+
 test('typed indexers and instance sections add once and use declaration syntax for their own fields', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structures = load('graphStructure.ts');
     let tree = await parse('let^read=f^x:t^{}{0}');
