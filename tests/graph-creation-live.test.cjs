@@ -12,6 +12,53 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('single focus values switch between named and anonymous forms in expressions, conditions and shared drivers', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts');
+    for (const source of [
+        'let^v=for^1 do^:it^;', 'for^1 if^true^{print(it^)}', 'for^1{when^1:print(0)}',
+        'for^1 for^i from^0 to^2{print(it^^)}', 'let^v=for^#[keep]#(1+2) do^:it^;',
+        'let^`subject`=7 let^v=for^1 do^:subject;',
+        'let^v=for^#[before]#(1+2) #[type]#:(number^) do^:it^;',
+    ]) {
+        let tree = await parse(source), loop = () => flat(tree.root).find(n => n.kind === 'for');
+        const original = tree.source.slice(loop().fields.body.start,loop().fields.body.end);
+        let edit = structure.editStructure(tree, loop(), 'focus:bind'); assert(edit, source);
+        tree = await parse(apply(tree.source, edit));
+        const target = loop().fields.focus[0].fields.targets[0];
+        assert.equal((target.fields?.name ?? target).kind, 'ident');
+        if (source.includes('`subject`')) {
+            const name = loop().fields.focus[0].fields.targets[0];
+            assert.equal(tree.source.slice(name.start,name.end), 'subject2');
+        }
+        assert.equal(tree.source.slice(loop().fields.body.start,loop().fields.body.end), original);
+        edit = structure.editStructure(tree, loop(), 'focus:value'); assert(edit);
+        tree = await parse(apply(tree.source, edit));
+        assert.equal(loop().fields.focus[0].fields.targets[0].kind, 'focus (it^)');
+        const implicit = loop().fields.focus[0];
+        assert(!structure.structureSites(tree).some(s => s.kind === 'define' && s.start === implicit.start && s.end === implicit.end));
+        assert(!load('graphAnnotations.ts').annotationOwners(tree).some(s => s.kind === 'define' && s.start === implicit.start && s.end === implicit.end));
+        assert(!load('graphLists.ts').commaLists(tree).some(list => list.node === implicit));
+        assert.equal(tree.source.slice(loop().fields.body.start,loop().fields.body.end), original);
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+        if (source.includes('#[keep]#')) assert(tree.source.includes('#[keep]#'));
+        if (source.includes('#[type]#')) {
+            assert.equal(loop().fields.focus[0].fields.values[0].kind, 'param');
+            assert.equal(tree.source.split('#[type]#').length - 1, 1);
+        }
+    }
+    for (const source of ['let^v=for^let^x:number^ #[keep]#=1 do^:it^;', 'let^v=for^var^x:=1 do^:it^;']) {
+        const tree = await parse(source), loop = flat(tree.root).find(n => n.kind === 'for');
+        const edit = structure.editStructure(tree, loop, 'focus:value'); assert(edit, source);
+        const updated = await parse(apply(source,edit));
+        assert(!flat(updated.root).some(n => n.kind === 'error'), updated.source);
+        if (source.includes('#[keep]#')) assert(updated.source.includes('#[keep]#'));
+    }
+    for (const source of ['for^i from^0 to^2{}','for^i in^{}{}','for^let^a,b=(0,1) if^true^{}']) {
+        const tree = await parse(source), loop = flat(tree.root).find(n => n.kind === 'for');
+        assert(!structure.structureTemplates(tree, loop).some(c => ['focus:bind','focus:value'].includes(c.id)), source);
+    }
+}));
+
 test('Unicode names stay editable and rename through the real server with combining marks and astral characters', { timeout: 30000 }, async () => withLhatServer(async (parse, server) => {
     const { graphHost } = require('./graph-browser-host.cjs'), { toElk } = load('webview/map.ts');
     const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];

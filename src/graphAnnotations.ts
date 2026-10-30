@@ -1,5 +1,6 @@
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import { resultTypes, syntaxTokens } from "./graphSyntax";
+import { anonymousFocusValue } from "./graphLoops";
 
 export interface AnnotationSite extends SourceSpan { ownerStart: number; ownerEnd: number; ownerKind: string; text: string }
 export interface AnnotationOwner extends SourceSpan { kind: string; canAdd: boolean; annotations: AnnotationSite[];
@@ -81,6 +82,8 @@ export function annotationOwners(tree: AstReply): AnnotationOwner[] {
     const literals: SourceSpan[] = [];
     const visit = (node: AstNode, parent?: AstNode) => {
         if (["string", "interp-text", "disabled"].includes(node.kind)) { literals.push(node); return; }
+        const focus = anonymousFocusValue(node);
+        if (focus) { visit(focus, node); return; }
         if (node === tree.root || node.kind === "define" ||
             (node.kind === "table-entry" && ["self-table", "def"].includes(parent?.kind ?? "")))
             owners.push({ start: node.start, end: node.end, kind: node.kind, canAdd: true, annotations: [],

@@ -3031,7 +3031,7 @@ test('patterns sample is reconstructed with named focus, editable alternatives, 
             const describe = await fn('procedure', 'describe', 'kind', 'string^', 'The focus is evaluated once; the clauses share one execution junction.');
             await ui.add('match', describe().fields.body);
             const match = () => describe().fields.body.fields.items[0], branch = i => match().fields.body.fields.items[i];
-            await ui.structure(match(), 'match-focus:bind');
+            await ui.structure(match(), 'focus:bind');
             await ui.expression(match().fields.focus[0].fields.values[0], 'reference:kind');
             await ui.structure(match(), 'match-branch'); await ui.structure(match(), 'match-branch');
             for (const [index, text] of ['item', 'box', 'pallet'].entries()) {
@@ -3506,6 +3506,49 @@ test('positional counts, type indexers and instance fields are built from the li
     });
 });
 
+test('local expressions create anonymous focus values, name them and remove their names through live menus', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^value=(for^1 do^:it^;)'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), binding = () => host.tree.root.fields.items[0];
+            const value = () => binding().fields.values[0], focus = () => value().fields.focus[0];
+            await ui.add('let');
+            await ui.expression(value(), 'local');
+            await ui.input(`.box[data-source-start="${focus().fields.values[0].start}"] .literal-input`, '1');
+            await ui.expression(value().fields.body, 'reference:it^');
+            await ui.structure(value(), 'focus:value');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.equal(focus().fields.targets[0].kind, 'focus (it^)');
+            assert.equal(await client.evaluate(`document.querySelector('.name-input[data-reference-start="${focus().fields.targets[0].start}"]')`), null);
+            await ui.addElement('number', value(), 'focus');
+            assert.equal(value().fields.focus.length, 2);
+            await ui.remove(value().fields.focus[1]);
+            assert.equal(focus().fields.targets[0].kind, 'focus (it^)');
+            await ui.structure(value(), 'focus:bind');
+            await ui.input(`.name-input[data-reference-start="${focus().fields.targets[0].start}"]`, '🧭');
+            await ui.input(`.box[data-source-start="${focus().fields.values[0].start}"] .literal-input`, '2');
+            await ui.type(focus().fields.targets[0], 'number^');
+            await ui.structure(value(), 'focus:value');
+            assert.equal(focus().fields.values[0].kind, 'param');
+            await ui.structure(value(), 'focus:bind');
+            assert.equal(focus().fields.targets[0].kind, 'param');
+            await ui.input(`.box[data-source-start="${focus().fields.values[0].start}"] .literal-input`, '3');
+            await ui.structure(value(), 'focus:value');
+            assert.equal(focus().fields.targets[0].kind, 'focus (it^)');
+            assert.equal(focus().fields.values[0].fields.name.kind, 'int');
+            assert.equal(host.tree.source.slice(focus().fields.values[0].fields.name.start, focus().fields.values[0].fields.name.end), '3');
+            await ui.structure(value(), 'focus:wrap');
+            await ui.structure(value(), 'focus:unwrap');
+            await ui.expression(value(), 'nil');
+            await ui.remove(binding());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('Unicode declaration names, scope references and focused bindings edit through live graph controls', { timeout: 90000 }, async () => {
     const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
@@ -3549,7 +3592,7 @@ test('Unicode declaration names, scope references and focused bindings edit thro
 });
 
 test('names and focus captions preserve identity across folded and drilled semantic views', { timeout: 90000 }, async () => {
-    const source = 'let^🚀=7 let^values={🚀,$🚀,id^`quoted name`,for^let^outer=1 for^let^inner=2 do^:(it^+it^^);}';
+    const source = 'let^🚀=7 let^values={🚀,$🚀,id^`quoted name`,for^let^outer=1 for^let^inner=2 do^:(it^+it^^);,for^1 do^:it^;}';
     await require('./lhat-server.cjs').withLhatServer(async parse => {
         const tree = await parse(source), table = tree.root.fields.items[1].fields.values[0];
         await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
@@ -3558,9 +3601,10 @@ test('names and focus captions preserve identity across folded and drilled seman
             assert(normal.includes('🚀')); assert(normal.includes('values'));
             await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
             const check = async () => {
-                const text = (await svgTexts(client)).join('');
+                const labels = await svgTexts(client), text = labels.join('');
                 for (const expected of ['$🚀','quoted name','outer','inner',ja['Current item'],ja['Outer {0}: {1}'].replace('{0}','1').replace('{1}',ja['Current item'])])
                     assert(text.includes(expected), expected + ': ' + text);
+                assert.equal(labels.filter(text => text === '1').length, 2, 'generated focus nodes do not duplicate the two written values');
             };
             await check();
             await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Fold All')?.click()`);

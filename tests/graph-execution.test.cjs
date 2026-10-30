@@ -1475,7 +1475,8 @@ test('implicit match focuses retain their value and empty arms connect their app
     const { graph, flow } = await draw({ source, root });
     const junction = flatten(graph).find(n => n.lhat?.layoutOnly);
     assert.equal(junction.lhat.executionBranches.length, 2);
-    assert.equal(flow.definitions.length, 1);
+    assert.equal(flow.definitions.length, 0, 'an anonymous focus has no synthetic declaration wire');
+    assert.equal(flatten(graph).filter(n => n.lhat?.kind === 'ident' && n.labels?.[0]?.text === 'input').length, 1);
     assert.equal(flow.exec.length, 6, 'focus and junction connect the two empty arms and merge their exits');
     assert(junction.children.every(n => n.width > 0 && n.height > 0));
 });
@@ -1500,7 +1501,8 @@ test('match expressions merge candidate definitions without execution lines; ord
     assert.deepEqual(junction.children.map(n => statementsOf(n)[0].labels[0].text), ['1', '2']);
     assert.deepEqual(match.lhat.definitionBranches, [junction.id]);
     assert.equal(flow.definitions.filter(e => e.targetHandle === 'definition-branch').length, 3);
-    assert.equal(flow.definitions.filter(e => e.targetHandle === 'definition-in').length, 1, 'focus definition is evaluated once');
+    assert.equal(flow.definitions.filter(e => e.targetHandle === 'definition-in').length, 0, 'an anonymous focus has no synthetic declaration wire');
+    assert.equal(flatten(graph).filter(n => n.lhat?.kind === 'ident' && n.labels?.[0]?.text === 'input').length, 1);
     const loopSource = 'for^ row in^ items { visit(row) }', l = nodesFor(loopSource);
     const loop = l('for', loopSource, {
         focus: [l('ident', 'row')], bound: l('ident', 'items'),

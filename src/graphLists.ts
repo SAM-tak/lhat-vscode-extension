@@ -7,7 +7,7 @@ import { resultTypes, syntaxTokens, templateMarker } from "./graphSyntax";
 import { callSignatures, canInsertBinding } from "./graphCalls";
 import { assignmentOperator, assignmentValues } from "./graphAssignments";
 import { patternLists, patternExpressions } from "./graphPatterns";
-import { iteratorNames } from "./graphLoops";
+import { iteratorNames, anonymousFocusValue } from "./graphLoops";
 
 export interface ListInsertion extends StatementInsertion { category: "list" }
 export type InsertionSite = StatementInsertion | ListInsertion;
@@ -36,6 +36,8 @@ export function commaLists(tree: AstReply): CommaList[] {
         const pattern = conditions.get(node);
         if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(child => visit(child, typed)); return; }
         if (node.kind === "disabled") return;
+        const focus = anonymousFocusValue(node);
+        if (focus) { visit(focus, typed); return; }
         const tokens = syntaxTokens(source, node.start, node.end);
         const add = (field: string, mode: CommaList["mode"], start: number, end: number,
             items = array(node.fields?.[field]), implicit?: string[], materialize?: CommaList["materialize"]) => {

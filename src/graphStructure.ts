@@ -8,7 +8,7 @@ import { syntaxTokens, templateMarker, resultTypes } from "./graphSyntax";
 import { literalOf, quoteString, isNumberLiteral, isEscapedStringContent, stringEscapeInput } from "./webview/literals";
 import { assignmentOperator, ASSIGNMENT_LABELS } from "./graphAssignments";
 import { typeSites, freshMarker, isTypeNode } from "./graphTypes";
-import { iteratorNames, freshFocus, forExpression } from "./graphLoops";
+import { iteratorNames, freshFocus, forExpression, anonymousFocusValue } from "./graphLoops";
 import { handlerActions, validCatchFilter } from "./graphHandlers";
 import { validName, validMemberName, nameSegments, quoteName, nameValue, sourceNames, sameName } from "./graphNames";
 import { isEscapedInterpolationText } from "./graphInterpolation";
@@ -63,6 +63,8 @@ export function structureSites(tree: AstReply): StructureSite[] {
     const sites: StructureSite[] = [];
     const visit = (node: AstNode, parent?: AstNode) => {
         if (node.kind === "disabled") return;
+        const focus = anonymousFocusValue(node);
+        if (focus) { visit(focus, node); return; }
         if ((["block", "if-clause"].includes(node.kind) && handlerActions(tree, node, parent).length) || node.kind.startsWith("type-") || ["with", "if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "break", "next", "yield", "param", "string", "interp-text", "scope", "box", "member", "index", "call", "compare-chain", "binary", "func"].includes(node.kind))
             sites.push({ start: node.start, end: node.end, kind: node.kind });
         Object.values(node.fields ?? {}).flat().forEach(child => visit(child, node));
@@ -75,6 +77,8 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     let loops = 0;
     const find = (candidate: AstNode, owner?: AstNode, enclosing?: AstNode, depth = 0) => {
         if (candidate.kind === "disabled") return;
+        const focus = anonymousFocusValue(candidate);
+        if (focus) { find(focus, candidate, enclosing, depth); return; }
         if (candidate.kind === "func") depth = 0;
         if (candidate.kind === "repeat" || candidate.kind === "for" && one(candidate, "body")?.kind === "block" && !forExpression(candidate, tree.source)) depth++;
         if (candidate.kind === site.kind && candidate.start === site.start && candidate.end === site.end) { node = candidate; parent = owner; callable = enclosing; loops = depth; }
@@ -137,6 +141,50 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         add("focus:wrap", "Add an outer local value", { start: node.start, end: node.start, text: `for^let^${freshFocus(source)} = 0 ` });
         const body = one(node, "body");
         if (body?.kind === "for") add("focus:unwrap", "Remove the outer local scope", { start: node.start, end: body.start, text: "" });
+        const focus = array(node.fields?.focus), binding = focus[0], targets = binding && array(binding.fields?.targets), values = binding && array(binding.fields?.values);
+        if (body && body.kind !== "block" && focus.length === 1 && binding?.kind === "define" && targets?.length === 1 && values?.length === 1) {
+            const marker = head[0], header = syntaxTokens(source, node.start, body.start);
+            if (!["let^", "var^"].includes(header[1]?.text)) {
+                const used = sourceNames(source);
+                let name = "subject", serial = 2; while (used.has(name)) name = `subject${serial++}`;
+                const typed = values[0].kind === "param" && one(values[0], "name");
+                if (typed) {
+                    const type = one(values[0], "type"), span = replacementSpan(tree, binding);
+                    const colon = type && syntaxTokens(source, typed.end, type.start).find(token => token.text === ":");
+                    if (colon && span) {
+                        let depth = 0;
+                        for (const token of syntaxTokens(source, span.start, colon.start)) {
+                            if (token.text === "(") depth++;
+                            else if (token.text === ")") depth--;
+                        }
+                        const value = source.slice(span.start, colon.start) + ")".repeat(Math.max(0, depth));
+                        let annotation = source.slice(colon.start, span.end); depth = 0;
+                        const extra = syntaxTokens(source, colon.start, span.end).filter(token => {
+                            if (token.text === "(") depth++;
+                            if (token.text !== ")") return false;
+                            if (depth) { depth--; return false; }
+                            return true;
+                        });
+                        for (const token of extra.reverse()) annotation = annotation.slice(0, token.start-colon.start) + annotation.slice(token.end-colon.start);
+                        add("focus:bind", "Name the focus value", { start: marker.end, end: span.end,
+                            text: `${source.slice(marker.end, span.start)}let^${name}${annotation} = ${value}` });
+                    }
+                } else add("focus:bind", "Name the focus value", { start: marker.end, end: marker.end, text: `let^${name} = ` });
+            } else {
+                const equal = header.find(t => ["=", ":="].includes(t.text) && t.start >= targets[0].end);
+                if (equal) {
+                    const name = targets[0].kind === "param" && one(targets[0], "name");
+                    const annotation = name && { start: name.end, end: targets[0].end };
+                    let gap = source.slice(marker.end, equal.end);
+                    const removed = syntaxTokens(source, marker.end, equal.end).filter(token => !annotation || token.end <= annotation.start || token.start >= annotation.end);
+                    for (const token of [...removed, ...annotation ? [annotation] : []].sort((a,b) => b.start-a.start))
+                        gap = gap.slice(0, token.start - marker.end) + gap.slice(token.end - marker.end);
+                    const end = annotation ? binding.end : equal.end;
+                    add("focus:value", "Use an unnamed focus value", { start: marker.end, end,
+                        text: (gap || " ") + (annotation ? source.slice(equal.end, end) + source.slice(annotation.start, annotation.end) : "") });
+                }
+            }
+        }
     }
 
     if (node.kind === "func") {
@@ -440,20 +488,6 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     }
     const match = node.kind === "for" ? one(node, "body") : undefined;
     if (match && ["if-stmt", "if-expr"].includes(match.kind) && ["{", ":"].includes(source[match.start])) {
-        const focus = array(node.fields?.focus), marker = head[0];
-        const binding = focus[0], targets = binding && array(binding.fields?.targets);
-        const header = syntaxTokens(source, node.start, match.start);
-        const introduced = ["let^", "var^"].includes(header[1]?.text);
-        if (focus.length === 1 && binding?.kind === "define" && targets?.length === 1) {
-            if (!introduced) {
-                const used = sourceNames(source);
-                let name = "subject", serial = 2; while (used.has(name)) name = `subject${serial++}`;
-                add("match-focus:bind", "Name the matched value", { start: marker.end, end: marker.end, text: `let^${name} = ` });
-            } else {
-                const equal = header.find(t => t.text === "=" && t.start >= targets[0].end);
-                if (equal) add("match-focus:value", "Use an unnamed matched value", { start: marker.end, end: equal.end, text: " " });
-            }
-        }
         const branches = array(match.fields?.items), expression = match.kind === "if-expr";
         const close = syntaxTokens(source, node.start, node.end).slice(-1)[0];
         if (!close || !["}", ";"].includes(close.text)) return [];

@@ -42,7 +42,7 @@ node --test --test-name-pattern="language AST cases render" tests/graph-svg-brow
 | testing/loops.lh | 465 / 489 / 34 | 確認済み |
 | testing/member-definitions.lh | 17 / 125 / 17 | 確認済み |
 | testing/multiple-returns.lh | 248 / 315 / 93 | 確認済み |
-| testing/patterns.lh | 41 / 126 / 41 | 確認済み |
+| testing/patterns.lh | 41 / 122 / 41 | 確認済み |
 | testing/reference-library.lh | 7 / 7 / 7 | 展開先なし |
 | testing/references.lh | 29 / 45 / 29 | 確認済み |
 | testing/returns.lh | 59 / 109 / 59 | 確認済み |
@@ -62,6 +62,8 @@ node --test --test-name-pattern="language AST cases render" tests/graph-svg-brow
 | annotation | 7 / 7 / 7 | 展開先なし |
 
 ## 最終監査で残る確認
+
+名前なしの焦点の仮の宣言を除いた状態でも、69種類・29題材・112表示状態の検証を再実行した。`patterns.lh`の展開時のノード数は、値を重複させていた仮の宣言と配線を除いた分だけ減っている。焦点の値・名前・型の編集と表示内容の照合は[操作監査](visual-editor-operation-audit.md)に記録する。
 
 この検証は、各題材を各状態で描画できることと基本的な幾何・SVGの整合性を確認する。
 すべてのAST要素について必要な内容が表示されていることを個別に証明するものではない。

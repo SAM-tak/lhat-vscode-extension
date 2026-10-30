@@ -26,7 +26,7 @@ import { assignmentOperator } from "../graphAssignments";
 import { syntaxTokens, templateMarker } from "../graphSyntax";
 import { interpolationFields, interpolationParts, type InterpolationField } from "../graphInterpolation";
 import { patternLists } from "../graphPatterns";
-import { iteratorNames, forExpression } from "../graphLoops";
+import { iteratorNames, forExpression, anonymousFocusValue } from "../graphLoops";
 import { expressionCells, isInlineValue } from "./operatorExpression";
 import { structuralDeletions } from "../graphDelete";
 
@@ -1558,6 +1558,8 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                        unfold: boolean, avail: number): ElkNode {
         const iteratorName = iteratorFocus.get(node) ?? (iteratorBindings.has(node) ? node : undefined);
         if (iteratorName) return leaf({ ...node, kind: "iterator-name" }, labelFor(iteratorName, []));
+        const focus = anonymousFocusValue(node);
+        if (focus) return build(focus, "expr", unfold, avail);
         if (node.kind === "pattern-type") {
             const type = node.fields!.type as AstNode;
             const marker = { ...node, kind: "operator", end: node.start + 5, fields: undefined };

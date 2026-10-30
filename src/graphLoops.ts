@@ -4,6 +4,12 @@ import { syntaxTokens } from "./graphSyntax";
 
 const array = (value: AstNode | AstNode[] | undefined): AstNode[] => value ? Array.isArray(value) ? value : [value] : [];
 
+/** The parser's unnamed focus binding has no written declaration or target. */
+export function anonymousFocusValue(node: AstNode): AstNode | undefined {
+    const targets = array(node.fields?.targets), values = array(node.fields?.values);
+    return node.kind === "define" && targets.length === 1 && targets[0].kind === "focus (it^)" && values.length === 1 ? values[0] : undefined;
+}
+
 /** Single iterator names are wrapped in an implicit focus binding by the parser. */
 export function iteratorNames(node: AstNode, source: string): AstNode[] {
     const bound = array(node.fields?.bound)[0];
