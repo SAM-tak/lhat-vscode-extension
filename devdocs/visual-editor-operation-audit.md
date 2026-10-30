@@ -112,7 +112,7 @@
 可変長引数と名前なしの型引数は、型を上のラベルに一度だけ表示し、可変長の名前には`...`を置く。`callable signatures keep defaults`では、可変長の型が重複して表示されないことも照合する。`variadic annotations omit and restore`は型を省略しても編集用の型ラベルを残し、通常の型・タプル型・省略・再指定をUIで往復して、可変長の値への添字参照と宣言の削除まで確認する。
 `unnamed callable type inputs`は、型値の関数シグネチャについても名前なしの入力の型を一度だけ表示すること、可変長だけに`...`を表示すること、折りたたんだ表示でも型の綴りを重複させず、再展開すると各型の編集先を保持することを照合する。`LHAT_TEST_SEMANTIC_ARTIFACTS`で保存した`callable-signatures.svg`・`annotation-types.svg`・`unnamed-parameters.svg`を画像化し、既定値、入出力、修飾、名前なし・可変長の各入力と9種類の型注釈を目視した。
 関数型の可変長の型も構造メニューから省略・再指定できる。`variadic element annotations`は本体を持つ関数の型注釈と型値の両方で、隣の引数・結果とコメントを保って往復することを実サーバーで確認する。型候補はLSPの`d26a022`以降で、注釈の有無に関わらず`...`の位置から基本型・スコープ内の型エイリアスを取得する。LSP側の`test_graph_types`でも通常の関数・関数型の両方を検証する。
-`function parameter defaults`は文字列の既定値と解除、`a typed variadic function`は可変長の引数・型・値への参照と添字、`callable templates and fresh results`はテンプレート・freshの約束の追加解除と式の差し替え、`mutable receivers and fresh promises`は本体と型注釈それぞれのレシーバー・freshの変更を検証する。複数の入出力の構築は`multiple-returns sample`、引数と結果の型の追加・個別削除は型注釈の操作テストにも証拠がある。
+`function parameter defaults`は文字列の既定値と解除、`a typed variadic function`は可変長の引数・型・値への参照と添字、`callable templates and fresh results`はテンプレート・freshの約束の追加解除と式の差し替え、`mutable receivers and fresh promises`は本体と型注釈それぞれのレシーバー・freshの変更を検証する。複数の入出力の構築は`multiple-returns sample`、引数と結果の型の追加・個別削除は型注釈の操作テストにも証拠がある。 再構築ヘルパーも型文字列の範囲ではなく`...`の位置で型を編集する。`reconstruction selects the variadic marker`で型付き・型を省略した可変長引数を空から作成し、本文の`...[0]`を含むASTと字句列の一致を確認した。
 `callable signatures keep defaults`は通常・折りたたみ時にも関数・手続きの見出し、入力・出力、既定値、可変長、テンプレート、fresh、複数の結果型の編集先を保持することをSVGとDOMで照合する。展開・個別の関数へのドリルダウン後は本文も確認し、別の関数の既定値を混ぜない。表示操作でソースを変更しない。
 
 ## 型注釈の照合

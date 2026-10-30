@@ -44,7 +44,7 @@ function reconstruction(ui, host, client, blueprint, progress = () => {}) {
             await ui.addElement(variadic ? 'variadic' : 'parameter', get(), 'params');
             const param = () => get().fields.params[i];
             if (!variadic) await rename(one(param(), 'name'), text(one(model, 'name')));
-            await annotate(() => variadic ? one(param(), 'type') : param(), one(model, 'type'));
+            await annotate(() => variadic ? { start:param().start, end:param().start + 3 } : param(), one(model, 'type'));
         }
     };
     const binaryTemplate = operator => ['and^', 'or^'].includes(operator) ? 'logical'

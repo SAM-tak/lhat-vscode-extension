@@ -5857,6 +5857,22 @@ test('inventory definitions are reconstructed with constructors, receivers, erro
     });
 });
 
+test('reconstruction selects the variadic marker for typed and inferred element annotations', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    const { reconstruction } = require('./graph-reconstruct.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        for (const source of ['let^first=f^...:number^{...[0]}','let^first=f^...{...[0]}']) {
+            const blueprint = await parse(source), expected = normalizedAst(blueprint), host = await graphHost(parse, server);
+            await browser({ ...routes, '/':{type:'text/html',body:html(host.tree,false)} }, async client => {
+                const ui = await graphUi(host, client), builder = reconstruction(ui, host, client, blueprint);
+                await builder.statements(() => host.tree.root, blueprint.root.fields.items);
+                assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+                assert.deepEqual(client.errors, []);
+            });
+        }
+    });
+});
+
 test('inventory sample is reconstructed entirely through live UI controls', { timeout: 2400000 }, async () => {
     const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
     const { reconstruction } = require('./graph-reconstruct.cjs');
