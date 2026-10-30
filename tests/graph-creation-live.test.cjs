@@ -12,6 +12,39 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('mutable declarations edit member paths and introduction mode while immutable targets retain their grammar', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts'), input = { kind:'declarationPath', value:'value' };
+    for (const path of ['value','`a b`','_^','table.member','table.`a.b`','L^.value','$table.member','$^table.member']) {
+        assert(structure.validStructureInput(input, path), path);
+        const tree = await parse('var^value:number^=0'), node = tree.root.fields.items[0];
+        const change = structure.editStructure(tree, node, `binding:target:0:${path}`); assert(change, path);
+        const updated = await parse(apply(tree.source, change));
+        assert(!flat(updated.root).some(n => n.kind === 'error'), updated.source);
+        assert.equal(updated.source, `var^${path}:number^=0`);
+    }
+    for (const path of ['table[0]','table?.member','self^.value','true^','L^','table.0','value;print(1)','value\nlet^x=0'])
+        assert(!structure.validStructureInput(input, path), path);
+    for (const source of ['var^value=0','var^table.member:number^=0','var^a,table.`b.c`=0,1']) {
+        let tree = await parse(source), node = tree.root.fields.items[0];
+        let change = structure.editStructure(tree, node, 'binding:existing'); assert(change);
+        tree = await parse(apply(tree.source, change));
+        assert(tree.source.includes(':='));
+        change = structure.editStructure(tree, tree.root.fields.items[0], 'binding:existing'); assert(change);
+        assert.equal(apply(tree.source, change), source);
+    }
+    for (const source of ['var^value:=0','var^value:number^ # keep\n:=0']) {
+        const tree = await parse(source), change = structure.editStructure(tree, tree.root.fields.items[0], 'mutability'); assert(change);
+        const updated = await parse(apply(source, change));
+        assert(!flat(updated.root).some(n => n.kind === 'error'), updated.source);
+        assert.equal(updated.source, source.replace('var^', 'let^').replace(':=', '='));
+    }
+    for (const source of ['var^table.member=0','var^table.member:number^=0','let^value=0']) {
+        const tree = await parse(source), choices = structure.structureTemplates(tree, tree.root.fields.items[0]);
+        if (source.startsWith('var^')) assert(!choices.some(c => c.id === 'mutability'));
+        else assert(!choices.some(c => c.id.startsWith('binding:')));
+    }
+}));
+
 test('loop transfers choose an enclosing loop without crossing callable or focus boundaries', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structure = load('graphStructure.ts');
     for (const spelling of ['break^', 'next^^', 'skip^[2]', 'continue^^']) {

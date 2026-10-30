@@ -1,5 +1,5 @@
 import { accessOperator } from "./graphCalls";
-import { replacementSpan } from "./graphExpressions";
+import { replacementSpan, validReference } from "./graphExpressions";
 import { commaLists, insertListEdit, listTemplates, removeListElement, comparison } from "./graphLists";
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
@@ -10,7 +10,7 @@ import { assignmentOperator, ASSIGNMENT_LABELS } from "./graphAssignments";
 import { typeSites, freshMarker, isTypeNode } from "./graphTypes";
 import { iteratorNames, freshFocus, forExpression } from "./graphLoops";
 import { handlerActions, validCatchFilter } from "./graphHandlers";
-import { validMemberName, nameSegments, quoteName, nameValue, sourceNames, sameName } from "./graphNames";
+import { validName, validMemberName, nameSegments, quoteName, nameValue, sourceNames, sameName } from "./graphNames";
 
 export function validTypeReference(text: string): boolean {
     const path = nameSegments(text);
@@ -19,6 +19,12 @@ export function validTypeReference(text: string): boolean {
 }
 
 export function validStructureInput(input: NonNullable<StatementTemplate["input"]>, value: string): boolean {
+    if (input.kind === "declarationPath") {
+        if (value === "_^") return true;
+        const scope = /^\$(?:\^+|\$*)/.exec(value)?.[0];
+        const path = nameSegments(scope ? value.slice(scope.length) : value);
+        return !!path && validReference(value) && !!(scope || validName(path[0]) || path[0] === "L^" && path.length > 1) && path.slice(1).every(validMemberName);
+    }
     if (input.kind === "catchType") return validCatchFilter(value);
     if (input.kind === "typeName") return validTypeReference(value);
     if (input.kind !== "count") return validMemberName(value);
@@ -348,9 +354,27 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
                 start: node.start, end: published ? head[0].end : node.start, text: published ? "" : "public^ " });
         }
         const marker = head.find(t => ["let^", "var^"].includes(t.text));
-        if (node.kind === "define" && marker && array(node.fields?.targets).every(target => ["ident", "param"].includes(target.kind)))
-            add("mutability", marker.text === "let^" ? "Make variable mutable" : "Make variable immutable",
-                { start: marker.start, end: marker.end, text: marker.text === "let^" ? "var^" : "let^" });
+        if (node.kind === "define" && marker) {
+            const targets = array(node.fields?.targets).map(target => one(target, "name") ?? target);
+            const values = array(node.fields?.values), last = array(node.fields?.targets).slice(-1)[0];
+            const operator = last && head.find(t => t.start >= last.end && t.end <= (values[0]?.start ?? node!.end) && ["=", ":="].includes(t.text));
+            if (targets.every(target => target.kind === "ident" || source.slice(target.start, target.end) === "_^")) {
+                const end = marker.text === "var^" && operator?.text === ":=" ? operator.end : marker.end;
+                add("mutability", marker.text === "let^" ? "Make variable mutable" : "Make variable immutable", {
+                    start: marker.start, end, text: (marker.text === "let^" ? "var^" : "let^") +
+                        source.slice(marker.end, end).replace(/:=$/, "="),
+                });
+            }
+            if (marker.text === "var^") {
+                targets.forEach((target, index) => {
+                    add(`binding:target:${index}`, "Change declaration target", { start: target.start, end: target.end, text: source.slice(target.start, target.end) });
+                    result[result.length - 1].input = { kind: "declarationPath", value: source.slice(target.start, target.end) };
+                });
+                if (operator) add("binding:existing", operator.text === "=" ? "Allow an existing member" : "Require a new member", {
+                    start: operator.start, end: operator.end, text: operator.text === "=" ? ":=" : "=",
+                });
+            }
+        }
         return result;
     }
     if (node.kind === "table-entry") {

@@ -2617,6 +2617,31 @@ test('deleting a parallel value removes its binding and keeps the remaining grap
     });
 });
 
+test('member declarations create quoted paths and toggle existing-member assignment through live menus', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('var^table.`a.b`:=0'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), node = () => host.tree.root.fields.items[0];
+            await ui.add('var');
+            await ui.structure(node(), 'binding:target:0:table.`a.b`');
+            await ui.structure(node(), 'binding:existing');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.match(await client.evaluate(`document.querySelector('.box[data-source-start="${node().start}"][data-source-end="${node().end}"]').textContent`), /:=/);
+            await ui.structure(node(), 'binding:existing');
+            assert(!host.tree.source.includes(':='));
+            await ui.structure(node(), 'binding:target:0:local');
+            await ui.structure(node(), 'binding:existing');
+            await ui.structure(node(), 'mutability');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('let^local=0')));
+            await ui.remove(node());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('nested loop transfers are created, retargeted and deleted through live graph menus', { timeout: 90000 }, async () => {
     const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {

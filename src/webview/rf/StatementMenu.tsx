@@ -157,6 +157,8 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
         ? { title: l10n.t("Catch filter"), placeholder: l10n.t("Enter an error kind or alternatives"), label: "Use catch filter" }
         : picker.input?.input?.kind === "typeName"
         ? { title: l10n.t("Named type"), placeholder: l10n.t("Enter a type name"), label: "Use type name" }
+        : picker.input?.input?.kind === "declarationPath"
+        ? { title: l10n.t("Change declaration target"), placeholder: l10n.t("Enter a declaration name or member path"), label: "Use declaration target" }
         : { title: l10n.t("Rename type member"), placeholder: l10n.t("Enter member name"), label: "Use member name" };
     const title = picker.input ? inputUi.title : picker.structure ? l10n.t("Edit structure") : picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
         ? l10n.t("Choose an element template") : l10n.t("Choose a statement template");

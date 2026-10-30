@@ -1393,6 +1393,11 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         const declarations = targets.items.map(target => reassignment && !["ident", "hat-ident"].includes(target.kind)
             ? build(target, "expr", unfold, avail) : leaf(target, makeLabel(target, [], MAX_LABEL, true)));
         const heading = reassignment ? labelFor(node, []) : makeLabel({ ...node, end: targets.items[0].start }, [], MAX_LABEL);
+        const existing = !reassignment && syntaxTokens(source, targets.items[targets.items.length - 1].end, values.items[0].start).some(token => token.text === ":=");
+        if (existing) {
+            heading.text += " :=";
+            heading.parts.push({ text: " :=", role: "reassignment", category: "declaration", source: ":=" });
+        }
         if (declarations.every(declaration => declaration.width !== undefined)) {
             const declarationWidth = Math.max(...declarations.map(declaration => declaration.width!));
             declarations.forEach(declaration => { declaration.width = declarationWidth; });
@@ -1439,7 +1444,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         }
         const built = container(id, heading, "DOWN", pairs, chain(id, pairs), node);
         built.lhat = { ...built.lhat!, kind: rowKind, bindingGroup: true };
-        built.labels = [{ text: reassignment ? heading.text : labelFor({ ...node, end: targets.items[targets.items.length - 1].end }, []).text }];
+        built.labels = [{ text: reassignment ? heading.text : labelFor({ ...node, end: targets.items[targets.items.length - 1].end }, []).text + (existing ? " :=" : "") }];
         built.layoutOptions!["elk.padding"] = `[top=${px(HEAD_H + PAD)},left=${px(PAD)},bottom=${px(PAD + (canAdd ? LAYER_GAP : 0))},right=${px(PAD)}]`;
         return built;
     }

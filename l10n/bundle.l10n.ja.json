@@ -475,5 +475,10 @@
     "Catch filter": "catchの型指定",
     "Enter an error kind or alternatives": "エラー種別または選択肢を入力",
     "Use catch filter": "この型指定を使う",
-    "Run finally before leaving this scope": "このスコープから離脱する前にfinallyを実行"
+    "Run finally before leaving this scope": "このスコープから離脱する前にfinallyを実行",
+    "Change declaration target": "宣言先を変更",
+    "Enter a declaration name or member path": "宣言する名前またはメンバーへのパスを入力",
+    "Use declaration target": "この宣言先を使う",
+    "Allow an existing member": "既存メンバーへの代入も許可",
+    "Require a new member": "新しいメンバーを導入"
 }
