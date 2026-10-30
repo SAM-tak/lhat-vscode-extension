@@ -2169,6 +2169,113 @@ test('reference-library sample is reconstructed with module and public declarati
     });
 });
 
+test('definition and self fields retain editors after clearing constructors, templates and all members', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^Counter=def^{self^{count:number^=11},version=13,override^new=f^{return^self^{count=17}},read=f^self^{return^self^.count}}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), declaration = () => host.tree.root.fields.items[0];
+            const def = () => declaration().fields.values[0], template = () => def().fields.items[0].fields.value;
+            const constructor = () => def().fields.items[2].fields.value, instance = () => constructor().fields.body.fields.items[0].fields.value[0];
+            const unfold = async () => {
+                await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            };
+            const rename = (node, name) => ui.input(`.name-input[data-reference-start="${node.start}"]`, name);
+            const literal = (node, value) => ui.input(`.box[data-source-start="${node.start}"] .literal-input`, value);
+            await ui.add('tableDefinition'); await rename(declaration().fields.targets[0], 'Counter'); await unfold();
+            await ui.addElement('self', def()); await unfold();
+            await ui.addElement('member', template());
+            await rename(template().fields.items[0].fields.key, 'count');
+            await literal(template().fields.items[0].fields.value, '11');
+            await ui.type(template().fields.items[0].fields.key, 'number^');
+            await ui.addElement('member', def()); await rename(def().fields.items[1].fields.key, 'version');
+            await literal(def().fields.items[1].fields.value, '13');
+            await ui.addElement('constructor', def()); await unfold();
+            await ui.add('return', constructor().fields.body);
+            await ui.expression(instance(), 'selfTable'); await unfold();
+            await ui.addElement('member', instance());
+            await rename(instance().fields.items[0].fields.key, 'count');
+            await literal(instance().fields.items[0].fields.value, '17');
+            await ui.addElement('member', def()); await rename(def().fields.items[3].fields.key, 'read');
+            await ui.expression(def().fields.items[3].fields.value, 'function'); await unfold();
+            const method = () => def().fields.items[3].fields.value;
+            await ui.addElement('receiver', method(), 'params');
+            await ui.expression(method().fields.body.fields.items[0].fields.value[0], 'reference:self^.count');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.remove(instance().fields.items[0]);
+            assert.equal(instance().fields?.items?.length ?? 0, 0);
+            await ui.addElement('member', instance());
+            assert.equal(instance().fields.items.length, 1);
+            for (let index = 3; index >= 0; index--) await ui.remove(def().fields.items[index]);
+            assert.equal(def().fields?.items?.length ?? 0, 0);
+            await ui.addElement('self', def()); await unfold();
+            assert.equal(template().fields?.items?.length ?? 0, 0);
+            await ui.addElement('member', template());
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('let^Counter=def^{self^{value=0}}')));
+            await ui.remove(declaration());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('definition and self contents preserve member identities and modifiers across semantic views', { timeout: 90000 }, async () => {
+    const source = 'let^Counter=def^{self^{count:number^=11},version=13,abstract^limit:number^,override^new=f^{self^{count=17}},read=f^self^{self^.count},overload^read=f^self^,rhs:number^{rhs},op^+ =f^self^,rhs:Self^{return^self^},base={},delegate^base}';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), def = tree.root.fields.items[0].fields.values[0];
+        const flat = node => [node, ...Object.values(node.fields ?? {}).flat().flatMap(flat)];
+        assert(!flat(tree.root).some(node => node.kind === 'error'), source);
+        const instance = def.fields.items[3].fields.value.fields.body.fields.items[0].fields.value[0];
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
+            const { evaluate, until, call } = client, ready = `!document.querySelector('.svg-export>button').disabled`;
+            const normal = await svgTexts(client);
+            assert(normal.includes('Counter')); assert(normal.includes(ja['Table type definition']), JSON.stringify(normal));
+            const unfold = async () => {
+                await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await until(ready);
+            };
+            const checkDefinition = async () => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const value of ['11','13','17']) assert.equal(texts.filter(t => t === value).length, 1, JSON.stringify(texts));
+                for (const name of ['count','version','limit','new','read','rhs','base',ja.Abstract,ja.Override,ja.Overload,ja.Delegate,ja['Operator definition'],'+'])
+                    assert(text.includes(name), name + ': ' + text);
+                const spacing = await evaluate(`(()=>{const keyword=document.querySelector('.semantic-label[title="op^"]'),symbol=[...keyword.parentElement.querySelectorAll('.typed-name>span')].find(e=>e.textContent.trim()==='+');return symbol ? symbol.getBoundingClientRect().left-keyword.getBoundingClientRect().right : null})()`);
+                assert(spacing !== null && spacing >= 3, 'operator symbol gap: ' + spacing);
+                assert(texts.filter(t => t.includes(ja.Self)).length >= 2, JSON.stringify(texts));
+            };
+            const drill = async node => {
+                const selector = `.box.folded[data-source-start="${node.start}"][data-source-end="${node.end}"]`;
+                await until(`document.querySelector(${JSON.stringify(selector)}) && ${ready}`);
+                let point = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.left+8,y:r.top+8}})()`);
+                if (point.y < 80 || point.y > 600 || point.x < 0 || point.x > 950) {
+                    await call('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 500, y: 350, deltaY: point.y-180, deltaX: point.x < 0 || point.x > 950 ? point.x-200 : 0 });
+                    await evaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+                    point = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.left+8,y:r.top+8}})()`);
+                }
+                assert(point.x > 0 && point.x < 1000 && point.y > 60 && point.y < 690, JSON.stringify(point));
+                for (const type of ['mousePressed','mouseReleased']) await call('Input.dispatchMouseEvent', { type, ...point, button:'left', clickCount:1 });
+                await until(`document.querySelector('#trail') && ${ready}`);
+            };
+            await unfold(); await checkDefinition();
+            if (process.env.LHAT_TEST_DEFINITION_SVG) fs.writeFileSync(process.env.LHAT_TEST_DEFINITION_SVG,
+                await evaluate('window.exports.at(-1).svg'));
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Fold All').click()`); await until(ready);
+            const folded = await svgTexts(client); assert(folded.includes('Counter')); assert(folded.includes(ja['Table type definition']));
+            await drill(def); await unfold(); await checkDefinition();
+            const selfSelector = `.box[data-source-start="${instance.start}"][data-source-end="${instance.end}"] .foldbtn`;
+            await evaluate(`document.querySelector(${JSON.stringify(selfSelector)}).click()`); await until(ready);
+            await drill(instance); await unfold();
+            const contents = await svgTexts(client);
+            assert(contents.includes('17') && contents.includes('count'), JSON.stringify(contents));
+            assert(!contents.includes('version') && !contents.includes('13'), JSON.stringify(contents));
+            assert.equal(await evaluate('window.edits.length'), 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('definition members expose modifier and operator controls after UI creation', { timeout: 60000 }, async () => {
     const { graphHost, graphUi } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
@@ -2188,6 +2295,8 @@ test('definition members expose modifier and operator controls after UI creation
             assert(host.tree.source.includes('op^='));
             await ui.structure(def().fields.items[0], 'modifier:override^');
             assert(host.tree.source.includes('override^'));
+            await ui.structure(def().fields.items[0], 'modifier:overload^');
+            assert(host.tree.source.includes('overload^') && !host.tree.source.includes('override^'));
             await ui.structure(def().fields.items[0], 'modifier:plain');
             await ui.addElement('abstract', def());
             await unfold();

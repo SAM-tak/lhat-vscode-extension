@@ -311,7 +311,7 @@ export function createLabeler(source: string, root: AstNode, vocabulary: Vocabul
                     if (identifierWord(last) || /^[0-9]$/.test(last)) parts.push({ text: " " });
                     parts.push({ text, role, category: entry.category, source: source.slice(token.start, token.end), symbol: token.symbol });
                     const next = source.slice(token.end, piece.end);
-                    if (identifierWord(next) || /^[0-9]/.test(next)) parts.push({ text: " " });
+                    if (identifierWord(next) || /^[0-9]/.test(next) || word === "op" && next && !/^\s/.test(next)) parts.push({ text: " " });
                 }
                 if (token.typeSite) {
                     const part = parts[parts.length - 1];
