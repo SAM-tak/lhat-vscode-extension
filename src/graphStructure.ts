@@ -39,6 +39,47 @@ export interface StructureSite extends SourceSpan { kind: string }
 interface Action extends StatementTemplate { edit: SourceEdit }
 const array = (value: AstNode | AstNode[] | undefined): AstNode[] => value ? Array.isArray(value) ? value : [value] : [];
 const one = (node: AstNode, field: string) => array(node.fields?.[field])[0];
+
+function typeValueExpression(tree: AstReply, site: StructureSite): AstNode | undefined {
+    let found: AstNode | undefined;
+    const visit = (node: AstNode, value?: AstNode) => {
+        if (node.kind === "type") value = node;
+        if (node.kind === site.kind && node.start === site.start && node.end === site.end) { found = value; return; }
+        Object.values(node.fields ?? {}).flat().filter(child => child.start <= site.start && child.end >= site.end).forEach(child => visit(child, value));
+    };
+    visit(tree.root); return found;
+}
+
+/** A type position accepts grouping that an expression would read as values. */
+function typeValueEdit(tree: AstReply, site: StructureSite, edit: SourceEdit): SourceEdit {
+    const value = typeValueExpression(tree, site);
+    if (!value) return edit;
+    const span = replacementSpan(tree, value) ?? value, source = tree.source;
+    if (edit.start < span.start || edit.end > span.end) return edit;
+    let text = source.slice(span.start, edit.start) + edit.text + source.slice(edit.end, span.end);
+    for (;;) {
+        const tokens = syntaxTokens(text);
+        if (tokens[0]?.text !== "(") break;
+        let depth = 0, tuple = false;
+        const end = tokens.findIndex(token => {
+            if (token.text === "(") depth++;
+            if (depth === 1 && token.text === ",") tuple = true;
+            if (token.text === ")") depth--;
+            return depth === 0;
+        });
+        if (end < 0) break;
+        const inner = tokens.slice(1, end).map(token => token.text).join("");
+        if ((end !== tokens.length - 1 || tuple) && !validTypeReference(inner)) break;
+        text = text.slice(0, tokens[0].start) + text.slice(tokens[0].end, tokens[end].start) + text.slice(tokens[end].end);
+    }
+    const tokens = syntaxTokens(text);
+    // any^ is neutral in an intersection and makes tuple/nil/grouped types
+    // unambiguously written type values, retaining their alias semantics.
+    if (tokens[0]?.text === "(" || tokens.length === 1 && tokens[0].text === "nil^") text = `any^&(${text})`;
+    const before = syntaxTokens(source, 0, span.start).slice(-1)[0], after = syntaxTokens(source, span.end)[0];
+    return { ...span, text: before?.text === "(" && after?.text === ")" ? text : `(${text})` };
+}
+
 function receiverMutation(param: AstNode, source: string) {
     const receiver = one(param, "name") ?? one(param, "type");
     if (!receiver || source.slice(receiver.start, receiver.end) !== "self^") return undefined;
@@ -196,6 +237,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         return result;
     }
     if (isTypeNode(node)) {
+        const typeValue = typeValueExpression(tree, site);
         const names = new Set(["number^", "string^", "bool^", "nil^", "any^", "t^{}"]);
         const owner = typeSites(tree).find(site => site.annotation && site.annotation.start <= node!.start && site.annotation.end >= node!.end);
         const removeName = (name: string) => { for (const candidate of names) if (sameName(candidate, name)) names.delete(candidate); };
@@ -206,11 +248,12 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
                     const name = one(declaration, "name");
                     if (name) { const text = source.slice(name.start, name.end); removeName(text); names.add(text); }
                 }
-                if (declaration.kind === "define") array(declaration.fields?.targets).forEach((target, index) => {
+                if (declaration.kind === "define" && !array(declaration.fields?.values).includes(typeValue!)) array(declaration.fields?.targets).forEach((target, index) => {
                     const value = array(declaration.fields?.values)[index], name = one(target, "name") ?? target;
                     const text = source.slice(name.start, name.end);
                     removeName(text);
-                    if (value && ["def", "type"].includes(value.kind)) names.add(text);
+                    const keyword = syntaxTokens(source, declaration.start, declaration.end).find(token => ["let^", "var^"].includes(token.text));
+                    if (keyword?.text === "let^" && value && ["def", "type"].includes(value.kind)) names.add(text);
                 });
             }
             if (scope.kind === "func") array(scope.fields?.params).forEach(parameter => {
@@ -243,14 +286,14 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
                 result[result.length - 1].input = { kind: "typeName", value: validTypeReference(current) ? current : "any^" };
                 for (const name of names) if (!owner || !sameName(name, owner.name)) replace(`type:name:${name}`, "Use type", name);
                 for (const [id, label, text] of [
-                    ["nullable", "Allow nil", `(${current})|nil^`],
+                    ["nullable", "Allow nil", `(${current}|nil^)`],
                     ["sequence", "Use sequence type", `t^{(${current})[]}`],
                     ["tuple", "Use tuple type", `(${current}, any^)`],
-                    ["intersection", "Use intersection type", `(${current})&t^{}`],
-                    ["function", "Use function type", `f^any^ -> (${current});`],
-                    ["procedure", "Use procedure type", `p^any^ -> (${current});`],
+                    ["intersection", "Use intersection type", `((${current})&t^{})`],
+                    ["function", "Use function type", `(f^any^ -> (${current});)`],
+                    ["procedure", "Use procedure type", `(p^any^ -> (${current});)`],
                     ["coroutine", "Use coroutine type", `c^{f^any^ -> any^ -> (${current})}`],
-                    ["apply", "Use type descriptor type", `type^<${current}>`],
+                    ["apply", "Use type descriptor type", `(type^<${current}>)`],
                 ]) if (id !== "tuple" || !freshTypes.has(target)) replace(`type:${id}`, label, text);
             }
             for (const list of lists.filter(list => list.node === target)) {
@@ -647,11 +690,15 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     return result;
 }
 
-export const structureTemplates = (tree: AstReply, site: StructureSite): StatementTemplate[] => actions(tree, site);
+export const structureTemplates = (tree: AstReply, site: StructureSite): StatementTemplate[] => actions(tree, site).map(choice => {
+    const edit = typeValueEdit(tree, site, choice.edit);
+    return edit === choice.edit ? choice : { ...choice, edit, text: edit.text };
+});
 export function editStructure(tree: AstReply, site: StructureSite, action: string): SourceEdit | undefined {
     const choices = actions(tree, site), choice = choices.find(choice => choice.id === action);
-    if (choice && !choice.input) return choice.edit;
+    if (choice && !choice.input) return typeValueEdit(tree, site, choice.edit);
     const input = choices.find(choice => choice.input && action.startsWith(`${choice.id}:`));
     const name = input && action.slice(input.id.length + 1);
-    return input && name !== undefined && validStructureInput(input.input!, name) ? { ...input.edit, text: `${input.input!.prefix ?? ""}${name}${input.input!.suffix ?? ""}` } : undefined;
+    return input && name !== undefined && validStructureInput(input.input!, name)
+        ? typeValueEdit(tree, site, { ...input.edit, text: `${input.input!.prefix ?? ""}${name}${input.input!.suffix ?? ""}` }) : undefined;
 }

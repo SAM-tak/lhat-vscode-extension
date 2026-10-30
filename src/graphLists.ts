@@ -80,7 +80,8 @@ export function commaLists(tree: AstReply): CommaList[] {
         } else if (["func", "type-func"].includes(node.kind)) {
             const body = one(node, "body"), annotation = one(node, "return_type");
             const marker = tokens.find(t => ["f^", "p^"].includes(t.text));
-            const end = body?.start ?? (tokens.slice(-1)[0]?.text === ";" ? tokens.slice(-1)[0].start : node.end);
+            // Grouped type spans can include ')' after the signature terminator.
+            const end = body?.start ?? tokens.filter(t => t.text === ";").slice(-1)[0]?.start ?? node.end;
             const arrow = tokens.find(t => t.text === "->" && t.end <= (annotation?.start ?? end) && t.start >= (array(node.fields?.params).slice(-1)[0]?.end ?? marker?.end ?? node.start));
             if (marker) add("params", node.kind === "func" ? "parameter" : "type", marker.end, arrow?.start ?? end);
             const items = annotation?.kind === "type-tuple" ? array(annotation.fields?.items) : annotation ? [annotation] : [];

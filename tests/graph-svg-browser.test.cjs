@@ -3629,7 +3629,9 @@ test('type labels construct named, sequence and nullable types through the live 
             assert.equal(fn().fields.params[0].fields.type.kind, 'type-table');
             await ui.typeStructure(name(), 'type:nullable');
             assert.equal(fn().fields.params[0].fields.type.kind, 'type-union');
-            assert(host.tree.source.includes('(t^{(Item)[]})|nil^'));
+            const annotation = fn().fields.params[0].fields.type;
+            assert.equal(annotation.fields.left.kind, 'type-table');
+            assert.equal(host.tree.source.slice(annotation.fields.right.start, annotation.fields.right.end), 'nil^');
             assert.deepEqual(client.errors, []);
         });
     });
@@ -4349,6 +4351,47 @@ test('delegated members are created, retargeted and removed through the live def
             assert.equal(def().fields.items.length, 1);
             await ui.addElement('delegate', def());
             assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('written type descriptors keep nil and tuple types through live structure menus', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, load } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server), structure = load('graphStructure.ts');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), value = () => host.tree.root.fields.items[0].fields.values[0];
+            const type = () => value().fields.value;
+            await ui.add('let');
+            await ui.expression(value(), 'typeValue');
+            for (const [action, expected] of [
+                ['type:nullable', 'type^<number^|nil^>'],
+                ['type:intersection', undefined],
+                ['type:name:number^', 'type^<number^>'],
+                ['type:tuple', 'type^<(number^, any^)>'],
+            ]) {
+                await ui.structure(type(), action);
+                assert.equal(value().kind, 'type', host.tree.source);
+                if (expected) assert.equal(value().inferredType, expected);
+            }
+            const part = structure.structureTemplates(host.tree, type()).find(c => c.id.startsWith('type:part:') && c.id.endsWith('type:name:string^') && c.text.includes('number^, string^'));
+            assert(part, host.tree.source);
+            await ui.structure(type(), part.id);
+            assert.equal(value().inferredType, 'type^<(number^, string^)>');
+            await ui.structure(type(), 'type:keep:right');
+            assert.equal(value().kind, 'type');
+            assert.equal(value().inferredType, 'type^<(number^, string^)>');
+            await ui.structure(type(), 'type:reference:nil^');
+            assert.equal(value().kind, 'type');
+            assert.equal(value().inferredType, 'type^<nil^>');
+            assert(!structure.structureTemplates(host.tree, type()).some(c => c.id === 'type:name:value'));
+            await ui.structure(type(), 'type:name:string^');
+            assert.equal(value().inferredType, 'type^<string^>');
+            await ui.expression(value(), 'number');
+            assert.equal(value().kind, 'int');
+            await ui.remove(host.tree.root.fields.items[0]);
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
             assert.deepEqual(client.errors, []);
         });
     });

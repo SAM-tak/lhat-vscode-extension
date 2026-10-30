@@ -820,6 +820,76 @@ test('delegate entries allow one plain or self member target and preserve neighb
     assert.equal(lists.listTemplates(tree, insertion()).find(c => c.id === 'delegate').text, 'delegate^value');
 }));
 
+test('written type values keep descriptor semantics through all offered structural edits', { timeout: 120000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts');
+    for (const source of [
+        'let^Descriptor=number^',
+        'let^Descriptor=(number^|nil^)',
+        'let^Descriptor=(any^&((number^,string^)))',
+        'let^Descriptor=t^{field:number^}',
+        'let^Descriptor=f^number^ -> string^;',
+        'let^result=for^number^ do^:it^;',
+    ]) {
+        const tree = await parse(source), value = flat(tree.root).find(n => n.kind === 'type');
+        assert(value, source);
+        for (const choice of structure.structureTemplates(tree, value.fields.value).filter(c => !c.input)) {
+            const edit = structure.editStructure(tree, value.fields.value, choice.id);
+            assert(edit, choice.id);
+            const updated = await parse(apply(source, edit));
+            assert(!flat(updated.root).some(n => n.kind === 'error'), `${choice.id}: ${updated.source}`);
+            const result = updated.root.fields.items[0].fields.values[0];
+            const descriptor = source.startsWith('let^result=') ? result.fields.focus[0].fields.values[0] : result;
+            assert.equal(descriptor.kind, 'type', `${choice.id}: ${updated.source}`);
+            assert(descriptor?.inferredType.startsWith('type^<'), `${choice.id}: ${updated.source}`);
+            if (choice.id === 'type:name:nil^') assert.equal(descriptor.inferredType, 'type^<nil^>');
+            if (choice.id === 'type:tuple' && source === 'let^Descriptor=number^') assert.equal(descriptor.inferredType, 'type^<(number^, any^)>');
+        }
+    }
+    let tree = await parse('let^Descriptor=#[keep]#(number^)');
+    const type = () => tree.root.fields.items[0].fields.values[0].fields.value;
+    for (const action of ['type:nullable', 'type:intersection', 'type:tuple', 'type:reference:nil^']) {
+        tree = await parse(apply(tree.source, structure.editStructure(tree, type(), action)));
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+        assert.equal(tree.source.split('#[keep]#').length, 2);
+    }
+    assert.equal(tree.root.fields.items[0].fields.values[0].inferredType, 'type^<nil^>');
+    tree = await parse(tree.source + '\nlet^instance:Descriptor=nil^');
+    assert.equal(tree.root.fields.items[1].fields.targets[0].inferredType, 'nil^');
+    tree = await parse(apply(tree.source, structure.editStructure(tree, type(), 'type:name:number^')));
+    const stable = tree.source;
+    for (let index = 0; index < 3; index++) tree = await parse(apply(tree.source, structure.editStructure(tree, type(), 'type:name:number^')));
+    assert.equal(tree.source, stable, 'Repeated edits must not grow parentheses');
+}));
+
+test('nullable and intersection changes preserve the selected annotation component precedence', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts');
+    let tree = await parse('let^read=f^value:(t^{}&t^{field:number^}){0}');
+    const annotation = () => tree.root.fields.items[0].fields.values[0].fields.params[0].fields.type;
+    const right = annotation().fields.right;
+    tree = await parse(apply(tree.source, structure.editStructure(tree, right, 'type:nullable')));
+    assert.equal(annotation().kind, 'type-intersect');
+    assert.equal(annotation().fields.right.kind, 'type-union');
+    const member = annotation().fields.right.fields.left;
+    tree = await parse(apply(tree.source, structure.editStructure(tree, member, 'type:intersection')));
+    assert.equal(annotation().kind, 'type-intersect');
+    assert.equal(annotation().fields.right.kind, 'type-union');
+    assert.equal(annotation().fields.right.fields.left.kind, 'type-intersect');
+    assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+}));
+
+test('type choices exclude mutable descriptors and the initializing alias but retain outer aliases', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts');
+    for (const [source, expected] of [
+        ['let^Alias=number^ var^Mutable=string^ let^Descriptor=bool^', ['Alias']],
+        ['let^Descriptor=number^ let^f=f^{let^Descriptor=string^}', ['Descriptor']],
+        ['let^Alias=number^ let^f=f^{var^Alias=string^ let^Descriptor=bool^}', []],
+    ]) {
+        const tree = await parse(source), value = flat(tree.root).filter(n => n.kind === 'type').at(-1);
+        const names = structure.structureTemplates(tree, value.fields.value).map(c => c.id).filter(id => /^type:name:(Alias|Mutable|Descriptor)$/.test(id));
+        assert.deepEqual(names, expected.map(name => `type:name:${name}`), source);
+    }
+}));
+
 test('typeof, boxes and type values retain editable roots and operands through real parsing', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structure = load('graphStructure.ts');
     for (const template of ['typeof', 'box', 'constbox']) {
