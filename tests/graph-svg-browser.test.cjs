@@ -2617,6 +2617,32 @@ test('deleting a parallel value removes its binding and keeps the remaining grap
     });
 });
 
+test('nested loop transfers are created, retargeted and deleted through live graph menus', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('repeat^1 {repeat^1 {next^^}}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), outer = () => host.tree.root.fields.items[0];
+            const inner = () => outer().fields.body.fields.items[0], jump = () => inner().fields.body.fields.items[0];
+            await ui.add('repeat');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.add('repeat', outer().fields.body);
+            await ui.add('break', inner().fields.body);
+            await ui.structure(jump(), 'jump:break:2');
+            assert.match(host.tree.source, /break\^\^/);
+            await ui.structure(jump(), 'jump:next:2');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.match(await client.evaluate(`document.querySelector('.box[data-source-start="${jump().start}"][data-source-end="${jump().end}"]').textContent`), /2/);
+            await ui.structure(jump(), 'jump:next:1');
+            assert.equal(host.tree.source.slice(jump().start, jump().end), 'next^');
+            await ui.remove(jump());
+            assert.equal(inner().fields.body.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('loop controls edit focus initialization, advance, direction and step through the live document', { timeout: 90000 }, async () => {
     const { graphHost, graphUi } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {

@@ -69,6 +69,7 @@ node --test --test-name-pattern="language AST cases render" tests/graph-svg-brow
 `handlers` と `cleanup-transfer` のPNGで、通常経路とcatchの合流後にfinallyが表示されることを確認した。実サーバーのブロック・if・手続き・ループから作ったグラフについて、finallyを除くと後続文への経路がなくなることを `graph-execution.test.cjs` で検証する。ループのcatchは反復内で合流し、finallyはループの後に置く。
 途中離脱は通常の続行と混同しない破線で後処理への関係を示す。return・panic・break・next、多重のbreak/next、入れ子のfinallyと別の手続きへの境界を検証した。折りたたんだ内側の離脱はその箱から関係を示し、同じ箱に収まる接続は描かない。
 `cleanup transfer ports` のブラウザーテストは折りたたみ・ドリルダウン・再展開後のポートと破線、SVGの破線を確認する。`lhat-finally-transfer.png` と `lhat-finally-transfer-tail.png` を一時ディレクトリへ保存する。空のreturnの入力・後処理用ポートも確認し、表示操作でソースが変わらないことを検証する。
+break・nextの構造メニューでは、現在の関数・手続き内のループ段数から離脱先を選ぶ。skip・continueや角括弧の段数表記も編集できる。焦点付き条件分岐は段数に含めず、別のcallableの外には飛ばない。空の文書から二重ループと離脱文を作り、break/next・段数の変更、ラベルの再表示、削除までブラウザーで確認した。
 `quoted-names` のPNGで、引用名の宣言入力・メンバー参照・名前値の表示を確認した。空の文書からのUI作成とAST・字句列の一致、引用名→通常名→日本語の引用名への再リネームも検証する。型のメンバー名・修飾型名・catchの選択肢でも同じ引用表記を使う。
 引用名のリネームは lhat 本体の `327e092` 以降のLSPを使う。引用された使用箇所と通常表記の宣言が別ファイルにある場合も、各ファイルの実際の綴りの範囲を編集対象にする。C側の定義参照・references・ホバー・シグネチャ・LTONのテストと、実サーバーによる別ファイルのWorkspaceEditを確認した。
 自動採番とスコープ内の型候補は、通常名と同じ内容の引用名を同一の名前として扱う。変数・メンバー・焦点・ループ変数の衝突回避と、型名の隠蔽を実サーバーで検証した。

@@ -12,6 +12,36 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('loop transfers choose an enclosing loop without crossing callable or focus boundaries', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts');
+    for (const spelling of ['break^', 'next^^', 'skip^[2]', 'continue^^']) {
+        const source = `repeat^2 {for^i from^0 to^2 {do^{${spelling} # keep\n}}}`;
+        const tree = await parse(source), jump = flat(tree.root).find(n => ['break', 'next'].includes(n.kind));
+        assert(structure.structureSites(tree).some(s => s.start === jump.start && s.end === jump.end));
+        const choices = structure.structureTemplates(tree, jump);
+        assert.deepEqual(choices.map(c => c.id), ['jump:break:1','jump:next:1','jump:break:2','jump:next:2']);
+        assert.equal(structure.editStructure(tree, jump, 'jump:break:3'), undefined);
+        for (const choice of choices) {
+            const change = structure.editStructure(tree, jump, choice.id); assert(change);
+            const updated = await parse(apply(source, change));
+            assert(!flat(updated.root).some(n => n.kind === 'error'), updated.source);
+            assert(updated.source.includes('# keep'));
+            const target = flat(updated.root).find(n => ['break', 'next'].includes(n.kind));
+            assert.equal(updated.source.slice(target.start, target.end), choice.text);
+        }
+    }
+    for (const [source, count] of [
+        ['repeat^2 {for^let^v=0 for^i from^0 to^2 {break^}}', 4],
+        ['repeat^2 {for^let^v=0 if^true^{next^}}', 2],
+        ['repeat^2 {let^p=p^{repeat^2 {next^}}}', 2],
+        ['repeat^2 {let^p=p^{break^}}', 0],
+    ]) {
+        const tree = await parse(source), jump = flat(tree.root).find(n => ['break', 'next'].includes(n.kind));
+        assert(jump, source);
+        assert.equal(structure.structureTemplates(tree, jump).length, count, source);
+    }
+}));
+
 test('quoted references, type names, type member keys and catch filters preserve their complete syntax', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structure = load('graphStructure.ts'), texts = load('graphTextFields.ts');
     for (const name of ['`a b`','`a``b`','`a.b`.`c|d`','obj.`a,b`','self^.`a b`']) {

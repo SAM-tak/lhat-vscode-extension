@@ -8,7 +8,7 @@ import { syntaxTokens, templateMarker, resultTypes } from "./graphSyntax";
 import { literalOf, quoteString, isNumberLiteral } from "./webview/literals";
 import { assignmentOperator, ASSIGNMENT_LABELS } from "./graphAssignments";
 import { typeSites, freshMarker, isTypeNode } from "./graphTypes";
-import { iteratorNames, freshFocus } from "./graphLoops";
+import { iteratorNames, freshFocus, forExpression } from "./graphLoops";
 import { handlerActions, validCatchFilter } from "./graphHandlers";
 import { validMemberName, nameSegments, quoteName, nameValue, sourceNames, sameName } from "./graphNames";
 
@@ -54,7 +54,7 @@ export function structureSites(tree: AstReply): StructureSite[] {
     const sites: StructureSite[] = [];
     const visit = (node: AstNode, parent?: AstNode) => {
         if (node.kind === "disabled") return;
-        if ((["block", "if-clause"].includes(node.kind) && handlerActions(tree, node, parent).length) || node.kind.startsWith("type-") || ["with", "if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "param", "string", "scope", "box", "member", "index", "call", "compare-chain", "binary", "func"].includes(node.kind))
+        if ((["block", "if-clause"].includes(node.kind) && handlerActions(tree, node, parent).length) || node.kind.startsWith("type-") || ["with", "if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "break", "next", "param", "string", "scope", "box", "member", "index", "call", "compare-chain", "binary", "func"].includes(node.kind))
             sites.push({ start: node.start, end: node.end, kind: node.kind });
         Object.values(node.fields ?? {}).flat().forEach(child => visit(child, node));
     };
@@ -63,16 +63,24 @@ export function structureSites(tree: AstReply): StructureSite[] {
 
 function actions(tree: AstReply, site: StructureSite): Action[] {
     let node: AstNode | undefined, parent: AstNode | undefined, callable: AstNode | undefined;
-    const find = (candidate: AstNode, owner?: AstNode, enclosing?: AstNode) => {
+    let loops = 0;
+    const find = (candidate: AstNode, owner?: AstNode, enclosing?: AstNode, depth = 0) => {
         if (candidate.kind === "disabled") return;
-        if (candidate.kind === site.kind && candidate.start === site.start && candidate.end === site.end) { node = candidate; parent = owner; callable = enclosing; }
-        Object.values(candidate.fields ?? {}).flat().forEach(child => find(child, candidate, candidate.kind === "func" ? candidate : enclosing));
+        if (candidate.kind === "func") depth = 0;
+        if (candidate.kind === "repeat" || candidate.kind === "for" && one(candidate, "body")?.kind === "block" && !forExpression(candidate, tree.source)) depth++;
+        if (candidate.kind === site.kind && candidate.start === site.start && candidate.end === site.end) { node = candidate; parent = owner; callable = enclosing; loops = depth; }
+        Object.values(candidate.fields ?? {}).flat().forEach(child => find(child, candidate, candidate.kind === "func" ? candidate : enclosing, depth));
     };
     find(tree.root);
     if (!node) return [];
     const source = tree.source, result: Action[] = [], newline = source.includes("\r\n") ? "\r\n" : "\n";
     const add = (id: string, label: string, edit: SourceEdit, preview = edit.text || label) => result.push({ id, label, text: preview, edit });
     const head = syntaxTokens(source, node.start, node.end);
+    if (["break", "next"].includes(node.kind)) {
+        for (let level = 1; level <= loops; level++) for (const [word, label] of [["break", "Exit loop"], ["next", "Next iteration"]])
+            add(`jump:${word}:${level}`, label, { start: node.start, end: node.end, text: word + "^".repeat(level) });
+        return result;
+    }
     result.push(...handlerActions(tree, node, parent));
     if (parent?.kind === "table-entry" && syntaxTokens(source, parent.start, parent.end)[0]?.text === "delegate^") return [];
     const access = !isTypeNode(node) && accessOperator(node, source);
