@@ -12,6 +12,25 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('Unicode names stay editable and rename through the real server with combining marks and astral characters', { timeout: 30000 }, async () => withLhatServer(async (parse, server) => {
+    const { graphHost } = require('./graph-browser-host.cjs'), { toElk } = load('webview/map.ts');
+    const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
+    const host = await graphHost(parse, server, 'let^value=1 print(value)');
+    for (const name of ['e\u0301','🚀','👩‍💻','©','\u0301name','normal']) {
+        const target = host.tree.root.fields.items[0].fields.targets[0];
+        await host.edit({ type:'rename', id:'unicode-name', start:target.start, end:target.end,
+            oldName:host.tree.source.slice(target.start,target.end), newName:name, version:host.version });
+        assert.equal(host.tree.source, `let^${name}=1 print(${name})`);
+        assert(flatten(toElk(host.tree)).some(n => n.lhat?.labelParts?.some(p => p.name?.value === name)), name);
+        const initial = await parse('let^copy=nil^'), value = initial.root.fields.items[0].fields.values[0];
+        for (const reference of [name, `${name}.field`, `$^${name}`]) {
+            const edit = expressions.replaceExpression(initial, value, `reference:${reference}`); assert(edit, reference);
+            assert(!flat((await parse(apply(initial.source, edit))).root).some(n => n.kind === 'error'), reference);
+        }
+        await parse(host.tree.source);
+    }
+}));
+
 test('string escape editing creates binary bytes, preserves surrounding spaces and permits an empty value', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structures = load('graphStructure.ts');
     for (const original of ['"text"', "'text'", String.raw`"\xFF"`]) {

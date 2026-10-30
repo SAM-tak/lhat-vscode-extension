@@ -1,10 +1,10 @@
-import { syntaxTokens } from "./graphSyntax";
+import { syntaxTokens, identifierWord } from "./graphSyntax";
 
-const plain = /^[\p{L}_][\p{L}\p{N}_]*$/u;
+const plain = (text: string) => identifierWord(text) === text && !text.endsWith("^");
 const quoted = /^`(?:[^`\r\n\0]|``)+`$/u;
-export const validName = (text: string) => plain.test(text) || quoted.test(text);
-export const validMemberName = (text: string) => /^[\p{L}_][\p{L}\p{N}_]*\^?$/u.test(text) || quoted.test(text);
-export const validSymbolName = (text: string) => /^[\p{L}_][\p{L}\p{N}_]*\^*$/u.test(text) || quoted.test(text);
+export const validName = (text: string) => plain(text) || quoted.test(text);
+export const validMemberName = (text: string) => identifierWord(text) === text && !text.endsWith("^^") || quoted.test(text);
+export const validSymbolName = (text: string) => identifierWord(text) === text || quoted.test(text);
 
 /** Dots inside a quoted name are content, not path separators. */
 export function nameSegments(text: string): string[] | undefined {
@@ -17,7 +17,7 @@ export function nameSegments(text: string): string[] | undefined {
 export const validNamePath = (text: string) => nameSegments(text)?.every(validName) ?? false;
 export function quoteName(value: string): string | undefined {
     if (!value || /[\r\n\0]/.test(value)) return;
-    return plain.test(value) ? value : "`" + value.replace(/`/g, "``") + "`";
+    return plain(value) ? value : "`" + value.replace(/`/g, "``") + "`";
 }
 
 export const nameValue = (spelling: string) => quoted.test(spelling)

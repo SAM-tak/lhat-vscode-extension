@@ -42,6 +42,21 @@ test('declaration names and member keys cannot be replaced but default values ca
     assert.deepEqual(expressionSites({ ...tree, root: { ...tree.root, kind: 'disabled' } }), []);
 });
 
+test('Unicode name boundaries match the language lexer without consuming spaces or comparison operators', () => {
+    const { validName, validMemberName, validSymbolName, quoteName } = require('./graph-browser-host.cjs').load('graphNames.ts');
+    const { syntaxTokens } = require('./graph-browser-host.cjs').load('graphSyntax.ts');
+    for (const name of ['e\u0301','🚀','👩‍💻','©','\u0301name','١name']) {
+        assert(validName(name), name);
+        assert(validMemberName(name + '^'), name);
+        assert(validSymbolName(name + '^^'), name);
+        assert.equal(quoteName(name), name);
+        assert(mod.exports.validReference(`$^${name}.field`), name);
+    }
+    for (const name of ['', '1name', '×', '⋅', '≠', '≤', '≥', '≦', '≧', 'a\u00a0b', 'a\u3000b', 'a\u2029b', 'a\ufeffb', '\ud800bad', '\udc00', 'a\0b'])
+        assert(!validName(name), JSON.stringify(name));
+    assert.deepEqual(syntaxTokens('let^🚀=e\u0301≤👩‍💻').map(t => t.text), ['let^','🚀','=','e\u0301','≤','👩‍💻']);
+});
+
 test('quoted names keep dots, pipes and escaped backticks inside one reference segment', () => {
     const { validReference, validMember, validExpressionReference } = mod.exports;
     for (const name of ['`a b`','`a``b`','obj.`a.b`','`a|b`.`c,d`','self^.`count value`','$obj.`a b`'])

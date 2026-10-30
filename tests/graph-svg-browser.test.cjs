@@ -50,6 +50,17 @@ const routes = { '/': { type: 'text/html', body: html({source,root}) } };
 for (const [url, file, type] of [['/graph.css', 'media/graph.css', 'text/css'], ['/bundle.css', 'media/rf/bundle.css', 'text/css'], ['/bundle.js', 'media/rf/bundle.js', 'text/javascript'], ['/layout-worker.js', 'media/rf/layout-worker.js', 'text/javascript']]) {
     routes[url] = { type, body: fs.readFileSync(path.resolve(__dirname, '..', file)) };
 }
+async function svgTexts({ evaluate, until }) {
+    await until(`document.querySelector('.svg-export>button') && !document.querySelector('.svg-export>button').disabled`);
+    const count = await evaluate('window.exports.length');
+    await evaluate(`document.querySelector('.svg-export>button').click()`);
+    await until(`document.querySelector('.svg-export-menu>button')`);
+    await evaluate(`document.querySelector('.svg-export-menu>button').click()`);
+    await until(`window.exports.length===${count + 1}`);
+    const result = await evaluate(`(()=>{const doc=new DOMParser().parseFromString(window.exports.at(-1).svg,'image/svg+xml');return {error:doc.querySelector('parsererror')?.textContent,text:[...doc.querySelectorAll('text')].map(t=>t.textContent)}})()`);
+    assert(!result.error, result.error); return result.text;
+}
+
 test('language AST cases render and export in normal, folded and drilled views without broken geometry', { timeout: 600000 }, async () => {
     const { languageCases, declaredKinds } = require('./graph-language-cases.cjs');
     const artifactDirectory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'lhat-ast-audit-'));
@@ -1466,14 +1477,7 @@ test('literal, name and interpolation contents survive normal, folded and drille
         const tree = await parse(source), interpolation = tree.root.fields.items.at(-1).fields.values[0];
         await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
             const { evaluate, until, call } = client, ready = `document.querySelector('.svg-export>button') && !document.querySelector('.svg-export>button').disabled`;
-            const capture = async () => {
-                await until(ready); const count = await evaluate('window.exports.length');
-                await evaluate(`document.querySelector('.svg-export>button').click()`);
-                await until(`document.querySelector('.svg-export-menu>button')`);
-                await evaluate(`document.querySelector('.svg-export-menu>button').click()`);
-                await until(`window.exports.length===${count + 1}`);
-                return evaluate(`(()=>{const doc=new DOMParser().parseFromString(window.exports.at(-1).svg,'image/svg+xml');return [...doc.querySelectorAll('text')].map(t=>t.textContent)})()`);
-            };
+            const capture = () => svgTexts(client);
             const normal = await capture();
             for (const text of ['1234567890123456789','2.5e-3','日本語 & <quote>','prefix','suffix','%04d']) assert(normal.includes(text), text + ': ' + normal.join('|'));
             assert(normal.some(text => text.includes('a.b')));
@@ -3497,6 +3501,78 @@ test('positional counts, type indexers and instance fields are built from the li
             assert(!host.tree.source.includes('number^['));
             await ui.typeStructure(name(), 'type:remove:items:1');
             assert.equal(type().fields.items.length, 2);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('Unicode declaration names, scope references and focused bindings edit through live graph controls', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), declaration = () => host.tree.root.fields.items[0];
+            const binding = () => host.tree.root.fields.items[1], value = () => binding().fields.values[0];
+            const rename = async (node, text) => ui.input(`.name-input[data-reference-start="${node.start}"]`, text);
+            await ui.add('let');
+            await rename(declaration().fields.targets[0], 'e\u0301');
+            await ui.input('.literal-input', '1');
+            await ui.add('let');
+            await ui.expression(value(), 'reference:e\u0301');
+            await rename(declaration().fields.targets[0], '🚀');
+            assert.equal(host.tree.source.slice(value().start,value().end), '🚀');
+            await ui.expression(value(), 'scope:file');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('let^🚀=1 let^value=$🚀')));
+            await ui.structure(value(), 'scope:outer');
+            await ui.structure(value(), 'scope:more');
+            assert.equal(host.tree.source.slice(value().start,value().end), '$^^🚀');
+            await ui.expression(value(), 'name');
+            await ui.input(`.box[data-source-start="${value().start}"] .interpolation-input`, '👩‍💻');
+            assert.equal(host.tree.source.slice(value().start,value().end), 'id^👩‍💻');
+            await ui.expression(value(), 'local');
+            const focus = () => value().fields.focus[0].fields.targets[0];
+            await rename(focus(), 'e\u0301');
+            await ui.expression(value().fields.body, 'reference:e\u0301');
+            await rename(focus(), '👩‍💻');
+            assert.equal(host.tree.source.slice(value().fields.body.start,value().fields.body.end), '👩‍💻');
+            await ui.expression(value().fields.body, 'reference:it^');
+            await ui.structure(value(), 'focus:wrap');
+            await ui.expression(value().fields.body.fields.body, 'reference:it^^');
+            await ui.structure(value(), 'focus:unwrap');
+            await ui.expression(value(), 'nil');
+            await ui.remove(binding());
+            await ui.remove(declaration());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('names and focus captions preserve identity across folded and drilled semantic views', { timeout: 90000 }, async () => {
+    const source = 'let^🚀=7 let^values={🚀,$🚀,id^`quoted name`,for^let^outer=1 for^let^inner=2 do^:(it^+it^^);}';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), table = tree.root.fields.items[1].fields.values[0];
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
+            const { evaluate, until, call } = client, ready = `!document.querySelector('.svg-export>button').disabled`;
+            const normal = await svgTexts(client);
+            assert(normal.includes('🚀')); assert(normal.includes('values'));
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            const check = async () => {
+                const text = (await svgTexts(client)).join('');
+                for (const expected of ['$🚀','quoted name','outer','inner',ja['Current item'],ja['Outer {0}: {1}'].replace('{0}','1').replace('{1}',ja['Current item'])])
+                    assert(text.includes(expected), expected + ': ' + text);
+            };
+            await check();
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Fold All')?.click()`);
+            const folded = await svgTexts(client); assert(folded.includes('values')); assert(folded.includes(ja.Table));
+            const selector = `.box.folded[data-source-start="${table.start}"][data-source-end="${table.end}"]`;
+            await until(`document.querySelector(${JSON.stringify(selector)}) && ${ready}`);
+            const point = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.left+8,y:r.top+8}})()`);
+            for (const type of ['mousePressed','mouseReleased']) await call('Input.dispatchMouseEvent', { type, ...point, button:'left', clickCount:1 });
+            await until(`document.querySelector('#trail') && ${ready}`);
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await check();
+            assert.equal(await evaluate('window.edits.length'), 0);
             assert.deepEqual(client.errors, []);
         });
     });

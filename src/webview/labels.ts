@@ -4,6 +4,7 @@ import { typeSites } from "../graphTypes";
 import { HATS, type LabelCategory } from "./vocabulary";
 import { ASSIGNMENT_LABELS, assignmentOperator } from "../graphAssignments";
 import { iteratorNames } from "../graphLoops";
+import { identifierWord } from "../graphSyntax";
 
 export type LabelRole = "variableDefinition" | "mutableVariableDefinition" |
     "variableDeclaration" | "mutableVariableDeclaration" | "string" | "number";
@@ -144,7 +145,7 @@ function semanticTokens(source: string, root: AstNode,
                 }
             }
         } else {
-            const word = /^[\p{L}\p{N}_]+\^*/u.exec(source.slice(i, range.end))?.[0];
+            const word = identifierWord(source.slice(i, range.end));
             const hat = word && /^(.+?)(\^+)$/.exec(word);
             if (hat && Object.prototype.hasOwnProperty.call(HATS, hat[1]) && !declaredHats.has(word!) &&
                 (hat[2].length === 1 || ["break", "next", "skip", "continue", "it", "self", "def", "Self", "this"].includes(hat[1]))) {
@@ -306,9 +307,11 @@ export function createLabeler(source: string, root: AstNode, vocabulary: Vocabul
                             : format.replace("{0}", String(token.depth! - 1)).replace("{1}", text);
                     }
                     // Delimit translated words even where L^ allows glued tokens.
-                    if (/[\p{L}\p{N}_]$/u.test(parts[parts.length - 1]?.text ?? "")) parts.push({ text: " " });
+                    const last = Array.from(parts[parts.length - 1]?.text ?? "").slice(-1)[0] ?? "";
+                    if (identifierWord(last) || /^[0-9]$/.test(last)) parts.push({ text: " " });
                     parts.push({ text, role, category: entry.category, source: source.slice(token.start, token.end), symbol: token.symbol });
-                    if (/^[\p{L}\p{N}_]/u.test(source.slice(token.end, piece.end))) parts.push({ text: " " });
+                    const next = source.slice(token.end, piece.end);
+                    if (identifierWord(next) || /^[0-9]/.test(next)) parts.push({ text: " " });
                 }
                 if (token.typeSite) {
                     const part = parts[parts.length - 1];

@@ -2,6 +2,11 @@ import type { SourceSpan } from "./protocol";
 
 export interface SyntaxToken extends SourceSpan { text: string }
 
+// Match lexer.c's current non-ASCII policy, including combining marks and emoji.
+const unicodeName = "[^\\x00-\\x7f\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff\\u2260\\u2264-\\u2267\\u00d7\\u22c5\\ud800-\\udfff]";
+const identifier = new RegExp(`^(?:[A-Za-z_]|${unicodeName})(?:[A-Za-z0-9_]|${unicodeName})*\\^*`, "u");
+export const identifierWord = (text: string): string | undefined => identifier.exec(text)?.[0];
+
 /** Source punctuation, without mistaking strings or nested comments for separators. */
 export function syntaxTokens(source: string, start = 0, end = source.length): SyntaxToken[] {
     const tokens: SyntaxToken[] = [];
@@ -30,7 +35,7 @@ export function syntaxTokens(source: string, start = 0, end = source.length): Sy
                 }
             }
         } else {
-            const word = /^[\p{L}\p{N}_]+\^*|^(?:\??(?::=|(?:\.\.|\*\*|\/\/|[+\-*/%])=)|<=>|=\/|->|\.\.\.|\.\.|\*\*|\/\/|==|!=|<=|>=|&&|\|\||\?\?)/u.exec(source.slice(i, end))?.[0];
+            const word = identifierWord(source.slice(i, end)) ?? /^[0-9][A-Za-z0-9_]*\^*|^(?:\??(?::=|(?:\.\.|\*\*|\/\/|[+\-*/%])=)|<=>|=\/|->|\.\.\.|\.\.|\*\*|\/\/|==|!=|<=|>=|&&|\|\||\?\?)/u.exec(source.slice(i, end))?.[0];
             i += word?.length ?? 1;
         }
         tokens.push({ start: from, end: i, text: source.slice(from, i) });

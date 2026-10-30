@@ -106,7 +106,7 @@ export function validReference(text: string): boolean {
     const path = nameSegments(scope ? text.slice(scope.length) : text);
     if (!path) return false;
     const [head, ...tail] = path;
-    const root = scope ? /^[\p{L}_][\p{L}\p{N}_]*\^?$/u.test(head)
+    const root = scope ? !head.startsWith("`") && validMemberName(head)
         : validName(head) || /^(?:(?:self|it|this|def)\^+|(?:super|L|t)\^)$/.test(head);
     return root && tail.every(validMember);
 }
@@ -196,8 +196,9 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         const operand = replacementSpan(tree, currentSite.operand);
         if (operand) choices.push(["unwrap", "Use the inner value", `(${tree.source.slice(operand.start, operand.end)})`]);
     }
-    if (/^(?:\$+|\$\^+)?[\p{L}_][\p{L}\p{N}_]*$/u.test(current)) {
-        const name = current.replace(/^\$(?:\^+|\$*)/, "");
+    const scopedName = current.replace(/^\$(?:\^+|\$*)/, "");
+    if (validName(scopedName) && !scopedName.startsWith("`")) {
+        const name = scopedName;
         choices.push(["scope:file", "Reference the unit scope", `$${name}`], ["scope:outer", "Reference the enclosing scope", `$^${name}`]);
     }
     const references = new Set<string>(currentSite.statementExpression ? [] : currentSite.errorName ? ["Problem.Failure"] : currentSite.delegateName ? ["value", "self^.value"] : currentSite.memberKey ? ["value", "0"] : ["self^", "it^", "this^", "super^", "def^", "L^"]);
