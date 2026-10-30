@@ -9,7 +9,7 @@ function load(file, vscode) {
     mod._compile(buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', external: ['vscode'], write: false }).outputFiles[0].text, entry);
     return mod.exports;
 }
-const { annotationOwners, editAnnotation, validAnnotation, annotationOwnerKey, annotationArgumentSpans, annotationArguments, parseAnnotationCatalog, annotationChoicesForOwner, annotationChoiceText } = load('graphAnnotations.ts');
+const { annotationOwners, editAnnotation, validAnnotation, annotationOwnerKey, annotationArgumentSpans, annotationArgumentLimits, editAnnotationArgument, annotationArguments, parseAnnotationCatalog, annotationChoicesForOwner, annotationChoiceText } = load('graphAnnotations.ts');
 const { placeComments } = load('webview/comments.ts');
 const fixture = require('./annotation-fixture.cjs');
 const apply = (source, edit) => source.slice(0, edit.start) + edit.text + source.slice(edit.end);
@@ -285,6 +285,39 @@ test('individual annotation parameter fields preserve quoted commas and source s
     assert.deepEqual(view.parameters.map(p => p.value), ['-2', '100', 'a,b', 'HOST_NAME']);
     assert.equal(annotationParameterText(text, view.parameters[1], '400'), '@range(-2, 400, "a,b", HOST_NAME)');
     assert.equal(annotationParameterText(text, view.parameters[2], 'new, "text"'), '@range(-2, 100, ' + JSON.stringify('new, "text"') + ', HOST_NAME)');
-    const plain = annotationPresentation({ ...site, text: '@export_class' });
+    const plain = annotationPresentation({ ...site, text: '@export_class' }, { name: 'export_class', parameterTypes: [] });
     assert.equal(plain.parameters.length, 0); assert(plain.width < 128);
+    const binary = annotationPresentation({ ...site, text: String.raw`@a("\xFF\x00")` }).parameters[0];
+    assert.equal(binary.kind, 'string'); assert.equal(binary.escapes, true);
+    assert.equal(binary.value, String.raw`\xFF\x00`);
+    assert.equal(annotationParameterText(String.raw`@a("\xFF\x00")`, binary, String.raw`\x80`), String.raw`@a("\x80")`);
+    assert(validAnnotation('@a(- #[keep]# 1)'));
+    for (const value of [String.raw`@a("\q")`, String.raw`@a("\xF")`, String.raw`@a("\u{110000}")`]) assert(!validAnnotation(value), value);
+    for (const value of ['@a(1_)', '@a(0x__)', '@a(0b2)', '@a(+1)', '@a(1e_)']) assert(!validAnnotation(value), value);
+});
+
+test('annotation argument changes preserve separators and comments while enforcing signature counts', () => {
+    const fixed = { name: 'a', parameterTypes: ['number^', 'string^'] }, variadic = { ...fixed, variadic: true };
+    assert.deepEqual(annotationArgumentLimits(fixed), { minimum: 2, maximum: 2 });
+    assert.equal(editAnnotationArgument('@a(1,"x")', undefined, 'nil^', fixed), undefined);
+    for (const index of [0, 1]) assert.equal(editAnnotationArgument('@a(1,"x")', index, undefined, variadic), undefined);
+    let text = '@a(#[before]#1, #[middle]#"a,b", #[after]#)';
+    text = editAnnotationArgument(text, undefined, '`quoted,name`', variadic);
+    assert.deepEqual(annotationArgumentSpans(text).map(a => a.text), ['1', '"a,b"', '`quoted,name`']);
+    text = editAnnotationArgument(text, 2, undefined, variadic);
+    assert.deepEqual(annotationArgumentSpans(text).map(a => a.text), ['1', '"a,b"']);
+    for (const comment of ['#[before]#', '#[middle]#', '#[after]#']) assert.equal(text.split(comment).length, 2);
+    assert(validAnnotation(text));
+    assert.equal(editAnnotationArgument('@a', undefined, '🚀'), '@a(🚀)');
+    assert.equal(editAnnotationArgument('@a(1,)', 0, undefined), '@a()');
+    assert.equal(editAnnotationArgument('@a(1,2)', 0, undefined), '@a(2)');
+    assert.equal(editAnnotationArgument('@a(1,2)', 1, undefined), '@a(1)');
+    assert(validAnnotation('@a("""line,)text\n)'));
+    const line = editAnnotationArgument('@a("""line,)text\n)', undefined, 'nil^');
+    assert(validAnnotation(line));
+    assert.deepEqual(annotationArgumentSpans(line).map(a => a.text), ['"""line,)text', 'nil^']);
+    for (const value of ['1,2', 'call()', 'nil^);let^x=1', '']) assert.equal(editAnnotationArgument('@a(1)', 0, value), undefined);
+    assert.equal(editAnnotationArgument('@a(1)', -1, '2'), undefined);
+    assert.equal(annotationChoiceText({ name: 'new', parameterTypes: ['number^'] }, '@old(1,)'), '@new(1,)');
+    assert.equal(annotationChoiceText({ name: 'new', parameterTypes: ['number^'] }, '@old( #[keep]# )'), '@new(0)');
 });

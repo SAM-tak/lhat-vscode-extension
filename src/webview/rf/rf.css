@@ -721,6 +721,8 @@ textarea.literal-input {
 .annotation-parameter > .box { display: block; }
 .annotation-parameter .literal-type-label { display: block; }
 .annotation-parameter .name-input { width: 100%; height: 100%; }
+.annotation-parameter:hover > .node-actions, .annotation-parameter:focus-within > .node-actions { opacity: 1; pointer-events: auto; }
+.annotation-argument-add { display: inline-flex; flex: none; width: calc(15.4px * var(--lhat-scale)); height: calc(15.4px * var(--lhat-scale)); }
 .annotation-delete { flex: none; font: inherit; width: calc(12px * var(--lhat-scale)); padding: 0; color: inherit; background: transparent; border: 0; cursor: pointer; }
 .annotation-footer { height: calc(22px * var(--lhat-scale)); display: flex; justify-content: center; align-items: center; }
 .annotation-add .annotation-add-select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; padding: 0; }

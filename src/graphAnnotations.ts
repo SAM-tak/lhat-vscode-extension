@@ -2,6 +2,7 @@ import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import { identifierWord, resultTypes, syntaxTokens } from "./graphSyntax";
 import { anonymousFocusValue } from "./graphLoops";
 import { validSymbolName } from "./graphNames";
+import { isEscapedStringContent, isNumberLiteral } from "./webview/literals";
 
 export interface AnnotationSite extends SourceSpan { ownerStart: number; ownerEnd: number; ownerKind: string; text: string }
 export interface AnnotationOwner extends SourceSpan { kind: string; canAdd: boolean; annotations: AnnotationSite[];
@@ -33,6 +34,35 @@ export function annotationArgumentSpans(text: string): (SourceSpan & { text: str
         start = end + 1;
     }
     return result;
+}
+
+export function annotationArgumentLimits(choice?: AnnotationChoice) {
+    return { minimum: choice?.parameterTypes?.length ?? 0,
+        maximum: !choice?.parameterTypes || choice.variadic ? Infinity : choice.parameterTypes.length };
+}
+
+/** Preserve comments and trailing commas when changing one literal argument. */
+export function editAnnotationArgument(text: string, index: number | undefined, value: string | undefined, choice?: AnnotationChoice): string | undefined {
+    if (!validAnnotation(text)) return;
+    const args = annotationArgumentSpans(text), limits = annotationArgumentLimits(choice);
+    if (value !== undefined && (!validAnnotation(`@a(${value})`) || annotationArgumentSpans(`@a(${value})`).length !== 1)) return;
+    if (index === undefined) {
+        if (value === undefined || args.length >= limits.maximum) return;
+        const open = text.indexOf("(");
+        if (open < 0) return `${text}(${value})`;
+        const last = args.slice(-1)[0], at = last?.end ?? open + 1;
+        return text.slice(0, at) + (last?.text.startsWith('"""') ? "\n, " : args.length ? ", " : "") + value + text.slice(at);
+    }
+    const argument = args[index];
+    if (!Number.isInteger(index) || !argument) return;
+    if (value !== undefined) return text.slice(0, argument.start) + value + text.slice(argument.end);
+    if (index < limits.minimum) return;
+    const tokens = syntaxTokens(text, text.indexOf("(") + 1, text.lastIndexOf(")"));
+    const comma = tokens.find(token => token.text === "," && token.start >= argument.end)
+        ?? tokens.filter(token => token.text === "," && token.end <= argument.start).slice(-1)[0];
+    for (const span of [argument, ...comma ? [comma] : []].sort((a,b) => b.start-a.start))
+        text = text.slice(0, span.start) + text.slice(span.end);
+    return text;
 }
 
 export function parseAnnotationCatalog(value: unknown): AnnotationChoice[] {
@@ -72,7 +102,7 @@ export function annotationChoiceText(choice: AnnotationChoice, current?: string)
     if (!choice.parameterTypes) return `@${choice.name}${previous !== undefined ? `(${previous})` : ""}`;
     const types = choice.parameterTypes;
     if (!types.length && !choice.variadic) return `@${choice.name}`;
-    const count = previous ? syntaxTokens(previous).filter(t => t.text === ",").length + 1 : 0;
+    const count = current ? annotationArgumentSpans(current).length : 0;
     const args = previous !== undefined && (count === types.length || (choice.variadic && count >= types.length))
         ? previous : types.map(type => type.includes("number^") ? "0" : type.includes("bool^") ? "false^" : '""').join(", ");
     return `@${choice.name}(${args ?? ""})`;
@@ -141,14 +171,19 @@ export function validAnnotation(text: string): boolean {
     const closing = syntaxTokens(rest).slice(-1)[0];
     if (closing?.text !== ")" || closing.end !== rest.length) return false;
     const body = rest.slice(1, -1);
-    const literal = /^(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^']|'')*'|-?(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[\d_]*(?:\.[\d_]+)?(?:[eE][+-]?[\d_]+)?))$/u;
+    const string = /^(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^']|'')*')$/u;
     const tokens = syntaxTokens(body);
     let from = 0;
     for (let i = 0; i <= tokens.length; i++) {
         if (i < tokens.length && tokens[i].text !== ",") continue;
         if (from === i) return i === tokens.length;
-        const argument = body.slice(tokens[from].start, tokens[i - 1].end);
-        if (!literal.test(argument) && !validSymbolName(argument)) return false;
+        const argument = tokens[from].text === "-" && from + 1 < i
+            ? "-" + body.slice(tokens[from + 1].start, tokens[i - 1].end)
+            : body.slice(tokens[from].start, tokens[i - 1].end);
+        const line = argument.startsWith('"""') && i === from + 1;
+        if (argument.includes("\0")) return false;
+        if (!line && !string.test(argument) && !(isNumberLiteral(argument) && !argument.startsWith("+")) && !validSymbolName(argument)) return false;
+        if (!line && argument.startsWith('"') && !isEscapedStringContent(argument.slice(1, -1))) return false;
         from = i + 1;
     }
     return true;

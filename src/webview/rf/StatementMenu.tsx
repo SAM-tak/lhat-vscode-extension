@@ -14,11 +14,13 @@ type Host = { tree?: AstReply; uri: string; version?: number; post: (message: Fr
 type FoldContext = { foldable: boolean; foldKey?: string };
 type Picker = { id: string; site?: InsertionSite; operator?: OperatorSite; anchor: HTMLElement; version: number;
     structure?: StructureSite; interpolation?: InterpolationSite; expression?: ExpressionSite;
+    title?: string; apply?: (template: string) => Promise<string | undefined>;
     choices: StatementTemplate[]; input?: StatementTemplate; saving?: boolean; error?: string };
 const Statements = createContext({
     version: undefined as number | undefined,
     context: (_site?: StatementSite, _fold?: FoldContext, _annotation?: AnnotationOwner): string | undefined => undefined,
     open: (_site: InsertionSite, _anchor: HTMLElement) => {},
+    templates: (_title: string, _choices: StatementTemplate[], _anchor: HTMLElement, _apply: NonNullable<Picker["apply"]>) => {},
     operator: (_site: OperatorSite, _anchor: HTMLElement) => {},
     structures: [] as StructureSite[],
     structure: (_site: StructureSite, _anchor: HTMLElement) => {},
@@ -71,6 +73,14 @@ export function StatementProvider({ value, children }: { value: Host; children: 
         const input = current.choices.find(choice => choice.id === template && choice.input);
         if (input) { setPicker({ ...current, input }); return; }
         setPicker({ ...current, saving: true, error: undefined });
+        if (current.apply) {
+            void current.apply(template).then(error => {
+                if (active.current?.id !== current.id) return;
+                if (error) setPicker({ ...current, saving: false, error });
+                else close(true);
+            });
+            return;
+        }
         const common = { id: current.id, version: current.version };
         if (current.structure) host.current.post({ ...common, type: "editStructure", site: current.structure, action: template });
         else if (current.expression) host.current.post({ ...common, type: "replaceExpression", site: current.expression, template });
@@ -104,7 +114,11 @@ export function StatementProvider({ value, children }: { value: Host; children: 
         const { version } = host.current;
         if (version !== undefined) host.current.post({ type: "deleteElement", id: `delete-${++sequence}`, site, version });
     };
-    return <Statements.Provider value={{ structures, structure, deletions, remove, version: value.version, open, operator, interpolation, expression, expressions,
+    const templates = (title: string, choices: StatementTemplate[], anchor: HTMLElement, apply: NonNullable<Picker["apply"]>) => {
+        const { version } = host.current;
+        if (version !== undefined) setPicker({ id: `argument-${++sequence}`, title, choices, anchor, version, apply });
+    };
+    return <Statements.Provider value={{ structures, structure, deletions, remove, version: value.version, open, templates, operator, interpolation, expression, expressions,
         context: (site, fold, annotation) => JSON.stringify({ webviewSection: "statement", lhatStatement: !!site && value.version !== undefined,
             lhatGraphUri: value.uri, lhatGraphVersion: value.version, lhatStatementStart: site?.start, lhatStatementEnd: site?.end,
             lhatFoldable: !!fold?.foldable && !!fold.foldKey && value.version !== undefined, lhatFoldKey: fold?.foldKey,
@@ -162,8 +176,8 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
         : ["stringEscapes", "interpolationEscapes"].includes(picker.input?.input?.kind ?? "")
         ? { title: l10n.t("Edit string escapes"), placeholder: l10n.t("Enter string content with escapes"), label: "Use string content" }
         : { title: l10n.t("Rename type member"), placeholder: l10n.t("Enter member name"), label: "Use member name" };
-    const title = picker.input ? inputUi.title : picker.structure ? l10n.t("Edit structure") : picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
-        ? l10n.t("Choose an element template") : l10n.t("Choose a statement template");
+    const title = picker.input ? inputUi.title : picker.title ?? (picker.structure ? l10n.t("Edit structure") : picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
+        ? l10n.t("Choose an element template") : l10n.t("Choose a statement template"));
     const inputValue = ["stringEscapes", "interpolationEscapes"].includes(picker.input?.input?.kind ?? "") ? query : query.trim();
     const choices = picker.input ? validStructureInput(picker.input.input!, inputValue)
         ? [{ id: `${picker.input.id}:${inputValue}`, label: inputUi.label, text: inputValue }] : []

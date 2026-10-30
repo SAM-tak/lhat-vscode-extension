@@ -1,14 +1,14 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import * as l10n from "@vscode/l10n";
-import { annotationPresentation, annotationParameterText, type AnnotationParameter } from "../annotations";
+import { annotationPresentation, annotationParameterText, annotationArgumentTemplates, type AnnotationParameter } from "../annotations";
 import { graphVocabulary } from "../localization";
 import { labelColumns } from "../labels";
 import { LiteralField } from "./LiteralInput";
 import { TypeLabel } from "./TypeLabel";
-import { InsertionIcon } from "./StatementMenu";
+import { InsertionIcon, InsertionButton, useStatementActions } from "./StatementMenu";
 import type { AstReply, FromWebview, ToWebview } from "../../protocol";
 import { annotationArguments, annotationChoiceText, annotationChoicesForOwner, annotationOwners, annotationOwnerKey, validAnnotation,
-    type AnnotationOwner, type AnnotationSite } from "../../graphAnnotations";
+    annotationArgumentLimits, editAnnotationArgument, type AnnotationChoice, type AnnotationOwner, type AnnotationSite } from "../../graphAnnotations";
 
 type Host = { tree?: AstReply; version?: number; post: (message: FromWebview) => void; boxes: Record<string, boolean>; show: (owner: AnnotationOwner) => void };
 type Actions = Host & { owners: AnnotationOwner[]; busy: boolean;
@@ -85,10 +85,26 @@ function AnnotationPicker({ owner, site, unit = false }: { owner: AnnotationOwne
     </span>;
 }
 
-function AnnotationParameterInput({ site, text, parameter, index, name }: {
-    site: AnnotationSite; text: string; parameter: AnnotationParameter; index: number; name: string;
+function useArgumentMenu(site: AnnotationSite, text: string, choice?: AnnotationChoice, index?: number, parameter?: AnnotationParameter) {
+    const actions = useContext(Annotations), statements = useStatementActions();
+    return (anchor: HTMLElement) => {
+        if (actions.busy || actions.version === undefined) return;
+        const choices = annotationArgumentTemplates(parameter);
+        if (index !== undefined && index >= annotationArgumentLimits(choice).minimum)
+            choices.push({ id: "delete", label: "Delete argument", text: "" });
+        statements.templates(index === undefined ? l10n.t("Add argument") : l10n.t("Change argument"), choices, anchor, async action => {
+            const value = action.startsWith("escapes:") ? '"' + action.slice(8) + '"' : choices.find(c => c.id === action)?.text;
+            const changed = editAnnotationArgument(text, index, action === "delete" ? undefined : value, choice);
+            return changed === undefined ? l10n.t("Annotation arguments must be literals or names.") : actions.save(site, changed);
+        });
+    };
+}
+
+function AnnotationParameterInput({ site, text, parameter, index, name, choice }: {
+    site: AnnotationSite; text: string; parameter: AnnotationParameter; index: number; name: string; choice?: AnnotationChoice;
 }) {
     const actions = useContext(Annotations);
+    const openMenu = useArgumentMenu(site, text, choice, index, parameter);
     const [value, setValue] = useState(parameter.value);
     const [committed, setCommitted] = useState(parameter.value);
     const [error, setError] = useState<string>();
@@ -108,7 +124,7 @@ function AnnotationParameterInput({ site, text, parameter, index, name }: {
     const inputProps = {
         className: `annotation-arguments ${parameter.kind === "name" ? "name-input" : "literal-input"} nodrag nopan nowheel nokey`,
         value, "aria-label": l10n.t("Annotation argument {0} of {1}", index + 1, name), "aria-invalid": !!error,
-        title: error || l10n.t("Edit arguments. Enter saves; Escape cancels."), spellCheck: false, autoComplete: "off",
+        title: error || (parameter.escapes ? l10n.t("Edit string escapes") : l10n.t("Edit arguments. Enter saves; Escape cancels.")), spellCheck: false, autoComplete: "off",
         readOnly: actions.version === undefined || actions.busy,
         onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => { setValue(event.target.value); setError(undefined); },
         onFocus: () => { cancelled.current = false; }, onBlur: commit,
@@ -120,12 +136,18 @@ function AnnotationParameterInput({ site, text, parameter, index, name }: {
             else if (event.key === "Enter" && !(parameter.kind === "string" && event.shiftKey)) { event.preventDefault(); event.currentTarget.blur(); }
         },
     };
-    return <span className="annotation-parameter" style={{ width: `calc(${parameter.width}px * var(--lhat-scale))`, height: `calc(${parameter.height}px * var(--lhat-scale))` }}>
+    return <span className="annotation-parameter" data-argument-index={index}
+        onContextMenu={event => { event.preventDefault(); event.stopPropagation(); openMenu(event.currentTarget); }}
+        style={{ width: `calc(${parameter.width}px * var(--lhat-scale))`, height: `calc(${parameter.height}px * var(--lhat-scale))` }}>
         {parameter.kind === "name" ? <input {...inputProps} type="text" /> :
             <span className={`box literal-node literal-${parameter.kind}`}>
                 <span className="literal-type-label"><TypeLabel label={parameter.typeLabel} /></span>
                 <LiteralField kind={parameter.kind} modified={value !== committed} inputProps={inputProps} />
             </span>}
+        <span className="node-actions"><button type="button" className="structure-edit nodrag nopan nokey"
+            title={l10n.t("Change argument")} aria-label={l10n.t("Change argument")} disabled={actions.version === undefined || actions.busy}
+            onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
+            onClick={event => { event.stopPropagation(); openMenu(event.currentTarget); }}>⋯</button></span>
         {error && <small className="annotation-error" role="alert">{error}</small>}
     </span>;
 }
@@ -136,13 +158,16 @@ function AnnotationRow({ owner, site }: { owner: AnnotationOwner; site: Annotati
     const parsed = annotationArguments(site.text);
     const choice = actions.tree?.annotationChoices?.find(c => c.name === parsed.name);
     const presentation = annotationPresentation(site, choice, graphVocabulary());
+    const addArgument = useArgumentMenu(site, presentation.text, choice);
     return <div className="annotation-row" role="listitem" data-annotation-start={site.start}
         style={{ height: `calc(${presentation.height}px * var(--lhat-scale))` }}>
         <AnnotationPicker owner={owner} site={site} />
         {presentation.parameters.length > 0 && <span className="annotation-parameters">
             {presentation.parameters.map((parameter, index) => <AnnotationParameterInput key={`${site.text}:${index}`}
-                site={site} text={presentation.text} parameter={parameter} index={index} name={parsed.name} />)}
+                site={site} text={presentation.text} parameter={parameter} index={index} name={parsed.name} choice={choice} />)}
         </span>}
+        {presentation.canAddArguments && <span className="annotation-argument-add"><InsertionButton title={l10n.t("Add argument")}
+            disabled={actions.version === undefined || actions.busy} onOpen={addArgument} /></span>}
         <button type="button" className="annotation-delete nodrag nopan nokey" title={error || l10n.t("Delete annotation")}
             aria-label={l10n.t("Delete annotation")} disabled={actions.version === undefined || actions.busy}
             onPointerDown={e => e.stopPropagation()} onPointerUp={e => e.stopPropagation()}

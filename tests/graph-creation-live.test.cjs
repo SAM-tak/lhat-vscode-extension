@@ -12,6 +12,31 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('annotation argument structure edits retain real parser ownership, comments and byte literals', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const api = load('graphAnnotations.ts');
+    for (const initial of ['@a(#[before]#1, #[middle]#"a,b", #[after]#)', '@a(1 # first\n, "a,b" # last\n,)', '@a(1, """line,)text\n)']) {
+        let tree = await parse(`module^demo\n${initial}\nlet^value=1`);
+        const annotations = () => api.annotationOwners(tree).find(o => o.kind === 'define').annotations;
+        const second = api.annotationArgumentSpans(initial)[1].text;
+        for (const [index, value, expected] of [
+            [undefined, '🚀', ['1', second, '🚀']],
+            [0, String.raw`"\xFF\x00"`, [String.raw`"\xFF\x00"`, second, '🚀']],
+            [1, '`quoted,name`', [String.raw`"\xFF\x00"`, '`quoted,name`', '🚀']],
+            [1, undefined, [String.raw`"\xFF\x00"`, '🚀']],
+            [0, undefined, ['🚀']], [0, undefined, []], [undefined, 'nil^', ['nil^']],
+        ]) {
+            const site = annotations()[0], text = api.editAnnotationArgument(site.text, index, value);
+            assert(text !== undefined);
+            const edit = api.editAnnotation(tree, { ...site, value: text }); assert(edit);
+            tree = await parse(apply(tree.source, edit));
+            assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+            assert.deepEqual(api.annotationArgumentSpans(annotations()[0].text).map(a => a.text), expected);
+            for (const comment of initial.match(/#\[.*?\]#|# [^\n]+/g) ?? []) assert.equal(tree.source.split(comment).length, 2);
+            assert.equal(tree.root.fields.items.at(-1).fields.values[0].kind, 'int');
+        }
+    }
+}));
+
 test('annotation owners exclude header bindings and retain Unicode names across real source edits', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const annotations = load('graphAnnotations.ts');
     for (const source of [

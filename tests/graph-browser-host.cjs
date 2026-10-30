@@ -200,6 +200,17 @@ async function graphUi(host, { evaluate, until, call }) {
             await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
             await accept();
         },
+        async annotationArgument(site, index, action) {
+            const api = load('graphAnnotations.ts'), view = load('webview/annotations.ts');
+            const choice = host.tree.annotationChoices?.find(c => c.name === api.annotationArguments(site.text).name);
+            const presentation = view.annotationPresentation(site, choice), parameter = presentation.parameters[index];
+            const choices = view.annotationArgumentTemplates(parameter);
+            if (index !== undefined && index >= api.annotationArgumentLimits(choice).minimum)
+                choices.push({ id: 'delete', label: 'Delete argument', text: '' });
+            const selector = `.annotation-row[data-annotation-start="${site.start}"] ` + (index === undefined
+                ? '.annotation-argument-add button' : `.annotation-parameter[data-argument-index="${index}"]`);
+            await choose(selector, choices, action, index !== undefined);
+        },
         async add(id, owner = host.tree.root, before) {
             const site = statements.statementInsertions(host.tree).find(s => s.kind === owner.kind && s.start === owner.start && s.end === owner.end && s.before === before?.start);
             assert(site, `Insertion site for ${owner.kind}`);

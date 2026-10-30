@@ -1195,6 +1195,112 @@ test('reassignment pairs render in vertical rows with matching definition wires 
 });
 
 
+test('annotation argument menus construct names, binary strings and variadic lists through live source edits', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, load } = require('./graph-browser-host.cjs'), api = load('graphAnnotations.ts');
+    const catalog = api.parseAnnotationCatalog({ annotations: [
+        { name: 'args', targets: { binding: true }, signature: 'f^string^, ...;' },
+        { name: 'fixed', targets: { binding: true }, signature: 'f^number^, string^;' },
+        { name: 'marker', targets: { binding: true }, signature: 'f^;' },
+        { name: 'free', targets: { binding: true }, signature: 'f^...;' },
+        { name: 'unknown', targets: { binding: true } },
+    ] });
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(async source => ({ ...await parse(source), annotationChoices: catalog }), server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const { evaluate, until, call } = client, ui = await graphUi(host, client);
+            const owner = () => host.tree.root.fields.items.at(-1);
+            const site = () => api.annotationOwners(host.tree).find(o => o.kind === 'define').annotations[0];
+            await ui.add('module'); await ui.add('let');
+            await evaluate(`document.querySelector('.box[data-source-start="${owner().start}"][data-source-end="${owner().end}"]').parentElement.querySelector('.add-annotation').click()`);
+            await ui.annotation(owner(), 'args');
+            await ui.annotationArgument(site(), 0, 'name');
+            await ui.input('.annotation-arguments', '🚀');
+            assert.equal(site().text, '@args(🚀)');
+            await ui.annotationArgument(site(), 0, 'string');
+            assert.equal(site().text, '@args("🚀")');
+            await ui.annotationArgument(site(), 0, 'name');
+            await ui.input('.annotation-arguments', '`quoted name`');
+            assert.equal(site().text, '@args(`quoted name`)');
+            for (const [action, value] of [['true','true^'],['false','false^'],['nil','nil^'],['number','0']]) {
+                await ui.annotationArgument(site(), 0, action);
+                assert.equal(site().text, `@args(${value})`);
+            }
+            const beforeInvalid = await evaluate('window.edits.length');
+            await evaluate(`document.querySelector('.annotation-arguments').focus();document.querySelector('.annotation-arguments').select()`);
+            await call('Input.insertText', { text: '1_' });
+            await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+            await until(`document.querySelector('.annotation-arguments[aria-invalid="true"]')`);
+            assert.equal(await evaluate('window.edits.length'), beforeInvalid);
+            await evaluate(`document.querySelector('.annotation-arguments').focus()`);
+            await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+            await ui.input('.annotation-arguments', '-2.5e3');
+            await ui.annotationArgument(site(), 0, String.raw`escapes:\xFF\x00`);
+            assert.equal(site().text, String.raw`@args("\xFF\x00")`);
+            assert(await evaluate(`!!document.querySelector('.annotation-parameter .literal-string')`));
+            await ui.input('.annotation-arguments', String.raw`\x80\x00`);
+            assert.equal(site().text, String.raw`@args("\x80\x00")`);
+            await ui.annotationArgument(site(), 0, 'string');
+            assert.equal(site().text, String.raw`@args("\x80\x00")`);
+            await ui.annotationArgument(site(), 0, 'escapes:safe');
+            assert.equal(site().text, '@args("safe")');
+            await ui.annotationArgument(site(), undefined, 'name');
+            await ui.input('.annotation-arguments', 'é', 1);
+            await ui.annotationArgument(site(), undefined, 'number');
+            await ui.input('.annotation-arguments', '7', 2);
+            await ui.annotationArgument(site(), undefined, 'string');
+            await ui.input('.annotation-arguments', 'a,b', 3);
+            await ui.annotationArgument(site(), 3, 'raw');
+            assert(api.annotationArgumentSpans(site().text)[3].text.startsWith("'"));
+            await ui.input('.annotation-arguments', "c'd", 3);
+            assert.equal(api.annotationArgumentSpans(site().text)[3].text, "'c''d'");
+            await ui.annotationArgument(site(), 3, 'line');
+            await ui.input('.annotation-arguments', 'line,)text', 3);
+            assert.equal(api.annotationArgumentSpans(site().text)[3].text, '"""line,)text');
+            await ui.annotationArgument(site(), undefined, 'nil');
+            assert.equal(api.annotationArgumentSpans(site().text).length, 5);
+            await ui.annotationArgument(site(), 4, 'delete');
+            await ui.annotationArgument(site(), 3, 'quoted');
+            await ui.input('.annotation-arguments', 'a,b', 3);
+            assert.deepEqual(api.annotationArgumentSpans(site().text).map(a => a.text), ['"safe"','é','7','"a,b"']);
+            const svg = (await svgTexts(client)).join(' ');
+            for (const value of ['safe', 'é', '7', 'a,b']) assert(svg.includes(value), value);
+            const addGeometry = await evaluate(`(()=>{const add=document.querySelector('.annotation-argument-add button').getBoundingClientRect(),other=document.querySelector('.annotation-add').getBoundingClientRect(),box=document.querySelector('.annotation-box').getBoundingClientRect();return {width:add.width,height:add.height,other:other.width,right:add.right,boxRight:box.right}})()`);
+            assert(Math.abs(addGeometry.width-addGeometry.other)<0.1 && Math.abs(addGeometry.height-addGeometry.width)<0.1, JSON.stringify(addGeometry));
+            assert(addGeometry.width < 20 && addGeometry.right < addGeometry.boxRight, JSON.stringify(addGeometry));
+            if (process.env.LHAT_TEST_ARGUMENT_SCREENSHOT) fs.writeFileSync(process.env.LHAT_TEST_ARGUMENT_SCREENSHOT,
+                Buffer.from((await call('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+            await ui.annotationArgument(site(), 1, 'delete');
+            assert.deepEqual(api.annotationArgumentSpans(site().text).map(a => a.text), ['"safe"','7','"a,b"']);
+            await ui.annotationArgument(site(), 2, 'delete'); await ui.annotationArgument(site(), 1, 'delete');
+            assert.deepEqual(api.annotationArgumentSpans(site().text).map(a => a.text), ['"safe"']);
+            const required = async index => {
+                await evaluate(`document.querySelector('.annotation-parameter[data-argument-index="${index}"] .structure-edit').click()`);
+                await until(`document.querySelector('.statement-menu [role=option]')`);
+                assert(!await evaluate(`[...document.querySelectorAll('.statement-menu [role=option]')].some(e=>e.textContent.includes('引数を削除'))`));
+                await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+            };
+            await required(0);
+            await ui.annotation(owner(), 'fixed', 'args');
+            assert.equal(await evaluate(`document.querySelector('.annotation-argument-add')`), null);
+            await required(0); await required(1);
+            await ui.annotation(owner(), 'marker', 'fixed');
+            assert.equal(site().text, '@marker');
+            assert.equal(await evaluate(`document.querySelector('.annotation-argument-add')`), null);
+            await ui.annotation(owner(), 'unknown', 'marker');
+            await ui.annotationArgument(site(), undefined, 'string');
+            await ui.annotationArgument(site(), 0, 'delete');
+            assert.equal(site().text, '@unknown()');
+            await ui.annotation(owner(), 'free', 'unknown');
+            await ui.annotationArgument(site(), undefined, 'nil');
+            await ui.annotationArgument(site(), 0, 'delete');
+            assert.equal(site().text, '@free()');
+            await ui.removeAnnotation(site());
+            assert.equal(await evaluate(`document.querySelectorAll('.annotation-box').length`), 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('Unicode annotations create, edit and delete through real source updates and survive semantic view changes', { timeout: 90000 }, async () => {
     const { graphHost, graphUi, load } = require('./graph-browser-host.cjs');
     const api = load('graphAnnotations.ts');
