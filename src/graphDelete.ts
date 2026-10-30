@@ -8,6 +8,7 @@ import { syntaxTokens } from "./graphSyntax";
 import { annotationOwners } from "./graphAnnotations";
 import { structureTemplates, editStructure, type StructureSite } from "./graphStructure";
 import { interpolationParts } from "./graphInterpolation";
+import { replacementSpan } from "./graphExpressions";
 
 export interface DeleteSite extends SourceSpan { category: "statement" | "element" }
 
@@ -115,9 +116,20 @@ export function deleteFromGraph(tree: AstReply, site: DeleteSite): SourceEdit | 
     if (site.category === "statement") {
         const owner = annotationOwners(tree).find(owner => owner.start === site.start && owner.end === site.end && owner.target !== "unit");
         const start = Math.min(site.start, ...(owner?.annotations.map(a => a.start) ?? []));
-        const next = syntaxTokens(tree.source, site.end)[0];
-        const end = next?.text === ";" ? next.end : site.end;
-        return { start, end, text: end > site.end ? tree.source.slice(site.end, end - 1) : "" };
+        let statementEnd = site.end;
+        const errors = (node: AstNode): void => {
+            if (node.kind === "error") statementEnd = Math.max(statementEnd, replacementSpan(tree, node)!.end);
+            Object.values(node.fields ?? {}).flat().forEach(errors);
+        };
+        const find = (node: AstNode): void => {
+            if (node !== tree.root && node.start === site.start && node.end === site.end) errors(node);
+            else Object.values(node.fields ?? {}).flat().forEach(find);
+        };
+        find(tree.root);
+        const next = syntaxTokens(tree.source, statementEnd)[0];
+        const semicolon = next?.text === ";" ? next : undefined;
+        return { start, end: semicolon?.end ?? statementEnd,
+            text: semicolon ? tree.source.slice(statementEnd, semicolon.start) : "" };
     }
     if (interpolationElements(tree).some(part => part.start === site.start && part.end === site.end))
         return { start: site.start, end: site.end, text: "" };

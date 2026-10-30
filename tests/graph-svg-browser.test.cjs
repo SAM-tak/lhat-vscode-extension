@@ -63,6 +63,7 @@ async function svgTexts({ evaluate, until }) {
 
 const graphReady = `document.querySelector('.svg-export>button') && !document.querySelector('.svg-export>button').disabled`;
 async function graphToolbar({ evaluate, until }, label) {
+    await until(graphReady);
     await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent===${JSON.stringify(label)})?.click()`);
     await until(graphReady);
 }
@@ -85,6 +86,92 @@ async function drillGraphNode({ evaluate, until, call }, node) {
     for (const type of ['mousePressed','mouseReleased']) await call('Input.dispatchMouseEvent', { type, ...point, button:'left', clickCount:1 });
     await until(`document.querySelector('#trail') && ${graphReady}`);
 }
+
+test('malformed and missing values repair through the shared expression menu and remain editable', { timeout: 120000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    const flat = n => [n,...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        for (const [source, expected] of [
+            ['let^bad=)\nlet^kept=17', 'let^bad=0\nlet^kept=17'],
+            ['let^bad=', 'let^bad=0'],
+            ['let^run=p^{let^bad=}', 'let^run=p^{let^bad=0}'],
+            ['let^bad=(,17)', 'let^bad=(0,17)'],
+            ['let^bad={key=}', 'let^bad={key=0}'],
+        ]) {
+            const host = await graphHost(parse, server, source);
+            await browser({ ...routes, '/':{type:'text/html',body:html(host.tree,false)} }, async client => {
+                const ui = await graphUi(host, client); await graphToolbar(client, 'Unfold All');
+                const error = flat(host.tree.root).find(n => n.kind === 'error'); assert(error, source);
+                await ui.expression(error, 'number');
+                assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse(expected)), host.tree.source);
+                const value = flat(host.tree.root).find(n => n.kind === 'int' && host.tree.source.slice(n.start,n.end) === '0');
+                await ui.input(`.box[data-source-start="${value.start}"] .literal-input`, '23');
+                assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse(expected.replace('0','23'))), host.tree.source);
+                await ui.add('call');
+                assert(!flat(host.tree.root).some(n => n.kind === 'error'), host.tree.source);
+                assert.deepEqual(client.errors, []);
+            });
+        }
+    });
+});
+
+test('malformed declarations delete their stray tokens while retaining following statements and closing braces', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        for (const [source, expected] of [
+            ['let^bad=)\nlet^kept=17', 'let^kept=17'],
+            ['let^run=p^{let^bad=) print(17)}', 'let^run=p^{print(17)}'],
+            ['let^run=p^{let^bad=}', 'let^run=p^{}'],
+        ]) {
+            const host = await graphHost(parse, server, source);
+            await browser({ ...routes, '/':{type:'text/html',body:html(host.tree,false)} }, async client => {
+                const ui = await graphUi(host, client), flat = n => [n,...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+                await graphToolbar(client, 'Unfold All');
+                await ui.remove(flat(host.tree.root).find(n => n.kind === 'define' && n.fields.values?.some(v => v.kind === 'error')));
+                assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse(expected)), host.tree.source);
+                assert.deepEqual(client.errors, []);
+            });
+        }
+    });
+});
+
+test('invalid standalone statements repair into calls and keep their enclosing procedure editable', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'let^run=p^{17}');
+        await browser({ ...routes, '/':{type:'text/html',body:html(host.tree,false)} }, async client => {
+            const ui = await graphUi(host, client), body = () => host.tree.root.fields.items[0].fields.values[0].fields.body;
+            await graphToolbar(client, 'Unfold All');
+            await ui.expression(body().fields.items[0], 'call');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('let^run=p^{(print(nil^))(nil^)}')), host.tree.source);
+            await ui.remove(body().fields.items[0]); await ui.add('call', body());
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('let^run=p^{print(nil^)}')), host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('recovery views preserve invalid text surrounding values and scoped edit targets', { timeout: 90000 }, async () => {
+    const source = 'let^run=p^{let^bad=) print(17)} let^kept=19';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), fn = tree.root.fields.items[0].fields.values[0];
+        const error = fn.fields.body.fields.items[0].fields.values[0]; assert.equal(error.kind, 'error');
+        await browser({ ...routes, '/':{type:'text/html',body:html(tree,false)} }, async client => {
+            const initial = (await svgTexts(client)).join(''); for (const name of ['run','kept']) assert(initial.includes(name));
+            const check = async inside => {
+                const texts = await svgTexts(client), text = texts.join('');
+                assert(text.includes('bad') && texts.includes(')'), text);
+                assert.equal(texts.filter(t => t === '17').length, 1, text);
+                assert.equal(texts.filter(t => t === '19').length, inside ? 0 : 1, text);
+                assert(await client.evaluate(`!!document.querySelector('.expression-edit[data-expression-start="${error.start}"][data-expression-end="${error.end}"]')`));
+            };
+            await graphToolbar(client, 'Unfold All'); await check(false); await saveSemanticSvg(client, 'recovery-values');
+            await graphToolbar(client, 'Fold All'); assert((await svgTexts(client)).join('').includes('run'));
+            await drillGraphNode(client, fn); await graphToolbar(client, 'Unfold All'); await check(true);
+            assert.equal(await client.evaluate('window.edits.length'), 0); assert.deepEqual(client.errors, []);
+        });
+    });
+});
 
 test('language AST cases render and export in normal, folded and drilled views without broken geometry', { timeout: 600000 }, async () => {
     const { languageCases, declaredKinds } = require('./graph-language-cases.cjs');

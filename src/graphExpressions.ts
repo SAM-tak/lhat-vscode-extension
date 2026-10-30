@@ -12,7 +12,7 @@ import { validName, validMemberName, validNamePath, nameSegments } from "./graph
 export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean; errorName?: boolean; delegateName?: boolean;
     owner?: SourceSpan; callArguments?: string[]; spreadAllowed?: boolean; suspensionAllowed?: boolean;
     statementExpression?: boolean; statementOperand?: boolean; operand?: SourceSpan }
-const kinds = new Set(["int", "float", "string", "bool", "nil", "ident", "hat-ident", "hole",
+const kinds = new Set(["int", "float", "string", "bool", "nil", "ident", "hat-ident", "hole", "error",
     "compare-chain", "import", "typeof", "type", "box", "spread", "scope", "name", "binary", "unary", "as", "call", "member", "index", "tuple", "table", "def", "self-table", "func", "interp", "if-expr", "try", "pack", "error-new", "require", "yield", "await"]);
 
 /** The language admits calls, delegation and field writes as standalone expressions. */
@@ -52,7 +52,7 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
         const pattern = patterns.get(node);
         if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(child => visit(child)); return; }
         if (["disabled", "module", "annotation", "import-stmt", "require-stmt"].includes(node.kind) || node.kind.startsWith("type-")) return;
-        if (value && (kinds.has(node.kind) || forExpression(node, tree.source)) && node.start < node.end &&
+        if (value && (kinds.has(node.kind) || forExpression(node, tree.source)) && (node.start < node.end || node.kind === "error") &&
             !(node.kind === "yield" && statements.has(node))) {
             const info = callInfo({ kind: "call", start: node.start, end: node.end, line: node.line, column: node.column, fields: { target: node } });
             const inner = ["typeof", "box", "spread", "try", "pack", "unary", "yield", "await"].includes(node.kind) && (node.fields?.operand ?? node.fields?.value);
@@ -67,6 +67,7 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
                 ...assignmentTarget ? { assignmentTarget: true } : {}, ...memberKey ? { memberKey: true } : {} });
         }
         if (node.kind === "import") return;
+        if (node.kind === "error") return;
         if (["define", "reassign"].includes(node.kind)) {
             const values = node.kind === "reassign" ? assignmentValues(node, tree.source) : node.fields?.values, targets = node.fields?.targets;
             if (Array.isArray(values) && (values.length > 1 || values[0]?.kind === "tuple" && Array.isArray(targets) && targets.length > 1))
@@ -115,8 +116,20 @@ export const validExpressionReference = (site: ExpressionSite, text: string) => 
     : site.errorName ? validNamePath(text) : (site.memberKey ? validMember : validReference)(text);
 
 /** Grouping has no AST node. A binary span may start inside a grouped left operand. */
-export function replacementSpan(tree: AstReply, site: SourceSpan): SourceSpan | undefined {
+export function replacementSpan(tree: AstReply, site: SourceSpan & { kind?: string }): SourceSpan | undefined {
     const source = tree.source;
+    if (site.kind === "error") {
+        // A missing value can point at the enclosing delimiter. Insert there;
+        // consume unmatched tokens instead of trying to balance broken syntax.
+        const stack: string[] = [], pairs: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+        for (const token of syntaxTokens(source, 0, site.start)) {
+            if (["(", "[", "{"].includes(token.text)) stack.push(token.text);
+            else if (token.text in pairs && pairs[token.text] === stack[stack.length - 1]) stack.pop();
+        }
+        const next = syntaxTokens(source, site.start, site.end)[0]?.text;
+        const delimiter = next && (next in pairs && pairs[next] === stack[stack.length - 1] || next === "," && stack.length > 0);
+        return { start: site.start, end: delimiter ? site.start : site.end };
+    }
     let start = templateMarker(source, site)?.start ?? site.start, end = site.end, opens = 0, closes = 0;
     for (const token of syntaxTokens(source, start, end)) {
         if (token.text === "(") opens++;
@@ -152,7 +165,8 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
     if (!span) return [];
     const valueSpan = currentSite.kind === "spread" && currentSite.operand ? replacementSpan(tree, currentSite.operand) : span;
     if (!valueSpan) return [];
-    const current = tree.source.slice(valueSpan.start, valueSpan.end);
+    const current = currentSite.kind === "error" ? currentSite.statementExpression ? "print(nil^)" : "nil^"
+        : tree.source.slice(valueSpan.start, valueSpan.end);
     const choices: [string, string, string][] = [
         ["match", "Pattern matching expression", "(for^nil^: when^0: 0 other^: 0;)"],
         ["number", "Number", "0"], ["string", "String", '""'], ["true", "True", "true^"],

@@ -70,6 +70,60 @@ test('annotation owners exclude header bindings and retain Unicode names across 
     }
 }));
 
+test('recovery expressions replace malformed or absent values without consuming enclosing delimiters', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { normalizedAst } = require('./graph-browser-host.cjs');
+    for (const [source, expected] of [
+        ['let^value=)\nlet^kept=17', 'let^value=0\nlet^kept=17'],
+        ['let^value=', 'let^value=0'],
+        ['let^run=p^{let^value=) print(17)}', 'let^run=p^{let^value=0 print(17)}'],
+        ['let^run=p^{let^value=}', 'let^run=p^{let^value=0}'],
+        ['let^value=(,17)', 'let^value=(0,17)'],
+        ['let^value=()', 'let^value=(0)'],
+        ['let^value={key=}', 'let^value={key=0}'],
+        ['let^value=print(,)', 'let^value=print(0,)'],
+    ]) {
+        const tree = await parse(source), error = expressions.expressionSites(tree).find(s => s.kind === 'error');
+        assert(error, source);
+        const edit = expressions.replaceExpression(tree, error, 'number'); assert(edit, source);
+        const updated = await parse(apply(source, edit));
+        assert.deepEqual(normalizedAst(updated), normalizedAst(await parse(expected)), updated.source);
+    }
+    for (const source of ['let^value=)', 'let^value=']) {
+        const tree = await parse(source), error = expressions.expressionSites(tree).find(s => s.kind === 'error');
+        const updated = await parse(apply(source, expressions.replaceExpression(tree, error, 'box')));
+        assert.deepEqual(normalizedAst(updated), normalizedAst(await parse('let^value=box^nil^')), updated.source);
+    }
+}));
+
+test('deleting malformed statements includes stray error tokens and preserves enclosing scopes', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const deletion = load('graphDelete.ts'), { normalizedAst } = require('./graph-browser-host.cjs');
+    for (const [source, expected] of [
+        ['let^value=)\nlet^kept=17', 'let^kept=17'],
+        ['let^run=p^{let^value=) print(17)}', 'let^run=p^{print(17)}'],
+        ['let^run=p^{let^value=}', 'let^run=p^{}'],
+        ['let^value=', ''],
+    ]) {
+        const tree = await parse(source), invalid = flat(tree.root).find(n => n.kind === 'define' && n.fields.values?.some(v => v.kind === 'error'));
+        const edit = deletion.deleteFromGraph(tree, { start:invalid.start, end:invalid.end, category:'statement' }); assert(edit, source);
+        const updated = await parse(apply(source, edit));
+        assert.deepEqual(normalizedAst(updated), normalizedAst(await parse(expected)), updated.source);
+    }
+}));
+
+test('recovering a malformed standalone statement offers only complete statement expressions', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    for (const source of ['17', 'let^run=p^{17}']) {
+        const tree = await parse(source), site = expressions.expressionSites(tree).find(s => s.kind === 'error');
+        const choices = expressions.expressionTemplates(tree, site);
+        assert(site.statementExpression && choices.some(c => c.id === 'call'));
+        assert(!choices.some(c => c.id === 'number'));
+        assert(!expressions.expressionSites(tree).some(s => s.kind !== 'error' && s.start === site.start && s.end === site.end));
+        for (const choice of choices) {
+            const updated = await parse(apply(source, expressions.replaceExpression(tree, site, choice.id)));
+            assert(!flat(updated.root).some(n => n.kind === 'error'), `${choice.id}: ${updated.source}`);
+        }
+    }
+}));
+
 test('resource structure edits preserve ordered acquisitions shared handlers and local binding restrictions', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structure = load('graphStructure.ts'), deletion = load('graphDelete.ts'), lists = load('graphLists.ts');
     const { normalizedAst } = require('./graph-browser-host.cjs');
