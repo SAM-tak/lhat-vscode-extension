@@ -61,6 +61,31 @@ async function svgTexts({ evaluate, until }) {
     assert(!result.error, result.error); return result.text;
 }
 
+const graphReady = `document.querySelector('.svg-export>button') && !document.querySelector('.svg-export>button').disabled`;
+async function graphToolbar({ evaluate, until }, label) {
+    await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent===${JSON.stringify(label)})?.click()`);
+    await until(graphReady);
+}
+async function saveSemanticSvg({ evaluate }, name) {
+    if (!process.env.LHAT_TEST_SEMANTIC_ARTIFACTS) return;
+    fs.mkdirSync(process.env.LHAT_TEST_SEMANTIC_ARTIFACTS, { recursive: true });
+    fs.writeFileSync(path.join(process.env.LHAT_TEST_SEMANTIC_ARTIFACTS, name + '.svg'), await evaluate('window.exports.at(-1).svg'));
+}
+async function drillGraphNode({ evaluate, until, call }, node) {
+    const selector = `.box.folded[data-source-start="${node.start}"][data-source-end="${node.end}"]`;
+    await until(`document.querySelector(${JSON.stringify(selector)}) && ${graphReady}`);
+    const position = () => evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.left+8,y:r.top+8}})()`);
+    let point = await position();
+    if (point.y < 80 || point.y > 600 || point.x < 0 || point.x > 950) {
+        await call('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 500, y: 350, deltaY: point.y-180, deltaX: point.x < 0 || point.x > 950 ? point.x-200 : 0 });
+        await evaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+        point = await position();
+    }
+    assert(point.x > 0 && point.x < 1000 && point.y > 60 && point.y < 690, JSON.stringify(point));
+    for (const type of ['mousePressed','mouseReleased']) await call('Input.dispatchMouseEvent', { type, ...point, button:'left', clickCount:1 });
+    await until(`document.querySelector('#trail') && ${graphReady}`);
+}
+
 test('language AST cases render and export in normal, folded and drilled views without broken geometry', { timeout: 600000 }, async () => {
     const { languageCases, declaredKinds } = require('./graph-language-cases.cjs');
     const artifactDirectory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'lhat-ast-audit-'));
@@ -2044,6 +2069,152 @@ test('expression picker builds qualified member references through the UI', { ti
                 await until(`document.querySelector('#app')?.dataset.graphVersion==='${index + 2}' && !document.querySelector('.svg-export>button').disabled`);
             }
             assert.deepEqual(errors, []);
+        });
+    });
+});
+
+test('packed and propagated values retain tuple editors through wrapping, unwrapping and deletion', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^value=try^(pack^((29,31)))'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), declaration = () => host.tree.root.fields.items[0], value = () => declaration().fields.values[0];
+            await ui.add('let'); await ui.expression(value(), 'tuple');
+            await ui.expression(value(), 'pack'); await ui.expression(value(), 'try');
+            await graphToolbar(client, 'Unfold All');
+            const tuple = () => value().fields.value.fields.value;
+            for (const [index, text] of ['29','31'].entries())
+                await ui.input(`.box[data-source-start="${tuple().fields.items[index].start}"] .literal-input`, text);
+            assert.deepEqual(normalizedAst(host.tree), expected);
+            await ui.expression(value(), 'unwrap'); assert.equal(value().kind, 'pack');
+            await ui.expression(value(), 'unwrap'); assert.equal(value().kind, 'tuple');
+            await ui.remove(value().fields.items[1]); assert.equal(value().kind, 'int');
+            assert.equal(host.tree.source.slice(value().start,value().end), '29');
+            await ui.remove(declaration());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('error payloads, error kinds and enumeration members clear and readd through live controls', { timeout: 120000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('public^errordef^Issue{Denied{code:number^},Empty} public^enum^Mode{Automatic,Seven=7} let^problem=error^Issue.Denied{code=17}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), items = () => host.tree.root.fields.items;
+            const errors = () => items()[0], enumeration = () => items()[1], problem = () => items()[2].fields.values[0];
+            const rename = (node, name) => ui.input(`.name-input[data-reference-start="${node.start}"]`, name);
+            await ui.add('error'); await graphToolbar(client, 'Unfold All');
+            await rename(errors().fields.name, 'Issue'); await rename(errors().fields.members[0].fields.name, 'Denied');
+            await ui.structure(errors(), 'public');
+            await ui.addElement('parameter', errors().fields.members[0], 'members');
+            const parameter = () => errors().fields.members[0].fields.members[0];
+            await rename(parameter().fields.name, 'code'); await ui.type(parameter().fields.name, 'number^');
+            await ui.addElement('error', errors(), 'members'); await rename(errors().fields.members[1].fields.name, 'Empty');
+            await ui.add('enumeration'); await graphToolbar(client, 'Unfold All');
+            await rename(enumeration().fields.name, 'Mode'); await rename(enumeration().fields.members[0].fields.name, 'Automatic');
+            await ui.structure(enumeration(), 'public');
+            await ui.addElement('enum', enumeration(), 'members');
+            await rename(enumeration().fields.members[1].fields.name, 'Seven');
+            await ui.structure(enumeration().fields.members[1], 'enum:explicit');
+            const number = () => enumeration().fields.members[1].fields.members[0];
+            await ui.input(`.box[data-source-start="${number().start}"] .literal-input`, '7');
+            await ui.add('let'); await rename(items()[2].fields.targets[0], 'problem');
+            await ui.expression(problem(), 'error'); await graphToolbar(client, 'Unfold All');
+            await ui.expression(problem().fields.name, 'reference:Issue.Denied');
+            await ui.addElement('member', problem(), 'members');
+            await rename(problem().fields.members[0].fields.key, 'code');
+            await ui.input(`.box[data-source-start="${problem().fields.members[0].fields.value.start}"] .literal-input`, '17');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.expression(problem(), 'try');
+            await ui.expression(problem().fields.value.fields.name, 'reference:Issue.Empty');
+            await ui.remove(problem().fields.value.fields.members[0]);
+            await ui.expression(problem(), 'unwrap');
+            assert.equal(problem().kind, 'error-new'); assert.equal(problem().fields?.members?.length ?? 0, 0);
+            await ui.addElement('member', problem(), 'members'); await ui.remove(problem().fields.members[0]);
+            await ui.remove(items()[2]);
+            await ui.remove(parameter());
+            assert.equal(errors().fields.members[0].fields?.members?.length ?? 0, 0);
+            await ui.addElement('parameter', errors().fields.members[0], 'members');
+            for (let index = 1; index >= 0; index--) await ui.remove(errors().fields.members[index]);
+            assert.equal(errors().fields?.members?.length ?? 0, 0);
+            await ui.addElement('error', errors(), 'members'); assert.equal(errors().fields.members.length, 1);
+            for (let index = 1; index >= 0; index--) await ui.remove(enumeration().fields.members[index]);
+            assert.equal(enumeration().fields?.members?.length ?? 0, 0);
+            await ui.addElement('enum', enumeration(), 'members'); assert.equal(enumeration().fields.members.length, 1);
+            await ui.remove(enumeration()); await ui.remove(errors());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('wrapper roles and inner values survive folding and owner drilling without duplicate content', { timeout: 90000 }, async () => {
+    const source = 'errordef^Issue{Empty} let^values={mutable=box^(17),sealed=constbox^("locked"),kind=typeof^({key=23}),descriptor=number^,collected=pack^((29,31)),expanded=f^{print((37,41)...)},propagated=try^(error^Issue.Empty{})}';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), table = tree.root.fields.items[1].fields.values[0];
+        const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
+            const normal = await svgTexts(client); assert(normal.includes('values')); assert(normal.includes(ja.Table));
+            const check = async () => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const number of ['17','23','29','31','37','41']) assert.equal(texts.filter(t => t === number).length, 1, JSON.stringify(texts));
+                for (const value of ['mutable','sealed','kind','descriptor','collected','expanded','propagated','locked','Issue.Empty'])
+                    assert(text.includes(value), value + ': ' + text);
+                for (const role of ['Mutable box','Constant box','Type of','Pack as table','Propagate error'])
+                    assert(texts.includes(ja[role]), role + ': ' + JSON.stringify(texts));
+                assert(texts.some(t => t.includes('...')), JSON.stringify(texts));
+                const descriptor = table.fields.items[3].fields.value;
+                assert(await client.evaluate(`!!document.querySelector('.box[data-source-start="${descriptor.start}"][data-source-end="${descriptor.end}"] .semantic-label[title="number^"]')`));
+            };
+            await graphToolbar(client, 'Unfold All'); await check();
+            await saveSemanticSvg(client, 'wrapped-values');
+            await graphToolbar(client, 'Fold All');
+            const folded = await svgTexts(client); assert(folded.includes('values')); assert(folded.includes(ja.Table));
+            await drillGraphNode(client, table); await graphToolbar(client, 'Unfold All'); await check();
+            assert.equal(await client.evaluate('window.edits.length'), 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('enumerations, error kinds and constructed payloads preserve their contents across semantic views', { timeout: 90000 }, async () => {
+    const source = 'public^enum^Mode{Automatic,Seven=7,Label="labelled"} public^errordef^Issue{Denied{code:number^=13},Empty} let^payload=error^Issue.Denied{code=17}';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), [enumeration, errors, declaration] = tree.root.fields.items;
+        const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
+            const check = async (values, words, absent = []) => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const value of values) assert.equal(texts.filter(t => t === value).length, 1, JSON.stringify(texts));
+                for (const word of words) assert(text.includes(word), word + ': ' + text);
+                for (const word of absent) assert(!texts.includes(word), word + ': ' + text);
+            };
+            await check([], ['Mode','Issue','payload',ja.Enumeration,ja['Error definitions']]);
+            assert.equal((await svgTexts(client)).filter(t => t === ja.Public).length, 2);
+            await graphToolbar(client, 'Unfold All');
+            await check(['7','13','17'], ['Automatic','Seven','Label','labelled','Denied','Empty','code','Issue.Denied']);
+            await saveSemanticSvg(client, 'error-enum-values');
+            await graphToolbar(client, 'Fold All');
+            await check([], ['Mode','Issue','payload',ja.Enumeration,ja['Error definitions']]);
+            for (const [node, values, words, absent] of [
+                [enumeration, ['7'], ['Automatic','Seven','Label','labelled'], ['Denied','13','17']],
+                [errors, ['13'], ['Denied','Empty','code'], ['Automatic','7','17']],
+                [declaration.fields.values[0], ['17'], ['code'], ['Automatic','7','13']],
+            ]) {
+                await drillGraphNode(client, node); await graphToolbar(client, 'Unfold All');
+                await check(values, words, absent);
+                await client.evaluate(`document.querySelector('#trail button').click()`);
+                await client.until(`!document.querySelector('#trail') && ${graphReady}`);
+                await graphToolbar(client, 'Fold All');
+            }
+            assert.equal(await client.evaluate('window.edits.length'), 0);
+            assert.deepEqual(client.errors, []);
         });
     });
 });
