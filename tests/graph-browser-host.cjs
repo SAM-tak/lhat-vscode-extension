@@ -188,6 +188,18 @@ async function graphUi(host, { evaluate, until, call }) {
         await accept();
     };
     return {
+        async annotation(owner, name, previous) {
+            const selector = `.annotation-box[data-source-start="${owner.start}"][data-source-end="${owner.end}"] ${previous ? '.annotation-name' : '.annotation-add'} select`;
+            await until(`document.querySelector(${JSON.stringify(selector)}) && ${ready}`);
+            await evaluate(`(()=>{const select=[...document.querySelectorAll(${JSON.stringify(selector)})].find(s=>${previous ? `s.value===${JSON.stringify(previous)}` : 'true'});select.value=${JSON.stringify(name)};select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+            await accept();
+        },
+        async removeAnnotation(site) {
+            const selector = `.annotation-row[data-annotation-start="${site.start}"] .annotation-delete`;
+            await until(`document.querySelector(${JSON.stringify(selector)}) && ${ready}`);
+            await evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
+            await accept();
+        },
         async add(id, owner = host.tree.root, before) {
             const site = statements.statementInsertions(host.tree).find(s => s.kind === owner.kind && s.start === owner.start && s.end === owner.end && s.before === before?.start);
             assert(site, `Insertion site for ${owner.kind}`);

@@ -12,6 +12,39 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('annotation owners exclude header bindings and retain Unicode names across real source edits', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const annotations = load('graphAnnotations.ts');
+    for (const source of [
+        'module^demo\nfor^let^x=1 if^true^{let^inside=1}',
+        'module^demo\nwith^resource={} {let^inside=1}',
+        'module^demo\nlet^Kind=def^{member=1 self^{field=1}}',
+    ]) {
+        const tree = await parse(source);
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        const headers = flat(tree.root).filter(n => ['for', 'with'].includes(n.kind))
+            .flatMap(n => n.kind === 'for' ? n.fields.focus : n.fields.items);
+        const owners = annotations.annotationOwners(tree);
+        assert(headers.every(n => !owners.some(o => o.start === n.start && o.end === n.end && o.kind === n.kind)), source);
+        assert(owners.some(o => o.kind === 'define'), source);
+        const text = '@é(🚀, `quoted name`, true^, -2, "a,b")';
+        for (const owner of owners.filter(o => o.canAdd)) {
+            const edit = annotations.editAnnotation(tree, { start: 0, end: 0, ownerStart: owner.start, ownerEnd: owner.end,
+                ownerKind: owner.kind, add: true, value: text });
+            assert(edit, source);
+            let edited = await parse(apply(source, edit));
+            const updatedOwner = annotations.annotationOwners(edited).find(o => o.target === owner.target && o.annotations.length);
+            const site = updatedOwner?.annotations.find(a => a.text === text);
+            assert(site, edited.source);
+            assert(!flat(edited.root).some(n => n.kind === 'error'), edited.source);
+            const removed = annotations.editAnnotation(edited, { ...site, value: '' });
+            assert(removed);
+            edited = await parse(apply(edited.source, removed));
+            assert(!annotations.annotationOwners(edited).some(o => o.annotations.length));
+            assert(!flat(edited.root).some(n => n.kind === 'error'), edited.source);
+        }
+    }
+}));
+
 test('single focus values switch between named and anonymous forms in expressions, conditions and shared drivers', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structure = load('graphStructure.ts');
     for (const source of [

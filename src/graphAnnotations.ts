@@ -1,6 +1,7 @@
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
-import { resultTypes, syntaxTokens } from "./graphSyntax";
+import { identifierWord, resultTypes, syntaxTokens } from "./graphSyntax";
 import { anonymousFocusValue } from "./graphLoops";
+import { validSymbolName } from "./graphNames";
 
 export interface AnnotationSite extends SourceSpan { ownerStart: number; ownerEnd: number; ownerKind: string; text: string }
 export interface AnnotationOwner extends SourceSpan { kind: string; canAdd: boolean; annotations: AnnotationSite[];
@@ -10,9 +11,11 @@ export interface AnnotationChoice { name: string; module?: string; targets?: Rec
 
 /** Identity for view-only annotation boxes; never serialized into source. */
 export const annotationOwnerKey = (owner: SourceSpan & { kind: string }): string => `${owner.kind}:${owner.start}:${owner.end}`;
+const annotationName = (text: string) => identifierWord(text)?.replace(/\^+$/, "");
+const validAnnotationName = (text: string) => annotationName(text) === text;
 
 export function annotationArguments(text: string): { name: string; arguments?: string } {
-    const name = /^@([\p{L}_][\p{L}\p{N}_]*)/u.exec(text)?.[1] ?? "";
+    const name = text.startsWith("@") ? annotationName(text.slice(1)) ?? "" : "";
     const open = text.indexOf("(");
     return { name, arguments: open < 0 ? undefined : text.slice(open + 1, text.lastIndexOf(")")) };
 }
@@ -38,7 +41,7 @@ export function parseAnnotationCatalog(value: unknown): AnnotationChoice[] {
     for (const entry of (value as { annotations: unknown[] }).annotations) {
         if (!entry || typeof entry !== "object") continue;
         const item = entry as Record<string, unknown>;
-        if (typeof item.name !== "string" || !/^[\p{L}_][\p{L}\p{N}_]*$/u.test(item.name) ||
+        if (typeof item.name !== "string" || !validAnnotationName(item.name) ||
             !item.targets || typeof item.targets !== "object") continue;
         const choice: AnnotationChoice = { name: item.name, module: typeof item.module === "string" ? item.module : undefined,
             targets: Object.fromEntries(Object.entries(item.targets).map(([k, v]) => [k, v === true])) };
@@ -84,7 +87,7 @@ export function annotationOwners(tree: AstReply): AnnotationOwner[] {
         if (["string", "interp-text", "disabled"].includes(node.kind)) { literals.push(node); return; }
         const focus = anonymousFocusValue(node);
         if (focus) { visit(focus, node); return; }
-        if (node === tree.root || node.kind === "define" ||
+        if (node === tree.root || (node.kind === "define" && !["for", "with"].includes(parent?.kind ?? "")) ||
             (node.kind === "table-entry" && ["self-table", "def"].includes(parent?.kind ?? "")))
             owners.push({ start: node.start, end: node.end, kind: node.kind, canAdd: true, annotations: [],
                 target: node === tree.root ? "unit" : node.kind === "define" ? "binding" : parent?.kind === "def" ? "member" : "field",
@@ -97,14 +100,14 @@ export function annotationOwners(tree: AstReply): AnnotationOwner[] {
     visit(tree.root);
     const tokens = syntaxTokens(tree.source).filter(t => !literals.some(span => t.start >= span.start && t.start < span.end));
     const atAnnotation = (i: number) => tokens[i]?.text === "@" &&
-        /^[\p{L}_][\p{L}\p{N}_]*$/u.test(tokens[i + 1]?.text ?? "") && tokens[i].end === tokens[i + 1].start;
+        validAnnotationName(tokens[i + 1]?.text ?? "") && tokens[i].end === tokens[i + 1].start;
     for (let i = 0; i < tokens.length; i++) {
         if (!atAnnotation(i)) continue;
         const first = i, spans: SourceSpan[] = [];
         while (atAnnotation(i)) {
             const start = tokens[i].start;
             i += 2;
-            if (tokens[i]?.text === "(") {
+            if (tokens[i]?.text === "(" && !/[\r\n]/.test(tree.source.slice(tokens[i - 1].end, tokens[i].start))) {
                 let depth = 0;
                 do {
                     if (tokens[i].text === "(") depth++;
@@ -128,22 +131,25 @@ export function annotationOwners(tree: AstReply): AnnotationOwner[] {
 
 /** One complete annotation; delimiters inside quoted arguments are protected. */
 export function validAnnotation(text: string): boolean {
-    const name = /^@[\p{L}_][\p{L}\p{N}_]*/u.exec(text);
+    const name = text.startsWith("@") && annotationName(text.slice(1));
     if (!name) return false;
-    const suffix = text.slice(name[0].length);
+    const suffix = text.slice(name.length + 1);
     const rest = suffix.trim();
     if (rest && /[\r\n]/.test(suffix.slice(0, suffix.indexOf("(")))) return false;
     if (!rest) return true;
     if (!rest.startsWith("(") || !rest.endsWith(")")) return false;
+    const closing = syntaxTokens(rest).slice(-1)[0];
+    if (closing?.text !== ")" || closing.end !== rest.length) return false;
     const body = rest.slice(1, -1);
-    const argument = /\s*(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^']|'')*'|`(?:[^`]|``)*`|-?(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[\d_]*(?:\.[\d_]+)?(?:[eE][+-]?[\d_]+)?)|[\p{L}_][\p{L}\p{N}_]*\^?)\s*(?:,|$)/uy;
-    if (!body.trim()) return true;
-    let at = 0;
-    while (at < body.length) {
-        argument.lastIndex = at;
-        if (!argument.exec(body)) return false;
-        at = argument.lastIndex;
-        if (!body.slice(at).trim()) return true;
+    const literal = /^(?:"(?:[^"\\\r\n]|\\.)*"|'(?:[^']|'')*'|-?(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|\d[\d_]*(?:\.[\d_]+)?(?:[eE][+-]?[\d_]+)?))$/u;
+    const tokens = syntaxTokens(body);
+    let from = 0;
+    for (let i = 0; i <= tokens.length; i++) {
+        if (i < tokens.length && tokens[i].text !== ",") continue;
+        if (from === i) return i === tokens.length;
+        const argument = body.slice(tokens[from].start, tokens[i - 1].end);
+        if (!literal.test(argument) && !validSymbolName(argument)) return false;
+        from = i + 1;
     }
     return true;
 }

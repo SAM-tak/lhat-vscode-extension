@@ -47,8 +47,23 @@ test('annotations at the unit head cannot silently be added to the first declara
     assert.equal(annotationOwners(tree)[1].canAdd, false);
 });
 test('only literal and name arguments pass annotation validation', () => {
-    for (const text of ['@name', '@名前(-2, 1.5, 1e-2, 0xff, HOST, true^, "a,)b")', '@a()', '@a(1,)']) assert(validAnnotation(text), text);
-    for (const text of ['@', '@ a', '@a.b', '@a(x + 1)', '@a(foo())', '@a(1)\nlet^ x = 2', '@a("unterminated)', '@a\n(1)']) assert(!validAnnotation(text), text);
+    for (const text of ['@name', '@名前(-2, 1.5, 1e-2, 0xff, HOST, true^, "a,)b")', '@a()', '@a(1,)', '@é(🚀, `quoted name`, it^^)', '@🚀', '@a(1, # comment\n)']) assert(validAnnotation(text), text);
+    for (const text of ['@', '@ a', '@a.b', '@a(x + 1)', '@a(foo())', '@a(1)\nlet^ x = 2', '@a("unterminated)', '@a\n(1)', '@a(,1)', '@a(1,,)', '@a(1 # hidden closing)', '@a(1 #[ hidden closing)', '@`quoted`', '@a^', '@a(1 ≤ 2)']) assert(!validAnnotation(text), text);
+});
+
+test('annotation names share lexer Unicode boundaries without allowing hats or quoted names', () => {
+    const names = ['é', '🚀', '👩‍💻', '©', '名前'];
+    const catalog = parseAnnotationCatalog({ annotations: [...names, '`quoted`', 'bad^', 'a\u2003b', 'a≤b'].map(name => ({ name, targets: { unit: true } })) });
+    assert.deepEqual(catalog.map(c => c.name), names);
+    for (const name of names) {
+        const tree = fixture(`@${name}(🚀)\nmodule^"demo"\nlet^ value = 1`);
+        const site = annotationOwners(tree)[0].annotations[0];
+        assert.equal(site.text, `@${name}(🚀)`);
+        assert.deepEqual(annotationArguments(site.text), { name, arguments: '🚀' });
+        assert(validAnnotation(site.text));
+    }
+    const tree = fixture('@name\n(1)\nmodule^"demo"\nlet^ value = 1');
+    assert.equal(annotationOwners(tree)[0].annotations[0].text, '@name', 'a new line prevents an argument list');
 });
 test('annotation lists occupy the left side, group by owner and fold as a group', () => {
     const tree = fixture(), node = tree.root.fields.items[1], sites = annotationOwners(tree)[1].annotations;

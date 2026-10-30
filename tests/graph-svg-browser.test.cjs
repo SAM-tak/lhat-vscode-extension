@@ -1195,6 +1195,70 @@ test('reassignment pairs render in vertical rows with matching definition wires 
 });
 
 
+test('Unicode annotations create, edit and delete through real source updates and survive semantic view changes', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, load } = require('./graph-browser-host.cjs');
+    const api = load('graphAnnotations.ts');
+    const catalog = api.parseAnnotationCatalog({ annotations: [
+        { name: 'é', targets: { binding: true }, signature: 'f^number^, string^;' },
+        { name: '🚀', targets: { binding: true }, signature: 'f^number^, string^;' },
+        { name: '©', targets: { binding: true }, signature: 'f^;' },
+    ] });
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(async source => ({ ...await parse(source), annotationChoices: catalog }), server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const { evaluate, until, call } = client, ui = await graphUi(host, client);
+            const fn = () => host.tree.root.fields.items[0].fields.values[0];
+            const owner = () => fn().fields.body.fields.items[0];
+            const annotations = () => api.annotationOwners(host.tree).find(o => o.start === owner().start && o.end === owner().end).annotations;
+            await ui.add('function');
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All').click()`);
+            await until(`!document.querySelector('.svg-export>button').disabled`);
+            await ui.add('let', fn().fields.body, fn().fields.body.fields.items[0]);
+            const unchanged = host.tree.source;
+            await evaluate(`document.querySelector('.box[data-source-start="${owner().start}"][data-source-end="${owner().end}"]').parentElement.querySelector('.add-annotation').click()`);
+            await until(`document.querySelector('.annotation-add select') && !document.querySelector('.svg-export>button').disabled`);
+            assert.equal(host.tree.source, unchanged);
+            await ui.annotation(owner(), 'é');
+            assert.equal(annotations()[0].text, '@é(0, "")');
+            await ui.input('.annotation-arguments', '-2.5');
+            await ui.input('.annotation-arguments', 'a,b', 1);
+            await ui.annotation(owner(), '🚀', 'é');
+            await ui.annotation(owner(), '©');
+            assert.deepEqual(annotations().map(a => a.text), ['@🚀(-2.5, "a,b")', '@©']);
+            const written = host.tree.source, edits = await evaluate('window.edits.length');
+            const check = async () => {
+                const texts = await svgTexts(client);
+                for (const value of ['🚀', '©', '-2.5', 'a,b']) assert(texts.some(t => t.includes(value)), value);
+                assert(!texts.some(t => t.includes('@🚀') || t.includes('@©')));
+            };
+            await check();
+            await evaluate(`document.querySelector('.annotation-box .foldbtn').click()`);
+            await until(`!document.querySelector('.annotation-row') && !document.querySelector('.svg-export>button').disabled`);
+            assert((await svgTexts(client)).some(t => t.includes('アノテーション')));
+            await evaluate(`document.querySelector('.annotation-box .foldbtn').click()`);
+            await until(`document.querySelector('.annotation-row') && !document.querySelector('.svg-export>button').disabled`);
+            await check();
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Fold All').click()`);
+            await until(`document.querySelector('.box.folded') && !document.querySelector('.svg-export>button').disabled`);
+            assert.equal(await evaluate(`document.querySelectorAll('.annotation-box').length`), 0, 'a folded callable hides its inner annotation owners');
+            const point = await evaluate(`(()=>{const r=document.querySelector('.box.folded').getBoundingClientRect();return {x:r.left+8,y:r.top+8}})()`);
+            for (const type of ['mousePressed','mouseReleased']) await call('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 });
+            await until(`document.querySelector('#trail') && !document.querySelector('.svg-export>button').disabled`);
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All').click()`);
+            await until(`document.querySelector('.annotation-row') && !document.querySelector('.svg-export>button').disabled`);
+            await check();
+            assert.equal(host.tree.source, written);
+            assert.equal(await evaluate('window.edits.length'), edits);
+            await ui.removeAnnotation(annotations()[0]);
+            assert.equal(annotations().length, 1);
+            await ui.removeAnnotation(annotations()[0]);
+            assert.equal(annotations().length, 0);
+            assert.equal(await evaluate(`document.querySelectorAll('.annotation-box').length`), 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('annotation sidebars group names without @ and support inline arguments, dropdown changes and additions', { timeout: 60000 }, async () => {
     const fixture = require('./annotation-fixture.cjs');
     let reply = fixture(), version = 1;
