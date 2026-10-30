@@ -3629,7 +3629,37 @@ test('yield and await result expressions and phantom payload lists edit through 
             assert.equal(statement().kind, 'yield');
             assert.match(host.tree.source, /_yield\^\s*0/);
             await ui.remove(statement());
+            await ui.add('await', fn().fields.body);
+            const awaited = () => statement().fields.value.fields.value;
+            await ui.expression(awaited(), 'number');
+            await ui.input(`.box[data-source-start="${awaited().start}"] .literal-input`, '41');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('let^procedure=p^{let^value=nil^ await^41}')));
+            await ui.remove(statement()); await ui.add('await', fn().fields.body); await ui.remove(statement());
+            await ui.remove(binding()); await ui.remove(host.tree.root.fields.items[0]);
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
             assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('yield and await views distinguish sent values received bindings delegation and phantom suspension', { timeout: 90000 }, async () => {
+    const source = 'let^run=p^{yield^17,19 _yield^23 await^worker(29) let^received=yield^31 let^answer=await^worker(37)} let^outside=41';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), flat = n => [n,...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        await browser({ ...routes, '/':{type:'text/html',body:html(tree,false)} }, async client => {
+            assert((await svgTexts(client)).join('').includes('run'));
+            const check = async inside => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const number of ['17','19','23','29','31','37']) assert.equal(texts.filter(t => t === number).length, 1, text);
+                assert.equal(texts.filter(t => t === '41').length, inside ? 0 : 1, text);
+                for (const value of ['received','answer','worker',ja.Yield,ja.Suspend,ja.Await]) assert(text.includes(value), value + ': ' + text);
+            };
+            await graphToolbar(client, 'Unfold All'); await check(false); await saveSemanticSvg(client, 'yield-await');
+            await graphToolbar(client, 'Fold All'); assert((await svgTexts(client)).join('').includes('run'));
+            await drillGraphNode(client, tree.root.fields.items[0].fields.values[0]);
+            await graphToolbar(client, 'Unfold All'); await check(true);
+            assert.equal(await client.evaluate('window.edits.length'), 0); assert.deepEqual(client.errors, []);
         });
     });
 });
@@ -4205,6 +4235,76 @@ test('if, callable, with and loop handler menus remain reachable after real sour
                 assert.equal(scope().fields?.extra?.length ?? 0, 0);
             }
             assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('return values and panic payloads rebuild after deletion through live controls', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/':{type:'text/html',body:html(host.tree,false)} }, async client => {
+            const ui = await graphUi(host, client), fn = () => host.tree.root.fields.items[0].fields.values[0];
+            const result = () => fn().fields.body.fields.items[0];
+            const literal = (node, text) => ui.input(`.box[data-source-start="${node.start}"] .literal-input`, text);
+            await ui.add('function'); await graphToolbar(client, 'Unfold All');
+            await literal(result().fields.value[0], '17');
+            await ui.structure(result(), 'return:implicit');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('let^function=f^{17}')));
+            await ui.structure(result(), 'return:explicit');
+            await ui.addElement('number', result(), 'value'); await literal(result().fields.value[1], '23');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('let^function=f^{return^17,23}')));
+            await ui.remove(result().fields.value[0]); await ui.remove(result().fields.value[0]);
+            assert(!result().fields?.value);
+            await ui.addElement('number', result(), 'value'); await literal(result().fields.value[0], '31');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('let^function=f^{return^31}')));
+            await ui.remove(result()); await ui.add('return', fn().fields.body);
+            await ui.remove(host.tree.root.fields.items[0]);
+            await ui.add('panic');
+            const panic = () => host.tree.root.fields.items[0];
+            await literal(panic().fields.value, 'fatal detail');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('panic^"fatal detail"')));
+            await ui.expression(panic().fields.value, 'number'); await literal(panic().fields.value, '37');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('panic^37')));
+            await ui.remove(panic()); await ui.add('panic'); await ui.remove(panic());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('return and loop transfer views retain payloads destinations and fatal values', { timeout: 90000 }, async () => {
+    const source = 'let^compute=f^{if^guard(17){return^19,23} return^29} let^implicit=f^{31} let^flow=p^{repeat^37{repeat^41{if^test(43){break^^} next^}} panic^47}';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), flat = n => [n,...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        const numbers = ['17','19','23','29','31','37','41','43','47'];
+        await browser({ ...routes, '/':{type:'text/html',body:html(tree,false)} }, async client => {
+            const initial = (await svgTexts(client)).join('');
+            for (const name of ['compute','implicit','flow']) assert(initial.includes(name));
+            const check = async selected => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const number of numbers) assert.equal(texts.filter(t => t === number).length, selected.includes(number) ? 1 : 0, text);
+                return text;
+            };
+            await graphToolbar(client, 'Unfold All');
+            const text = await check(numbers);
+            for (const label of [ja.Break,ja['Next iteration'],ja['Raise fatal error']]) assert(text.includes(label), label + ': ' + text);
+            assert.equal(await client.evaluate('document.querySelectorAll(".return-icon").length'), 3);
+            await saveSemanticSvg(client, 'return-loop-transfers');
+            await graphToolbar(client, 'Fold All'); await drillGraphNode(client, tree.root.fields.items[0].fields.values[0]);
+            await graphToolbar(client, 'Unfold All'); await check(numbers.slice(0,4));
+            assert.equal(await client.evaluate('document.querySelectorAll(".return-icon").length'), 2);
+            await client.evaluate('document.querySelector("#trail button").click()'); await graphToolbar(client);
+            await graphToolbar(client, 'Fold All'); await drillGraphNode(client, tree.root.fields.items[2].fields.values[0]);
+            await graphToolbar(client, 'Unfold All'); await check(numbers.slice(5));
+            const jumps = flat(tree.root).filter(n => ['break','next'].includes(n.kind));
+            for (const jump of jumps) {
+                const caption = await client.evaluate(`document.querySelector('.box[data-source-start="${jump.start}"][data-source-end="${jump.end}"]').textContent`);
+                assert(caption.includes(ja[jump.kind === 'break' ? 'Break' : 'Next iteration']), caption);
+                if (jump.kind === 'break') assert(caption.includes('2'), caption);
+            }
+            assert.equal(await client.evaluate('window.edits.length'), 0); assert.deepEqual(client.errors, []);
         });
     });
 });
