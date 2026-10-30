@@ -4346,6 +4346,107 @@ test('call-result bindings can be discarded and named again without shifting lat
     });
 });
 
+test('mixed tables and tuples are created, reduced and readded through live list controls', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^data={named=17,[23]=29,(31,37),nested={leaf=41}} let^pair=(43,"対",{code=47})'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), items = () => host.tree.root.fields.items;
+            const data = () => items()[0].fields.values[0], pair = () => items()[1].fields.values[0];
+            const unfold = async () => {
+                await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+                await client.until(`!document.querySelector('.svg-export>button').disabled`);
+            };
+            const rename = async (node, name) => ui.input(`.name-input[data-reference-start="${node.start}"]`, name);
+            const literal = async (node, text) => ui.input(`.box[data-source-start="${node.start}"] .literal-input`, text);
+            await ui.add('let'); await rename(items()[0].fields.targets[0], 'data');
+            await ui.expression(data(), 'table'); await unfold();
+            await ui.addElement('member', data());
+            await rename(data().fields.items[0].fields.key, 'named');
+            await literal(data().fields.items[0].fields.value, '17');
+            await ui.addElement('member', data());
+            await ui.structure(data().fields.items[1], 'key:number');
+            await literal(data().fields.items[1], '23');
+            await literal(data().fields.items[1].fields.value, '29');
+            await ui.addElement('number', data());
+            await ui.expression(data().fields.items[2].fields.value, 'tuple'); await unfold();
+            for (const [index, value] of ['31','37'].entries()) await literal(data().fields.items[2].fields.value.fields.items[index], value);
+            await ui.addElement('member', data());
+            await rename(data().fields.items[3].fields.key, 'nested');
+            await ui.expression(data().fields.items[3].fields.value, 'table'); await unfold();
+            await ui.addElement('member', data().fields.items[3].fields.value);
+            const leaf = () => data().fields.items[3].fields.value.fields.items[0];
+            await rename(leaf().fields.key, 'leaf'); await literal(leaf().fields.value, '41');
+            await ui.add('let'); await rename(items()[1].fields.targets[0], 'pair');
+            await ui.expression(pair(), 'tuple'); await unfold();
+            await literal(pair().fields.items[0], '43');
+            await ui.expression(pair().fields.items[1], 'string'); await literal(pair().fields.items[1], '対');
+            await ui.addElement('table', pair()); await unfold();
+            await ui.addElement('member', pair().fields.items[2]);
+            const code = () => pair().fields.items[2].fields.items[0];
+            await rename(code().fields.key, 'code'); await literal(code().fields.value, '47');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.remove(pair().fields.items[2]); await ui.remove(pair().fields.items[1]);
+            assert.equal(pair().kind, 'int'); assert.equal(host.tree.source.slice(pair().start,pair().end), '43');
+            await literal(pair(), '53');
+            await ui.expression(pair(), 'tuple'); await unfold();
+            for (let index = 3; index >= 0; index--) await ui.remove(data().fields.items[index]);
+            assert.equal(data().fields?.items?.length ?? 0, 0);
+            await ui.addElement('number', data()); await literal(data().fields.items[0].fields.value, '59');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('let^data={59} let^pair=(0,0)')));
+            await ui.remove(items()[1]); await ui.remove(items()[0]);
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('table keys and tuple members retain their values and boundaries across semantic views', { timeout: 90000 }, async () => {
+    const source = 'let^data={named=17,["raw,key"]="文字列値",[23]=29,(31,37),nested={leaf=41}} let^pair=(43,"対",{code=47})';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), table = tree.root.fields.items[0].fields.values[0], tuple = tree.root.fields.items[1].fields.values[0];
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
+            const { evaluate, until, call } = client, ready = `!document.querySelector('.svg-export>button').disabled`;
+            const normal = await svgTexts(client); assert(normal.includes('data')); assert(normal.includes('pair'));
+            assert.equal(normal.filter(text => text === ja.Table).length, 2, JSON.stringify(normal));
+            assert(normal.includes('43') && normal.some(text => text.includes('対')), JSON.stringify(normal));
+            const check = async (values, names) => {
+                const texts = await svgTexts(client);
+                for (const value of values) assert.equal(texts.filter(t => t === value).length, 1, value + ': ' + JSON.stringify(texts));
+                for (const name of names) assert(texts.some(t => t.includes(name)), name + ': ' + JSON.stringify(texts));
+            };
+            const unfold = async () => {
+                await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All').click()`);
+                await until(ready);
+            };
+            const fold = async () => {
+                await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Fold All').click()`);
+                await until(ready);
+            };
+            await unfold();
+            await check(['17','23','29','31','37','41','43','47'], ['named','raw,key','文字列値','nested','leaf','対','code']);
+            await fold();
+            const folded = await svgTexts(client); assert(folded.includes('data')); assert(folded.includes('pair'));
+            assert(folded.includes(ja.Table), JSON.stringify(folded));
+            assert(folded.some(text => text.includes('(') && text.includes('…')), JSON.stringify(folded));
+            for (const node of [table, tuple]) {
+                const selector = `.box.folded[data-source-start="${node.start}"][data-source-end="${node.end}"]`;
+                await until(`document.querySelector(${JSON.stringify(selector)}) && ${ready}`);
+                const point = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.left+8,y:r.top+8}})()`);
+                for (const type of ['mousePressed','mouseReleased']) await call('Input.dispatchMouseEvent', { type, ...point, button:'left', clickCount:1 });
+                await until(`document.querySelector('#trail') && ${ready}`); await unfold();
+                if (node === table) await check(['17','23','29','31','37','41'], ['named','raw,key','文字列値','nested','leaf']);
+                else await check(['43','47'], ['対','code']);
+                await evaluate(`document.querySelector('#trail button').click()`);
+                await until(`!document.querySelector('#trail') && ${ready}`); await fold();
+            }
+            assert.equal(await evaluate('window.edits.length'), 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('computed table keys build references, arithmetic and calls while preserving values and ownership', { timeout: 90000 }, async () => {
     const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
