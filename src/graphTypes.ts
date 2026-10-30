@@ -130,7 +130,12 @@ export function typeSites({ root, source }: AstReply): TypeSite[] {
                 if (!one(node.fields?.fallback)) sites[sites.length - 1].parameter = true;
             } else if (!name) {
                 const annotation = one(node.fields?.type);
-                if (annotation && source.slice(annotation.start, annotation.end) !== "self^") sites.push({ start: annotation.start, end: annotation.end, name: "parameter type",
+                const marker = syntaxTokens(source, node.start, node.end)[0];
+                if (marker?.text === "...") {
+                    add(node, { ...node, end: marker.end }, annotation, undefined, false);
+                    sites[sites.length - 1].parameter = true;
+                    if (!annotation) sites[sites.length - 1].typeText = "any^";
+                } else if (annotation && source.slice(annotation.start, annotation.end) !== "self^") sites.push({ start: annotation.start, end: annotation.end, name: "parameter type",
                     insert: annotation.start, annotation: { start: annotation.start, end: annotation.end },
                     explicit: true, required: true, typeText: source.slice(annotation.start, annotation.end) });
             }

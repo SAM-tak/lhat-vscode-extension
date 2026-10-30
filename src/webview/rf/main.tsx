@@ -1034,7 +1034,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
 
     // Match arms share their FOR's box. The invisible grouping still owns
     // the branch junction, unlike a declaration row with no handles at all.
-    if (data.layoutOnly && !data.scrollSurface && !data.insertion && data.definitionRole === undefined &&
+    if (data.layoutOnly && !data.scrollSurface && !data.insertion && !data.appendInsertion && data.definitionRole === undefined &&
         data.branchOffset === undefined && data.definitionBranchOffset === undefined && data.operandOutputY === undefined && !data.sectionDelete) return null;
 
     const classes = ["box"];

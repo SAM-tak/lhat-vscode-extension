@@ -877,6 +877,30 @@ test('nullable and intersection changes preserve the selected annotation compone
     assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
 }));
 
+test('variadic element annotations preserve signature slots and comments when omitted and restored', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts');
+    for (const source of [
+        'let^read=f^callback:(p^number^,...:#[keep]#(string^) ->bool^;){0}',
+        'let^Signature=(p^number^,...:#[keep]#(string^) ->bool^;)',
+    ]) {
+        let tree = await parse(source);
+        const signature = () => flat(tree.root).find(n => n.kind === 'type-func');
+        for (const id of ['untyped','type','untyped','type']) {
+            const edit = structure.editStructure(tree, signature(), `type:variadic:1:${id}`);
+            assert(edit, tree.source);
+            tree = await parse(apply(tree.source, edit));
+            assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+            assert.equal(signature().fields.params.length, 2, tree.source);
+            assert.equal(tree.source.slice(signature().fields.params[0].start, signature().fields.params[0].end), 'number^');
+            assert.equal(!!signature().fields.params[1].fields?.type, id === 'type');
+            assert.equal(tree.source.slice(signature().fields.return_type.start, signature().fields.return_type.end), 'bool^');
+            assert.equal(tree.source.split('#[keep]#').length, 2);
+            if (source.includes('Signature')) assert.equal(tree.root.fields.items[0].fields.values[0].kind, 'type');
+            else assert(tree.source.endsWith('{0}'));
+        }
+    }
+}));
+
 test('type choices exclude mutable descriptors and the initializing alias but retain outer aliases', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structure = load('graphStructure.ts');
     for (const [source, expected] of [

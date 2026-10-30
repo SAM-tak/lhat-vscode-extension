@@ -2929,6 +2929,113 @@ test('function parameter defaults expose editable value nodes and retain removal
     });
 });
 
+test('callable parameters retain defaults and references after clearing and rebuilding the signature', { timeout: 120000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^function=f^amount:number^=17,...:string^{return^amount}'));
+        const rebuilt = normalizedAst(await parse('let^function=f^count:number^=19,...:string^{return^count}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), fn = () => host.tree.root.fields.items[0].fields.values[0];
+            const parameter = () => fn().fields.params[0], returned = () => fn().fields.body.fields.items[0].fields.value[0];
+            const rename = text => ui.input(`.name-input[data-reference-start="${parameter().fields.name.start}"]`, text);
+            const signature = async (name, value) => {
+                await ui.addElement('parameter', fn(), 'params'); await rename(name);
+                await ui.type(parameter().fields.name, 'number^'); await ui.structure(parameter(), 'default:add');
+                await ui.input(`.box[data-source-start="${parameter().fields.fallback.start}"] .literal-input`, value);
+                await ui.addElement('variadic', fn(), 'params');
+                const variadic = fn().fields.params[1];
+                await ui.typeStructure({ start: variadic.start, end: variadic.start + 3 }, 'type:name:string^');
+            };
+            await ui.add('function'); await graphToolbar(client, 'Unfold All'); await signature('amount', '17');
+            await ui.expression(returned(), 'reference:amount');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await rename('count');
+            assert.equal(host.tree.source.slice(returned().start, returned().end), 'count');
+            await ui.structure(parameter(), 'default:remove'); assert(!parameter().fields.fallback);
+            await ui.structure(parameter(), 'default:add');
+            await ui.input(`.box[data-source-start="${parameter().fields.fallback.start}"] .literal-input`, '19');
+            await ui.remove(fn().fields.params[1]); await ui.remove(parameter());
+            assert.equal(fn().fields?.params?.length ?? 0, 0);
+            await signature('count', '19');
+            assert.deepEqual(normalizedAst(host.tree), rebuilt, host.tree.source);
+            await ui.remove(host.tree.root.fields.items[0]);
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('variadic annotations omit and restore their editable type seat through live source changes', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const bare = normalizedAst(await parse('let^function=f^...{return^0}'));
+        const typed = normalizedAst(await parse('let^function=f^...:number^{return^(...[0])}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), fn = () => host.tree.root.fields.items[0].fields.values[0];
+            const site = () => load('graphTypes.ts').typeSites(host.tree).find(s => s.name === '...');
+            const result = () => fn().fields.body.fields.items[0].fields.value[0];
+            await ui.add('function'); await graphToolbar(client, 'Unfold All'); await ui.addElement('variadic', fn(), 'params');
+            await ui.type(site(), undefined);
+            assert.deepEqual(normalizedAst(host.tree), bare, host.tree.source);
+            assert.equal(site().typeText, 'any^'); assert(!site().required);
+            await ui.type(site(), 'string^');
+            await ui.typeStructure(site(), 'type:tuple');
+            assert.equal(fn().fields.params[0].fields.type.kind, 'type-tuple');
+            await ui.type(site(), undefined);
+            assert.deepEqual(normalizedAst(host.tree), bare, host.tree.source);
+            await ui.type(site(), 'number^');
+            await ui.expression(result(), 'reference:...'); await ui.expression(result(), 'index');
+            assert.deepEqual(normalizedAst(host.tree), typed, host.tree.source);
+            await ui.expression(result(), 'number'); await ui.remove(fn().fields.params[0]);
+            assert.equal(fn().fields?.params?.length ?? 0, 0);
+            await ui.remove(host.tree.root.fields.items[0]);
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('callable signatures keep defaults result slots and modifiers through semantic views', { timeout: 90000 }, async () => {
+    const source = 'let^read=template^f^first:number^=17,second:string^="default",...:bool^ ->(number^,string^){return^first,second} let^make=f^seed:number^=19 -> fresh^t^{value:number^}{return^{value=seed}} let^run=p^message:string^="ready"{print(message)}';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), functions = tree.root.fields.items.map(n => n.fields.values[0]);
+        const flat = n => [n,...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
+            const check = async () => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const number of ['17','19']) assert.equal(texts.filter(t => t === number).length, 1, text);
+                for (const value of ['first','second','seed','message','default','ready','...']) assert(text.includes(value), value + ': ' + text);
+                for (const role of ['Function','Procedure','Input','Output','Fresh','Callable template']) assert(text.includes(ja[role]), role + ': ' + text);
+                assert.equal(text.split(ja.Boolean).length, 2, 'The variadic type is shown once: ' + text);
+                const variadic = functions[0].fields.params[2];
+                assert.equal(await client.evaluate(`document.querySelector('.box[data-source-start="${variadic.start}"][data-source-end="${variadic.end}"] .typed-name>span')?.textContent`), '...');
+                const returns = functions[0].fields.return_type.fields.items;
+                for (const [index, result] of returns.entries()) assert(await client.evaluate(`!!document.querySelector('.type-label[data-type-start="${result.start}"][data-result-index="${index}"]')`));
+            };
+            await check(); await graphToolbar(client, 'Unfold All'); await check();
+            await saveSemanticSvg(client, 'callable-signatures');
+            await graphToolbar(client, 'Fold All'); await check();
+            for (const [index, fn] of functions.entries()) {
+                if (index) { await client.evaluate(`document.querySelector('#trail button').click()`); await client.until(graphReady); await graphToolbar(client, 'Fold All'); }
+                await drillGraphNode(client, fn); await graphToolbar(client, 'Unfold All');
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const value of index === 0 ? ['read','first','second','17','default','...'] : index === 1 ? ['make','seed','19','value'] : ['run','message','ready','print'])
+                    assert(text.includes(value), value + ': ' + text);
+                for (const other of functions.filter(n => n !== fn)) {
+                    const first = other.fields.params[0].fields.fallback;
+                    const value = source.slice(first.start, first.end).replaceAll('"', '');
+                    assert(!texts.includes(value), text);
+                }
+            }
+            assert.equal(await client.evaluate('window.edits.length'), 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('computed literal keys retain input editors and their value type controls', { timeout: 60000 }, async () => {
     const { graphHost, graphUi } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
@@ -3765,7 +3872,8 @@ test('a typed variadic function is constructed through parameter, reference and 
             await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
             await client.until(`!document.querySelector('.svg-export>button').disabled`);
             await ui.addElement('variadic', fn(), 'params');
-            await ui.typeStructure(fn().fields.params[0].fields.type, 'type:name:number^');
+            const variadic = fn().fields.params[0];
+            await ui.typeStructure({ start: variadic.start, end: variadic.start + 3 }, 'type:name:number^');
             assert(returned()?.fields?.value?.length, host.tree.source);
             await ui.expression(returned().fields.value[0], 'reference:...');
             await ui.expression(returned().fields.value[0], 'index');
@@ -3957,6 +4065,80 @@ test('qualified type names remain complete editable annotations through the live
             }
             await ui.typeStructure(name(), 'type:name:string^');
             assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('unnamed callable type inputs show one type caption and preserve the variadic marker', { timeout: 60000 }, async () => {
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse('let^Signature=(f^number^,string^,...:bool^ ->string^;)');
+        assert.equal(tree.root.fields.items[0].fields.values[0].kind, 'type');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
+            const check = async (editable = true) => {
+                const texts = await svgTexts(client);
+                assert.equal(texts.filter(t => t === ja.Number).length, 1, JSON.stringify(texts));
+                assert.equal(texts.filter(t => t === ja.Text).length, 2, JSON.stringify(texts));
+                assert.equal(texts.filter(t => t === ja.Boolean).length, 1, JSON.stringify(texts));
+                if (!editable) return;
+                const parameters = tree.root.fields.items[0].fields.values[0].fields.value.fields.params.map(p => ({ start:p.start, end:p.end }));
+                const inputs = await client.evaluate(`${JSON.stringify(parameters)}.map(p=>{const e=document.querySelector('.box[data-source-start="'+p.start+'"][data-source-end="'+p.end+'"] .typed-name');return {type:e?.querySelector('.type-label')?.textContent,name:e?.querySelector(':scope>span')?.textContent}})`);
+                assert.deepEqual(inputs, [{type:ja.Number,name:''},{type:ja.Text,name:''},{type:ja.Boolean,name:'...'}]);
+            };
+            await check(); await saveSemanticSvg(client, 'unnamed-parameters');
+            await graphToolbar(client, 'Fold All'); await check(false); await graphToolbar(client, 'Unfold All'); await check();
+            assert.equal(await client.evaluate('window.edits.length'), 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('all annotation type forms retain full details and structure menus across semantic views', { timeout: 90000 }, async () => {
+    const source = 'let^inspect=f^plain:number^,callback:(f^number^ -> string^;),stream:c^{p^* ->string^ ->-},descriptor:type^<number^>,table:t^{field:number^,string^[2],[string^]:bool^,self^{tag:string^}},tuple:(number^,string^),choice:(number^|nil^),both:(t^{}&t^{field:number^}) ->(number^,string^){return^17,"answer"}';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), fn = tree.root.fields.items[0].fields.values[0];
+        const flat = n => [n,...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        assert.deepEqual([...new Set(flat(tree.root).map(n => n.kind).filter(k => k.startsWith('type-') || k === 'member-decl'))].sort(),
+            ['type-name','type-func','type-coro','type-apply','type-table','member-decl','type-tuple','type-union','type-intersect'].sort());
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
+            const details = [
+                [ja.Number], [ja.Function,ja.Number,ja.Text], [ja['Coroutine type'],ja.Procedure,'*',ja.Text,'->','-'],
+                ['type^<',ja.Number], ['field','tag','[2]',ja.Text,ja.Boolean,ja.Self],
+                [ja.Number,ja.Text], [ja.Number,'|',ja['No value']], ['{}','&','{field:',ja.Number],
+            ];
+            const selector = parameter => `.type-label[data-type-start="${parameter.fields.name.start}"][data-type-end="${parameter.fields.name.end}"]`;
+            const check = async () => {
+                const texts = await svgTexts(client);
+                assert(texts.includes(ja.Input)); assert(texts.includes(ja.Output));
+                for (const [index, parameter] of fn.fields.params.entries()) {
+                    const name = source.slice(parameter.fields.name.start, parameter.fields.name.end);
+                    assert.equal(texts.filter(t => t === name).length, 1, JSON.stringify(texts));
+                    const field = await client.evaluate(`(()=>{const e=document.querySelector(${JSON.stringify(selector(parameter))});return e&&{label:e.textContent,title:e.title}})()`);
+                    assert(field, name);
+                    for (const detail of details[index]) assert(field.title.includes(detail), name + ': ' + JSON.stringify(field));
+                    if (name === 'callback') assert.equal(field.label, ja.Function + '…');
+                    if (name === 'table' || name === 'both') assert.equal(field.label, ja['Table type'] + '…');
+                }
+                for (const [index, item] of fn.fields.return_type.fields.items.entries()) assert(await client.evaluate(`!!document.querySelector('.type-label[data-type-start="${item.start}"][data-result-index="${index}"]')`));
+            };
+            await check(); await graphToolbar(client, 'Unfold All'); await check();
+            const expanded = await svgTexts(client);
+            assert.equal(expanded.filter(t => t === '17').length, 1); assert(expanded.join('').includes('answer'));
+            await saveSemanticSvg(client, 'annotation-types');
+            await graphToolbar(client, 'Fold All'); await check();
+            await drillGraphNode(client, fn); await graphToolbar(client, 'Unfold All'); await check();
+            for (const parameter of fn.fields.params) {
+                await client.evaluate(`document.querySelector(${JSON.stringify(selector(parameter))}).dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}))`);
+                await client.until(`document.querySelectorAll('.statement-menu [role=option]').length>6`);
+                if (source.slice(parameter.fields.name.start, parameter.fields.name.end) === 'table') {
+                    const menu = await client.evaluate(`document.querySelector('.statement-menu').textContent`);
+                    for (const detail of ['field','tag','[2]']) assert(menu.includes(detail), menu);
+                }
+                await client.call('Input.dispatchKeyEvent', { type:'keyDown', key:'Escape', code:'Escape', windowsVirtualKeyCode:27 });
+                await client.until(`!document.querySelector('.statement-menu')`);
+            }
+            assert.equal(await client.evaluate('window.edits.length'), 0);
             assert.deepEqual(client.errors, []);
         });
     });
@@ -4426,6 +4608,10 @@ test('table member names and function type arities edit from the annotation menu
             await ui.typeStructure(name(), 'function:kind:procedure');
             await ui.typeStructure(name(), 'type:append:variadic');
             assert.equal(type().fields.params.length, 2);
+            await ui.typeStructure(name(), 'type:variadic:1:untyped');
+            assert(!type().fields.params[1].fields?.type);
+            await ui.typeStructure(name(), 'type:variadic:1:type');
+            assert.equal(type().fields.params[1].fields.type.kind, 'type-name');
             await ui.typeStructure(name(), 'function:kind:function');
             await ui.typeStructure(name(), 'type:remove:params:1');
             assert.equal(type().fields.params.length, 1);

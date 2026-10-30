@@ -239,7 +239,8 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     if (isTypeNode(node)) {
         const typeValue = typeValueExpression(tree, site);
         const names = new Set(["number^", "string^", "bool^", "nil^", "any^", "t^{}"]);
-        const owner = typeSites(tree).find(site => site.annotation && site.annotation.start <= node!.start && site.annotation.end >= node!.end);
+        const annotations = typeSites(tree);
+        const owner = annotations.find(site => site.annotation && site.annotation.start <= node!.start && site.annotation.end >= node!.end);
         const removeName = (name: string) => { for (const candidate of names) if (sameName(candidate, name)) names.delete(candidate); };
         const collect = (scope: AstNode) => {
             if (scope.kind === "def") names.add("Self^");
@@ -306,6 +307,15 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
                     if (target.kind === "type-func" && list.field === "params") {
                         const mutable = receiverMutation(item, source);
                         if (mutable) change(`type:receiver:${i}:mutable`, mutable.label, mutable.edit);
+                        const marker = syntaxTokens(source, item.start, item.end)[0];
+                        const variadic = marker?.text === "..." && annotations.find(site => site.start === marker.start && site.name === "...");
+                        if (variadic) {
+                            if (variadic.annotation && variadic.colon !== undefined) change(`type:variadic:${i}:untyped`, "Omit variadic element type", {
+                                start: variadic.colon, end: variadic.annotation.end,
+                                text: source.slice(variadic.colon + 1, variadic.annotation.start),
+                            });
+                            else change(`type:variadic:${i}:type`, "Set variadic element type", { start: marker.end, end: marker.end, text: ": any^" });
+                        }
                     }
                     if (["type-table", "self-table"].includes(target.kind) && !one(item, "key") && one(item, "value")?.kind !== "self-table") {
                         const value = one(item, "value")!;

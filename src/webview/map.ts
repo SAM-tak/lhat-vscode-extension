@@ -1004,8 +1004,15 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         const name = node === viewRoot ? callableNames.get(node) : undefined;
         if (name) keyword.parts.push({ text: ` ${source.slice(name.start, name.end)}`, symbol: { start: name.start, end: name.end } });
         const title = leaf({ ...node, kind: "signature-title", end: node.start + 2 }, keyword);
-        const parameters = listContent(params, unfold, avail, params.items.map(param => param.fields?.fallback
-            ? build(param, "expr", unfold, avail) : leaf(param, labelFor(param, []))));
+        const parameters = listContent(params, unfold, avail, params.items.map(param => {
+            if (param.fields?.fallback) return build(param, "expr", unfold, avail);
+            const site = !param.fields?.name && sites.find(site => site.start >= param.start && site.end <= param.end);
+            // Unnamed parameters have a type seat, not a second copy of the type as their name.
+            return leaf(param, site ? { text: "", parts: [{
+                text: syntaxTokens(source, param.start, param.end)[0]?.text === "..." ? "..." : "",
+                typeSite: site, typeLabel: displayType(site.typeText, vocabulary, true),
+            }] } : labelFor(param, []));
+        }));
         const resultSites = sites.filter(site => site.name.startsWith("return value") &&
             (site.result?.owner === node.start || (site.start === (returns.items[0]?.start ?? node.start) && site.end <= node.end)));
         const fresh = freshMarker(node, source);
