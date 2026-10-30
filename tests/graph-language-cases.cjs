@@ -13,7 +13,7 @@ function languageCases() {
     walk(path.resolve(__dirname, '../testing'));
     cases.push(
         { name: 'values', source: 'let^boxed=box^nil^ let^sealed=constbox^boxed let^name=id^thing let^outer=$boxed let^kind=typeof^(0) let^descriptor=type^<number^> let^cast=0 as^number^ print((1,2)...) let^module=import^std.math' },
-        { name: 'procedure', source: 'let^run=p^{yield^0 await^nil^}' },
+        { name: 'procedure', source: 'let^run=p^{yield^0 await^nil^ let^received=yield^0 let^answer=await^nil^ _yield^0}' },
         { name: 'coroutine', source: 'let^f=f^arg:c^{f^number^ ->string^ ->bool^}{0}' },
         { name: 'intersection', source: 'let^f=f^arg:(t^{}&t^{}){0}' },
         { name: 'chain-next', source: 'let^value=0<1<2 repeat^2{next^}' },

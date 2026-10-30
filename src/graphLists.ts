@@ -58,7 +58,8 @@ export function commaLists(tree: AstReply): CommaList[] {
                 ["type-tuple", "type-apply"].includes(node.kind) ? "type" : "value", open.end, close.start);
         } else if (["return", "yield"].includes(node.kind)) {
             // A parser-generated implicit return has no keyword, but its values still form a list.
-            const explicit = tokens[0]?.text === `${node.kind}^`, marker = explicit ? tokens[0].end : node.start;
+            const explicit = tokens[0]?.text === `${node.kind}^` || node.kind === "yield" && tokens[0]?.text === "_yield^";
+            const marker = explicit ? tokens[0].end : node.start;
             const values = syntaxTokens(source, marker, node.end);
             let depth = 0;
             const closing = values[0]?.text === "(" ? values.findIndex(token => {

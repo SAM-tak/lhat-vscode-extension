@@ -12,7 +12,7 @@ npm run bundle:rf
 node --test --test-name-pattern="language AST cases render" tests/graph-svg-browser.test.cjs
 ```
 
-出力の `AST audit artifacts` にある一時ディレクトリへ、各状態の SVG、補足例7種類の PNG、`coverage.json` を保存する。
+出力の `AST audit artifacts` にある一時ディレクトリへ、各状態の SVG、補足例8種類の PNG、`coverage.json` を保存する。
 各題材は新しいブラウザーで開き、初期の表示設定をそろえる。
 通常・全展開・全折りたたみを検証し、展開先がある場合は実際のホイール操作とクリックでドリルダウンして元へ戻る。
 空の文書、単純な公開文字列、エラー回復の葉、単位のアノテーションには独立した展開先がない。
@@ -48,7 +48,7 @@ node --test --test-name-pattern="language AST cases render" tests/graph-svg-brow
 | testing/returns.lh | 59 / 109 / 59 | 確認済み |
 | testing/zero-based-indices.lh | 1119 / 1200 / 112 | 確認済み |
 | values | 57 / 57 / 35 | 確認済み |
-| procedure | 15 / 22 / 15 | 確認済み |
+| procedure | 15 / 36 / 15 | 確認済み |
 | coroutine | 13 / 17 / 13 | 確認済み |
 | intersection | 13 / 17 / 13 | 確認済み |
 | chain-next | 17 / 17 / 7 | 確認済み |
@@ -67,6 +67,7 @@ node --test --test-name-pattern="language AST cases render" tests/graph-svg-brow
 すべてのAST要素について必要な内容が表示されていることを個別に証明するものではない。
 位置要素・索引型・self節を含む型のPNGでは、引数が「テーブル型」と表示されることを確認した。この短縮は `06-visual-editor.md` の3.3節の表示方針に従う。完全な型をツールチップとメニューに保持することを含め、各型要素の表示内容を引き続き照合する。
 型のself節内の位置要素・個数と無制限の指定・索引型は、`typed instance sections`の実サーバーテストと`typed instance positions`のブラウザーテストで、空の文書からの作成・変更・削除と再表示を確認する。値を持つselfテーブルの追加候補は型の候補とは分け、索引型の重複と入れ子のself節は提示しない。
+`procedure`はyield/awaitの文と結果を受け取る式、phantom yieldを含む。展開したSVGの全体画像も目視し、値の入力欄・結果の束縛・見出しを確認した。`yield and await result expressions`のブラウザーテストは空の文書からの作成、phantomへの変更、値リストの追加・削除、内側の値への置き換え、再表示と文の削除を検証する。通常の関数と手続きの既定引数には中断する式の候補を出さない。
 `handlers` と `cleanup-transfer` のPNGで、通常経路とcatchの合流後にfinallyが表示されることを確認した。実サーバーのブロック・if・手続き・ループから作ったグラフについて、finallyを除くと後続文への経路がなくなることを `graph-execution.test.cjs` で検証する。ループのcatchは反復内で合流し、finallyはループの後に置く。
 途中離脱は通常の続行と混同しない破線で後処理への関係を示す。return・panic・break・next、多重のbreak/next、入れ子のfinallyと別の手続きへの境界を検証した。折りたたんだ内側の離脱はその箱から関係を示し、同じ箱に収まる接続は描かない。
 `cleanup transfer ports` のブラウザーテストは折りたたみ・ドリルダウン・再展開後のポートと破線、SVGの破線を確認する。`lhat-finally-transfer.png` と `lhat-finally-transfer-tail.png` を一時ディレクトリへ保存する。空のreturnの入力・後処理用ポートも確認し、表示操作でソースが変わらないことを検証する。

@@ -12,6 +12,38 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('yield and await expressions edit received results inside procedures and phantom yield keeps its complete marker', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structures = load('graphStructure.ts');
+    for (const [source, allowed] of [
+        ['let^run=p^{let^value=0}', true], ['let^value=0', false],
+        ['let^run=p^{let^inner=f^{return^0}}', false], ['let^run=f^{let^inner=p^{let^value=0}}', true],
+        ['let^run=p^value:number^=0{}', false],
+    ]) {
+        const tree = await parse(source), value = flat(tree.root).findLast(n => n.kind === 'int'); assert(value, source);
+        const choices = expressions.expressionTemplates(tree, value);
+        for (const id of ['yield','await']) assert.equal(choices.some(c => c.id === id), allowed, source);
+    }
+    for (const id of ['yield','await']) {
+        let tree = await parse('let^run=p^{let^value=0}');
+        const binding = () => tree.root.fields.items[0].fields.values[0].fields.body.fields.items[0];
+        tree = await parse(apply(tree.source, expressions.replaceExpression(tree, binding().fields.values[0], id)));
+        let value = binding().fields.values[0]; assert.equal(value.kind, id);
+        assert(expressions.expressionSites(tree).some(s => s.kind === id));
+        if (id === 'yield') {
+            tree = await parse(apply(tree.source, structures.editStructure(tree, value, 'yield:phantom')));
+            value = binding().fields.values[0];
+            assert(tree.source.includes('_yield^'));
+            const graph = load('webview/map.ts').toElk(tree), flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
+            assert(flatten(graph).some(n => n.lhat?.labelParts?.some(p => p.source === '_yield^' && p.text === 'Suspend')));
+        }
+        tree = await parse(apply(tree.source, expressions.replaceExpression(tree, value, 'unwrap')));
+        assert.equal(binding().fields.values[0].kind, 'int');
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    }
+    const tree = await parse('let^run=p^{yield^0 await^nil^}');
+    assert(!expressions.expressionSites(tree).some(s => ['yield','await'].includes(s.kind)), 'standalone transfers retain their statement shape');
+}));
+
 test('mutable declarations edit member paths and introduction mode while immutable targets retain their grammar', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structure = load('graphStructure.ts'), input = { kind:'declarationPath', value:'value' };
     for (const path of ['value','`a b`','_^','table.member','table.`a.b`','L^.value','$table.member','$^table.member']) {

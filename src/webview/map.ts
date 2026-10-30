@@ -1639,19 +1639,10 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             const value = node.fields?.[name]; return Array.isArray(value) ? value[0] : value;
         };
         if (node.kind === "yield") {
-            const fields = ["value"];
-            const children: ElkNode[] = [];
-            if (node.kind === "yield") children.push(leaf({ ...node, kind: "binding-keyword", end: node.start + 6 },
-                makeLabel({ ...node, end: node.start + 6 }, [], MAX_LABEL)));
-            fields.forEach((name, i) => {
-                const list = commaList(node, name);
-                if (!list) return;
-                if (i) children.push(leaf({ ...node, kind: "delimiter", end: node.start }, ":="));
-                children.push(listContent(list, unfold, avail));
-            });
-            if (children.length) {
-                const built = inlineBox(node, children); built.labels = [{ text: labelFor(node, []).text }]; return built;
-            }
+            const marker = syntaxTokens(source, node.start, node.end)[0], list = commaList(node, "value");
+            const keyword = { ...node, kind: "binding-keyword", end: marker?.end ?? node.end };
+            const children = [leaf(keyword, makeLabel(keyword, [], MAX_LABEL)), ...list ? [listContent(list, unfold, avail)] : []];
+            const built = inlineBox(node, children); built.labels = [{ text: labelFor(node, []).text }]; return built;
         }
         if ((node.kind === "type" && ["type-table", "type-func", "type-tuple"].includes(field("value")?.kind ?? "")) || node.kind === "call-stmt") {
             const child = field("value");

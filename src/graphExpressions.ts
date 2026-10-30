@@ -10,18 +10,23 @@ import { iteratorNames, forExpression, freshFocus } from "./graphLoops";
 import { validName, validMemberName, validNamePath, nameSegments } from "./graphNames";
 
 export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean; errorName?: boolean; delegateName?: boolean;
-    owner?: SourceSpan; callArguments?: string[]; spreadAllowed?: boolean; operand?: SourceSpan }
+    owner?: SourceSpan; callArguments?: string[]; spreadAllowed?: boolean; suspensionAllowed?: boolean; operand?: SourceSpan }
 const kinds = new Set(["int", "float", "string", "bool", "nil", "ident", "hat-ident", "hole",
-    "compare-chain", "import", "typeof", "type", "box", "spread", "scope", "name", "binary", "unary", "as", "call", "member", "index", "tuple", "table", "def", "self-table", "func", "interp", "if-expr", "try", "pack", "error-new", "require"]);
+    "compare-chain", "import", "typeof", "type", "box", "spread", "scope", "name", "binary", "unary", "as", "call", "member", "index", "tuple", "table", "def", "self-table", "func", "interp", "if-expr", "try", "pack", "error-new", "require", "yield", "await"]);
 
 /** Declaration names, type syntax and member keys are not replaceable value expressions. */
 export function expressionSites(tree: AstReply): ExpressionSite[] {
     const sites: ExpressionSite[] = [];
     const patterns = new Map(patternLists(tree).map(list => [list.condition, list.items]));
     const names = new Set<AstNode>();
-    const collectNames = (node: AstNode) => {
+    const suspension = new Set<AstNode>(), statements = new Set<AstNode>();
+    const collectNames = (node: AstNode, procedure = false) => {
+        if (procedure) suspension.add(node);
         iteratorNames(node, tree.source).forEach(name => names.add(name));
-        Object.values(node.fields ?? {}).flat().forEach(collectNames);
+        for (const [field, value] of Object.entries(node.fields ?? {})) for (const child of Array.isArray(value) ? value : [value]) {
+            if (node.kind === "block" && field === "items" || node.kind === "loop-clause" && field === "body" || node.kind === "call-stmt") statements.add(child);
+            collectNames(child, node.kind === "func" ? field === "body" && tree.source.startsWith("p^", node.start) : procedure);
+        }
     };
     collectNames(tree.root);
     const visit = (node: AstNode, value = true, assignmentTarget = false, memberKey = false, spreadAllowed = false) => {
@@ -35,10 +40,13 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
         const pattern = patterns.get(node);
         if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(child => visit(child)); return; }
         if (["disabled", "module", "annotation", "import-stmt", "require-stmt"].includes(node.kind) || node.kind.startsWith("type-")) return;
-        if (value && (kinds.has(node.kind) || forExpression(node, tree.source)) && node.start < node.end) {
+        if (value && (kinds.has(node.kind) || forExpression(node, tree.source)) && node.start < node.end &&
+            !(["yield", "await"].includes(node.kind) && statements.has(node))) {
             const info = callInfo({ kind: "call", start: node.start, end: node.end, line: node.line, column: node.column, fields: { target: node } });
-            const operand = ["typeof", "box", "spread", "try", "pack", "unary"].includes(node.kind) && (node.fields?.operand ?? node.fields?.value);
+            const inner = ["typeof", "box", "spread", "try", "pack", "unary", "yield", "await"].includes(node.kind) && (node.fields?.operand ?? node.fields?.value);
+            const operand = Array.isArray(inner) ? inner.length === 1 ? inner[0] : undefined : inner;
             sites.push({ kind: node.kind, start: node.start, end: node.end,
+                ...(suspension.has(node) ? { suspensionAllowed: true } : {}),
                 ...(operand && !Array.isArray(operand) ? { operand: { start: operand.start, end: operand.end } } : {}),
                 ...(spreadAllowed && node.kind !== "spread" ? { spreadAllowed: true } : {}),
                 ...(info ? { callArguments: info.inputs.map(input => input.default ?? (input.type === "number^" ? "0" : input.type === "string^" ? '\"\"' : input.type === "bool^" ? "false^" : "nil^")) } : {}),
@@ -49,6 +57,7 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
             const values = node.kind === "reassign" ? assignmentValues(node, tree.source) : node.fields?.values, targets = node.fields?.targets;
             if (Array.isArray(values) && (values.length > 1 || values[0]?.kind === "tuple" && Array.isArray(targets) && targets.length > 1))
                 sites.push({ kind: "initializers", start: values[0].start, end: values[values.length - 1].end,
+                    ...(suspension.has(node) ? { suspensionAllowed: true } : {}),
                     owner: { start: node.start, end: node.end } });
         }
         for (const [field, children] of Object.entries(node.fields ?? {})) {
@@ -167,6 +176,7 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         ["present", "Check for a non-nil value", `((${current})?)`],
         ["negative", "Negate number", `(-(${current}))`],
     ];
+    if (currentSite.suspensionAllowed) choices.push(["yield", "Yield statement", `(yield^(${current}))`], ["await", "Await statement", `await^(${current})`]);
     if (currentSite.spreadAllowed) choices.push(["spread", "Expand trailing argument", `(${current})...`]);
     if (currentSite.operand) {
         const operand = replacementSpan(tree, currentSite.operand);

@@ -60,7 +60,7 @@ export function structureSites(tree: AstReply): StructureSite[] {
     const sites: StructureSite[] = [];
     const visit = (node: AstNode, parent?: AstNode) => {
         if (node.kind === "disabled") return;
-        if ((["block", "if-clause"].includes(node.kind) && handlerActions(tree, node, parent).length) || node.kind.startsWith("type-") || ["with", "if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "break", "next", "param", "string", "scope", "box", "member", "index", "call", "compare-chain", "binary", "func"].includes(node.kind))
+        if ((["block", "if-clause"].includes(node.kind) && handlerActions(tree, node, parent).length) || node.kind.startsWith("type-") || ["with", "if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "break", "next", "yield", "param", "string", "scope", "box", "member", "index", "call", "compare-chain", "binary", "func"].includes(node.kind))
             sites.push({ start: node.start, end: node.end, kind: node.kind });
         Object.values(node.fields ?? {}).flat().forEach(child => visit(child, node));
     };
@@ -82,6 +82,11 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     const source = tree.source, result: Action[] = [], newline = source.includes("\r\n") ? "\r\n" : "\n";
     const add = (id: string, label: string, edit: SourceEdit, preview = edit.text || label) => result.push({ id, label, text: preview, edit });
     const head = syntaxTokens(source, node.start, node.end);
+    if (node.kind === "yield" && head[0]) {
+        const phantom = head[0].text === "_yield^";
+        add("yield:phantom", phantom ? "Yield" : "Suspend", { start: head[0].start, end: head[0].end, text: phantom ? "yield^" : "_yield^" });
+        return result;
+    }
     if (["break", "next"].includes(node.kind)) {
         for (let level = 1; level <= loops; level++) for (const [word, label] of [["break", "Exit loop"], ["next", "Next iteration"]])
             add(`jump:${word}:${level}`, label, { start: node.start, end: node.end, text: word + "^".repeat(level) });

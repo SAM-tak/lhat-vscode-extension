@@ -94,7 +94,7 @@ test('language AST cases render and export in normal, folded and drilled views w
                 await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
                 await until(ready);
                 await snapshot(item, index, 'expanded');
-                if (['annotation','callable-modifiers','coroutine','position-types','handlers','cleanup-transfer','quoted-names'].includes(item.name)) {
+                if (['annotation','procedure','callable-modifiers','coroutine','position-types','handlers','cleanup-transfer','quoted-names'].includes(item.name)) {
                     if (item.name === 'annotation') assert(await evaluate(`!!document.querySelector('.annotation-box')`));
                     const screenshot = await call('Page.captureScreenshot', { format: 'png' });
                     fs.writeFileSync(path.join(artifactDirectory, `${index}-expanded.png`), Buffer.from(screenshot.data, 'base64'));
@@ -2612,6 +2612,43 @@ test('deleting a parallel value removes its binding and keeps the remaining grap
             await ui.addElement('binding', binding(), 'targets');
             assert.equal(binding().fields.targets.length, 3);
             assert.equal(values().length, 3);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('yield and await result expressions and phantom payload lists edit through live procedure controls', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^procedure=p^{let^value=(_yield^(0,0))}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), fn = () => host.tree.root.fields.items[0].fields.values[0];
+            const binding = () => fn().fields.body.fields.items[0], value = () => binding().fields.values[0];
+            await ui.add('procedure');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.add('let', fn().fields.body);
+            await ui.expression(value(), 'yield');
+            await ui.structure(value(), 'yield:phantom');
+            await ui.addElement('number', value(), 'value');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.remove(value().fields.value[1]);
+            await ui.expression(value(), 'unwrap');
+            await ui.expression(value(), 'await');
+            assert.equal(value().kind, 'await');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('let^procedure=p^{let^value=await^(0)}')));
+            await ui.expression(value(), 'nil');
+            assert.equal(value().kind, 'hat-ident');
+            await ui.add('yield', fn().fields.body);
+            const statement = () => fn().fields.body.fields.items[1];
+            await ui.structure(statement(), 'yield:phantom');
+            const payload = () => Array.isArray(statement().fields?.value) ? statement().fields.value : [statement().fields.value];
+            await ui.remove(payload()[0]);
+            assert(!statement().fields?.value);
+            await ui.addElement('number', statement(), 'value');
+            assert.equal(statement().kind, 'yield');
+            assert.match(host.tree.source, /_yield\^\s*0/);
+            await ui.remove(statement());
             assert.deepEqual(client.errors, []);
         });
     });
