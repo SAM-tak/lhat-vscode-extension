@@ -159,11 +159,14 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
         ? { title: l10n.t("Named type"), placeholder: l10n.t("Enter a type name"), label: "Use type name" }
         : picker.input?.input?.kind === "declarationPath"
         ? { title: l10n.t("Change declaration target"), placeholder: l10n.t("Enter a declaration name or member path"), label: "Use declaration target" }
+        : ["stringEscapes", "interpolationEscapes"].includes(picker.input?.input?.kind ?? "")
+        ? { title: l10n.t("Edit string escapes"), placeholder: l10n.t("Enter string content with escapes"), label: "Use string content" }
         : { title: l10n.t("Rename type member"), placeholder: l10n.t("Enter member name"), label: "Use member name" };
     const title = picker.input ? inputUi.title : picker.structure ? l10n.t("Edit structure") : picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
         ? l10n.t("Choose an element template") : l10n.t("Choose a statement template");
-    const choices = picker.input ? validStructureInput(picker.input.input!, query.trim())
-        ? [{ id: `${picker.input.id}:${query.trim()}`, label: inputUi.label, text: query.trim() }] : []
+    const inputValue = ["stringEscapes", "interpolationEscapes"].includes(picker.input?.input?.kind ?? "") ? query : query.trim();
+    const choices = picker.input ? validStructureInput(picker.input.input!, inputValue)
+        ? [{ id: `${picker.input.id}:${inputValue}`, label: inputUi.label, text: inputValue }] : []
         : picker.expression && validExpressionReference(picker.expression, query.trim()) && !picker.choices.some(c => c.id === `reference:${query.trim()}`)
         ? [...picker.choices, { id: `reference:${query.trim()}`, label: query.trim(), text: query.trim() }] : picker.choices;
     const words = query.toLocaleLowerCase().trim().split(/\s+/);

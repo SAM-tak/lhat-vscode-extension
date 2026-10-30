@@ -480,5 +480,9 @@
     "Enter a declaration name or member path": "Enter a declaration name or member path",
     "Use declaration target": "Use declaration target",
     "Allow an existing member": "Allow an existing member",
-    "Require a new member": "Require a new member"
+    "Require a new member": "Require a new member",
+    "Edit string escapes": "Edit string escapes",
+    "Enter string content with escapes": "Enter string content with escapes",
+    "Use string content": "Use string content",
+    "Use a rest-of-line string": "Use a rest-of-line string"
 }

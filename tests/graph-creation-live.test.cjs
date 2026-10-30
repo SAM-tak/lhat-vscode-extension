@@ -12,6 +12,61 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('string escape editing creates binary bytes, preserves surrounding spaces and permits an empty value', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structures = load('graphStructure.ts');
+    for (const original of ['"text"', "'text'", String.raw`"\xFF"`]) {
+        let tree = await parse(`let^value=${original}`);
+        for (const body of [String.raw`\x80\x00`, '  text  ', '', String.raw`\u{1f600}\xFF`]) {
+            const value = tree.root.fields.items[0].fields.values[0];
+            const change = structures.editStructure(tree, value, `string:escapes:${body}`); assert(change, body);
+            tree = await parse(apply(tree.source, change));
+            assert.equal(tree.source, `let^value="${body}"`);
+            assert.equal(tree.root.fields.items[0].fields.values[0].kind, 'string');
+            assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+        }
+        assert.equal(structures.editStructure(tree, tree.root.fields.items[0].fields.values[0], 'string:escapes:";print(1)#'), undefined);
+    }
+    const continued = await parse('let^value="\\xFF\\\nmore"');
+    const input = structures.structureTemplates(continued, continued.root.fields.items[0].fields.values[0]).find(c => c.id === 'string:escapes').input;
+    assert.equal(input.value, String.raw`\xFFmore`);
+}));
+
+test('interpolation text escapes create binary fragments without adding holes or trimming their contents', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structures = load('graphStructure.ts');
+    let tree = await parse('let^value=$"text{0}"');
+    for (const text of [String.raw`\xFF{{literal}}\u{1f600}`, '  keep  ', '']) {
+        const fragment = tree.root.fields.items[0].fields.values[0].fields.items[0];
+        const change = structures.editStructure(tree, fragment, `text:escapes:${text}`); assert(change);
+        tree = await parse(apply(tree.source, change));
+        assert.equal(tree.source, `let^value=$"${text}{0}"`);
+        assert.equal(flat(tree.root).filter(n => n.kind === 'interp-hole').length, 1);
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    }
+    tree = await parse('let^value=$"text{0}"');
+    assert.equal(structures.editStructure(tree, tree.root.fields.items[0].fields.values[0].fields.items[0], 'text:escapes:{print(1)}'), undefined);
+}));
+
+test('rest-of-line strings preserve values and CRLF without consuming comments, siblings or closing syntax', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structures = load('graphStructure.ts'), { literalOf } = load('webview/literals.ts');
+    const { graphTreeForDocument, normalizedGraphSource } = load('graphSource.ts');
+    const document = async source => graphTreeForDocument(await parse(normalizedGraphSource(source)), source);
+    for (const source of ['let^value="text"', 'let^value="text"  \r\nlet^other=0', String.raw`let^value="a\"b\\c"`]) {
+        let tree = await document(source), value = tree.root.fields.items[0].fields.values[0];
+        const decoded = literalOf(value, source).value, change = structures.editStructure(tree, value, 'string:line'); assert(change, source);
+        tree = await document(apply(source, change));
+        value = tree.root.fields.items[0].fields.values[0];
+        assert.equal(literalOf(value, tree.source).value, decoded);
+        assert(tree.source.includes('"""'));
+        if (source.includes('\r\n')) assert(tree.source.includes('\r\nlet^other=0'));
+        const quoted = structures.editStructure(tree, value, 'string:quoted'); assert(quoted);
+        assert(!flat((await document(apply(tree.source, quoted))).root).some(n => n.kind === 'error'));
+    }
+    for (const source of ['let^value="text" # keep', 'let^value={"text",0}', 'let^value=f^{"text"}', String.raw`let^value="a\nb"`]) {
+        const tree = await parse(source), value = flat(tree.root).find(n => n.kind === 'string'); assert(value);
+        assert.equal(structures.editStructure(tree, value, 'string:line'), undefined, source);
+    }
+}));
+
 test('interpolation parts delete independently, merge adjacent text and remain addable when empty', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const deletion = load('graphDelete.ts'), interpolation = load('graphInterpolation.ts');
     let tree = await parse('let^s=$"one{(1+2):%04d}two{x}three"');

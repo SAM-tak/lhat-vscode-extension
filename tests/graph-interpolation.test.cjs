@@ -15,6 +15,13 @@ const api = load('graphInterpolation.ts'), { toElk } = load('webview/map.ts');
 const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
 const apply = (source, edit) => source.slice(0, edit.start) + edit.text + source.slice(edit.end);
 
+test('escaped interpolation text permits binary bytes and Unicode escapes but keeps hole braces paired', () => {
+    for (const text of ['', '  text  ', '{{literal}}', String.raw`\xFF\u{1f600}{{x}}`, String.raw`\"\\{{`])
+        assert(api.isEscapedInterpolationText(text), text);
+    for (const text of ['{value}', 'single}', '{', '}', String.raw`\q`, String.raw`\u{d800}`, String.raw`\\u{1f600}`, '";print(1)#'])
+        assert(!api.isEscapedInterpolationText(text), text);
+});
+
 test('nested operand wires originate on visible output rows, including inside interpolation', () => {
     const reply = nestedInterpolation();
     for (const root of [reply.root, reply.root.fields.items[0].fields.value]) {

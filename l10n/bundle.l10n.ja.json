@@ -480,5 +480,9 @@
     "Enter a declaration name or member path": "宣言する名前またはメンバーへのパスを入力",
     "Use declaration target": "この宣言先を使う",
     "Allow an existing member": "既存メンバーへの代入も許可",
-    "Require a new member": "新しいメンバーを導入"
+    "Require a new member": "新しいメンバーを導入",
+    "Edit string escapes": "文字列のエスケープ表記を編集",
+    "Enter string content with escapes": "エスケープ表記で文字列の内容を入力",
+    "Use string content": "この文字列を使う",
+    "Use a rest-of-line string": "行末までの文字列に変更"
 }

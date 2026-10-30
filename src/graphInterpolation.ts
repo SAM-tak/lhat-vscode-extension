@@ -1,6 +1,6 @@
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
-import { literalOf } from "./webview/literals";
+import { literalOf, isEscapedStringContent } from "./webview/literals";
 
 export interface InterpolationSite extends SourceSpan {
     field: "text" | "format" | "expression" | "append";
@@ -17,6 +17,18 @@ export const interpolationParts = (node: AstNode): AstNode[] => {
 export function interpolationText(text: string): string | undefined {
     const quoted = `"${text.replace(/\{\{/g, "{").replace(/\}\}/g, "}")}"`;
     return literalOf({ kind: "string", start: 0, end: quoted.length, line: 1, column: 1 }, quoted)?.value;
+}
+
+/** Text fragments escape braces in pairs; Unicode escape braces are not holes. */
+export function isEscapedInterpolationText(text: string): boolean {
+    for (let i = 0; i < text.length;) {
+        if (text[i] === "\\") { i += /^\\u\{[0-9a-fA-F]+\}/.exec(text.slice(i))?.[0].length ?? 2; continue; }
+        if (text[i] === "{" || text[i] === "}") {
+            if (text[i + 1] !== text[i]) return false;
+            i += 2;
+        } else i++;
+    }
+    return isEscapedStringContent(text.replace(/\{\{/g, "{").replace(/\}\}/g, "}"));
 }
 
 export function interpolationFields(node: AstNode, source: string): InterpolationField[] {

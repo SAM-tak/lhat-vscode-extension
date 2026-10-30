@@ -5,12 +5,13 @@ import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
 import type { StatementTemplate } from "./graphStatements";
 import { syntaxTokens, templateMarker, resultTypes } from "./graphSyntax";
-import { literalOf, quoteString, isNumberLiteral } from "./webview/literals";
+import { literalOf, quoteString, isNumberLiteral, isEscapedStringContent, stringEscapeInput } from "./webview/literals";
 import { assignmentOperator, ASSIGNMENT_LABELS } from "./graphAssignments";
 import { typeSites, freshMarker, isTypeNode } from "./graphTypes";
 import { iteratorNames, freshFocus, forExpression } from "./graphLoops";
 import { handlerActions, validCatchFilter } from "./graphHandlers";
 import { validName, validMemberName, nameSegments, quoteName, nameValue, sourceNames, sameName } from "./graphNames";
+import { isEscapedInterpolationText } from "./graphInterpolation";
 
 export function validTypeReference(text: string): boolean {
     const path = nameSegments(text);
@@ -19,6 +20,8 @@ export function validTypeReference(text: string): boolean {
 }
 
 export function validStructureInput(input: NonNullable<StatementTemplate["input"]>, value: string): boolean {
+    if (input.kind === "interpolationEscapes") return isEscapedInterpolationText(value);
+    if (input.kind === "stringEscapes") return isEscapedStringContent(value);
     if (input.kind === "declarationPath") {
         if (value === "_^") return true;
         const scope = /^\$(?:\^+|\$*)/.exec(value)?.[0];
@@ -60,7 +63,7 @@ export function structureSites(tree: AstReply): StructureSite[] {
     const sites: StructureSite[] = [];
     const visit = (node: AstNode, parent?: AstNode) => {
         if (node.kind === "disabled") return;
-        if ((["block", "if-clause"].includes(node.kind) && handlerActions(tree, node, parent).length) || node.kind.startsWith("type-") || ["with", "if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "break", "next", "yield", "param", "string", "scope", "box", "member", "index", "call", "compare-chain", "binary", "func"].includes(node.kind))
+        if ((["block", "if-clause"].includes(node.kind) && handlerActions(tree, node, parent).length) || node.kind.startsWith("type-") || ["with", "if-stmt", "if-expr", "repeat", "for", "define", "reassign", "enumdef", "errordef", "table-entry", "enum-member", "return", "break", "next", "yield", "param", "string", "interp-text", "scope", "box", "member", "index", "call", "compare-chain", "binary", "func"].includes(node.kind))
             sites.push({ start: node.start, end: node.end, kind: node.kind });
         Object.values(node.fields ?? {}).flat().forEach(child => visit(child, node));
     };
@@ -302,13 +305,28 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
             start: operator.start, end: operator.end, text: `${operator.nilChecked ? "" : "?"}${operator.base}` });
         return result;
     }
+    if (node.kind === "interp-text") {
+        const text = source.slice(node.start, node.end);
+        add("text:escapes", "Edit string escapes", { start: node.start, end: node.end, text });
+        result[result.length - 1].input = { kind: "interpolationEscapes", value: stringEscapeInput(text) };
+        return result;
+    }
     if (node.kind === "string") {
         const literal = literalOf(node, source);
-        if (!literal) return [];
+        const content = source[node.start] === '"' && !source.startsWith('"""', node.start)
+            ? source.slice(node.start + 1, node.end - 1) : literal && quoteString(literal.value).slice(1, -1);
+        if (content !== undefined && isEscapedStringContent(content)) {
+            add("string:escapes", "Edit string escapes", { start: node.start, end: node.end, text: source.slice(node.start, node.end) });
+            result[result.length - 1].input = { kind: "stringEscapes", value: stringEscapeInput(content), prefix: '"', suffix: '"' };
+        }
+        if (!literal) return result;
         if (source[node.start] !== '"' || source.startsWith('"""', node.start))
             add("string:quoted", "Use escaped string", { start: node.start, end: node.end, text: quoteString(literal.value) });
         if (source[node.start] !== "'" && !/[\x00-\x1f\x7f]/.test(literal.value))
             add("string:raw", "Use raw string", { start: node.start, end: node.end, text: quoteString(literal.value, true) });
+        const newline = source.indexOf("\n", node.end), lineEnd = newline < 0 ? source.length : newline - (source[newline - 1] === "\r" ? 1 : 0);
+        if (!source.startsWith('"""', node.start) && !/[\x00-\x1f\x7f]/.test(literal.value) && !source.slice(node.end, lineEnd).trim())
+            add("string:line", "Use a rest-of-line string", { start: node.start, end: lineEnd, text: '"""' + literal.value });
         return result;
     }
     if (node.kind === "param") {
@@ -601,5 +619,5 @@ export function editStructure(tree: AstReply, site: StructureSite, action: strin
     if (choice && !choice.input) return choice.edit;
     const input = choices.find(choice => choice.input && action.startsWith(`${choice.id}:`));
     const name = input && action.slice(input.id.length + 1);
-    return input && name && validStructureInput(input.input!, name) ? { ...input.edit, text: `${input.input!.prefix ?? ""}${name}${input.input!.suffix ?? ""}` } : undefined;
+    return input && name !== undefined && validStructureInput(input.input!, name) ? { ...input.edit, text: `${input.input!.prefix ?? ""}${name}${input.input!.suffix ?? ""}` } : undefined;
 }

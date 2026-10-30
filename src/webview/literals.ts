@@ -36,10 +36,10 @@ const numberPattern = new RegExp(`^[+-]?(?:0[xX][0-9a-fA-F](?:[0-9a-fA-F_]*[0-9a
 export const isNumberLiteral = (value: string): boolean => numberPattern.test(value);
 
 /** Read only whole string literals, never interpolation fragments or id^ names. */
-function stringValue(source: string): string | undefined {
+function stringValue(source: string, allowBinary = false): string | undefined {
     const text = source.replace(/\r\n?/g, "\n");
-    if (text.startsWith('"""')) return text.slice(3);
-    if (/^'(?:[^']|'')*'$/.test(text)) return text.slice(1, -1).replace(/''/g, "'");
+    if (!allowBinary && text.startsWith('"""')) return text.slice(3);
+    if (!allowBinary && /^'(?:[^']|'')*'$/.test(text)) return text.slice(1, -1).replace(/''/g, "'");
     if (!text.startsWith('"') || !text.endsWith('"')) return undefined;
     const body = text.slice(1, -1);
     const encoder = new TextEncoder();
@@ -73,8 +73,19 @@ function stringValue(source: string): string | undefined {
     // Arbitrary binary strings cannot be represented losslessly in a textbox.
     // Leave those as source labels instead of silently replacing bad bytes.
     try { return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(new Uint8Array(bytes)); }
-    catch { return undefined; }
+    catch { return allowBinary ? body : undefined; }
 }
+
+/** Validate a quoted string's contents without requiring its bytes to be UTF-8. */
+export const isEscapedStringContent = (value: string): boolean =>
+    !value.includes("\0") && stringValue('"' + value + '"', true) !== undefined;
+
+/** Keep existing escapes while making a source fragment fit a single-line editor. */
+export const stringEscapeInput = (text: string): string => text.replace(/\r\n?/g, "\n")
+    .replace(/\\(?:\n|[^\n])|[\x00-\x1f\x7f]/g, token => {
+        if (token.length > 1) return token === "\\\n" ? "" : token;
+        return ({ "\n": "\\n", "\t": "\\t", "\0": "\\0" }[token] ?? `\\x${token.charCodeAt(0).toString(16).padStart(2, "0")}`);
+    });
 
 export function literalOf(node: AstNode, source: string): LiteralValue | undefined {
     const text = source.slice(node.start, node.end);

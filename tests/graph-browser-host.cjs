@@ -171,7 +171,9 @@ async function graphUi(host, { evaluate, until, call }) {
             await evaluate(`document.querySelector('.statement-menu [data-template-index="${choices.indexOf(input)}"]').click()`);
             await until(`document.querySelector('.statement-menu [data-name-input]')`);
             await evaluate(`document.querySelector('.statement-menu [data-name-input]').select()`);
-            await call('Input.insertText', { text: id.slice(input.id.length + 1) });
+            const value = id.slice(input.id.length + 1);
+            if (value) await call('Input.insertText', { text: value });
+            else await call('Input.dispatchKeyEvent', { type:'keyDown', key:'Backspace', code:'Backspace', windowsVirtualKeyCode:8 });
             await until(`document.querySelector('.statement-menu [role=option]')`);
             await evaluate(`document.querySelector('.statement-menu [role=option]').click()`);
         } else if (!choices.some(c => c.id === id) && id.startsWith('reference:')) {

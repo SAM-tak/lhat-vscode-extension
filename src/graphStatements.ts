@@ -12,7 +12,7 @@ export interface StatementInsertion extends SourceSpan {
     /** Absent means append to this statement list. */
     before?: number;
 }
-export interface StatementTemplate { id: string; label: string; text: string; input?: { value: string; kind?: "count" | "typeName" | "catchType" | "declarationPath"; prefix?: string; suffix?: string } }
+export interface StatementTemplate { id: string; label: string; text: string; input?: { value: string; kind?: "count" | "typeName" | "catchType" | "declarationPath" | "stringEscapes" | "interpolationEscapes"; prefix?: string; suffix?: string } }
 export const STATEMENT_TEMPLATE_LABELS = {
     let: "Variable Definition", var: "Mutable Variable Definition",
     function: "Function definition", procedure: "Procedure definition",

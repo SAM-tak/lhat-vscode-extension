@@ -1418,8 +1418,50 @@ test('a wide top-level definition keeps its annotation sidebar inside the viewpo
 });
 
 
+test('string escape menus create and edit binary bytes and preserve whitespace and empty input through live source changes', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse(String.raw`let^value="\xFF"`));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), binding = () => host.tree.root.fields.items[0], value = () => binding().fields.values[0];
+            await ui.add('let');
+            await ui.expression(value(), 'string');
+            await ui.input('.literal-input', 'raw "quotes" \\ path');
+            await ui.structure(value(), 'string:line');
+            assert(host.tree.source.slice(value().start, value().end).startsWith('"""'));
+            assert.equal(await client.evaluate(`document.querySelector('.literal-input').value`), 'raw "quotes" \\ path');
+            await ui.structure(value(), 'string:quoted');
+            await ui.structure(value(), String.raw`string:escapes:\xFF`);
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert(await client.evaluate(`document.querySelector('.box[data-source-start="${value().start}"][data-source-end="${value().end}"]').textContent.includes(${JSON.stringify(String.raw`\xFF`)})`));
+            await ui.structure(value(), String.raw`string:escapes:\x80\x00`);
+            assert.equal(host.tree.source.slice(value().start, value().end), String.raw`"\x80\x00"`);
+            await ui.remove(binding());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            await ui.add('let');
+            await ui.expression(value(), 'string');
+            await ui.structure(value(), 'string:escapes:  keep  ');
+            assert.equal(await client.evaluate(`document.querySelector('.literal-input').value`), '  keep  ');
+            await ui.structure(value(), 'string:escapes:');
+            assert.equal(await client.evaluate(`document.querySelector('.literal-input').value`), '');
+            await ui.expression(value(), 'interpolation');
+            const parts = () => value().fields.items;
+            await ui.structure(parts()[0], String.raw`text:escapes:\xFF{{literal}}`);
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse(String.raw`let^value=$"\xFF{{literal}}{0}"`)));
+            await ui.structure(parts()[0], 'text:escapes:  text  ');
+            assert.equal(await client.evaluate(`document.querySelector('.interpolation-field.text textarea').value`), '  text  ');
+            await ui.structure(parts()[0], 'text:escapes:');
+            assert.equal(parts()[0].kind, 'interp-hole');
+            await ui.remove(binding());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('literal, name and interpolation contents survive normal, folded and drilled SVG views', { timeout: 90000 }, async () => {
-    const source = 'let^large=1234567890123456789\nlet^fraction=2.5e-3\nlet^text="日本語 & <quote>"\nlet^tag=id^`a.b`\nlet^outer=$large\nlet^value=large\nlet^formatted=$"prefix{large:%04d}suffix"';
+    const source = 'let^large=1234567890123456789\nlet^fraction=2.5e-3\nlet^text="日本語 & <quote>"\nlet^tag=id^`a.b`\nlet^outer=$large\nlet^value=large\nlet^formatted=$"prefix{1234567890123456789:%04d}middle{2.5e-3}suffix{"drilled text"}bytes{"\\xFF"}\\xFE"';
     await require('./lhat-server.cjs').withLhatServer(async parse => {
         const tree = await parse(source), interpolation = tree.root.fields.items.at(-1).fields.values[0];
         await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
@@ -1435,6 +1477,8 @@ test('literal, name and interpolation contents survive normal, folded and drille
             const normal = await capture();
             for (const text of ['1234567890123456789','2.5e-3','日本語 & <quote>','prefix','suffix','%04d']) assert(normal.includes(text), text + ': ' + normal.join('|'));
             assert(normal.some(text => text.includes('a.b')));
+            assert(normal.some(text => text.includes(String.raw`\xFF`)));
+            assert(normal.some(text => text.includes(String.raw`\xFE`)));
             assert(normal.join('').includes('$large'), normal.join('|'));
             await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Fold All').click()`);
             const folded = await capture();
@@ -1450,8 +1494,10 @@ test('literal, name and interpolation contents survive normal, folded and drille
             for (const type of ['mousePressed','mouseReleased']) await call('Input.dispatchMouseEvent', { type, ...point, button:'left', clickCount:1 });
             await until(`document.querySelector('#trail') && ${ready}`);
             const drilled = await capture();
-            for (const text of ['prefix','suffix','%04d']) assert(drilled.includes(text), text + ': ' + drilled.join('|'));
-            assert(!drilled.includes('1234567890123456789'));
+            for (const text of ['prefix','middle','suffix','%04d','1234567890123456789','2.5e-3','drilled text']) assert(drilled.includes(text), text + ': ' + drilled.join('|'));
+            assert(drilled.some(text => text.includes(String.raw`\xFF`)));
+            assert(drilled.some(text => text.includes(String.raw`\xFE`)));
+            assert(!drilled.includes('日本語 & <quote>'));
             assert.equal(await evaluate('window.edits.length'), 0);
             assert.deepEqual(client.errors, []);
         });

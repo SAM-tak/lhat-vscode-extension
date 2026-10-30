@@ -10,7 +10,7 @@ function load(file) {
     mod._compile(buildSync({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, entry);
     return mod.exports;
 }
-const { literalOf, isNumberLiteral, quoteString } = load('literals.ts');
+const { literalOf, isNumberLiteral, quoteString, isEscapedStringContent, stringEscapeInput } = load('literals.ts');
 const { toElk } = load('map.ts');
 const node = (kind, text, start = 0, fields) => ({ kind, start, end: start + text.length, line: 1, column: 1, fields });
 const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
@@ -57,6 +57,16 @@ test('string slots show complete decoded content, including whitespace, raw stri
         ['"' + 'long '.repeat(40) + '"', 'long '.repeat(40)],
     ];
     for (const [source, value] of cases) assert.equal(literalOf(node('string', source), source)?.value, value, source);
+});
+
+test('escaped string contents validate binary bytes without admitting quote termination or invalid escapes', () => {
+    for (const text of ['', '  spaces  ', String.raw`\xFF\x00`, String.raw`\u{10ffff}`, String.raw`\"\\`, String.raw`\xC0\x80`])
+        assert(isEscapedStringContent(text), text);
+    for (const text of ['"', '""', '";print(1)#', 'a"b', '\0', String.raw`\xF`, String.raw`\xGG`, String.raw`\u{d800}`, String.raw`\u{110000}`, String.raw`\q`, '\\'])
+        assert(!isEscapedStringContent(text), JSON.stringify(text));
+    assert.equal(stringEscapeInput('a\n\tb\0'), String.raw`a\n\tb\0`);
+    assert.equal(stringEscapeInput('a\\\r\nb\\xFF'), String.raw`ab\xFF`);
+    assert.equal(stringEscapeInput('a\\\\\nb\\xFF'), String.raw`a\\\nb\xFF`);
 });
 
 test('nonliteral expressions, interpolations, names and undecodable binary strings stay labels', () => {
