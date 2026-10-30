@@ -10,9 +10,20 @@ import { iteratorNames, forExpression, freshFocus } from "./graphLoops";
 import { validName, validMemberName, validNamePath, nameSegments } from "./graphNames";
 
 export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean; errorName?: boolean; delegateName?: boolean;
-    owner?: SourceSpan; callArguments?: string[]; spreadAllowed?: boolean; suspensionAllowed?: boolean; operand?: SourceSpan }
+    owner?: SourceSpan; callArguments?: string[]; spreadAllowed?: boolean; suspensionAllowed?: boolean;
+    statementExpression?: boolean; statementOperand?: boolean; operand?: SourceSpan }
 const kinds = new Set(["int", "float", "string", "bool", "nil", "ident", "hat-ident", "hole",
     "compare-chain", "import", "typeof", "type", "box", "spread", "scope", "name", "binary", "unary", "as", "call", "member", "index", "tuple", "table", "def", "self-table", "func", "interp", "if-expr", "try", "pack", "error-new", "require", "yield", "await"]);
+
+/** The language admits calls, delegation and field writes as standalone expressions. */
+function canStandAlone(node: AstNode, source: string): boolean {
+    if (["call", "await", "self-table"].includes(node.kind)) return true;
+    const one = (field: string) => { const value = node.fields?.[field]; return Array.isArray(value) ? value[0] : value; };
+    const value = one("value"), left = one("left"), right = one("right");
+    return node.kind === "try" && !!value && canStandAlone(value, source) ||
+        node.kind === "binary" && !!left && !!right &&
+        syntaxTokens(source, left.end, right.start).some(token => ["??", "catch^"].includes(token.text)) && canStandAlone(left, source);
+}
 
 /** Declaration names, type syntax and member keys are not replaceable value expressions. */
 export function expressionSites(tree: AstReply): ExpressionSite[] {
@@ -24,7 +35,8 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
         if (procedure) suspension.add(node);
         iteratorNames(node, tree.source).forEach(name => names.add(name));
         for (const [field, value] of Object.entries(node.fields ?? {})) for (const child of Array.isArray(value) ? value : [value]) {
-            if (node.kind === "block" && field === "items" || node.kind === "loop-clause" && field === "body" || node.kind === "call-stmt") statements.add(child);
+            if (node.kind === "block" && field === "items" || node.kind === "loop-clause" && field === "body" || node.kind === "call-stmt" ||
+                statements.has(node) && (node.kind === "try" && field === "value" || node.kind === "binary" && field === "left" && canStandAlone(node, tree.source))) statements.add(child);
             collectNames(child, node.kind === "func" ? field === "body" && tree.source.startsWith("p^", node.start) : procedure);
         }
     };
@@ -41,12 +53,14 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
         if (pattern && !pattern.includes(node)) { pattern.flatMap(patternExpressions).forEach(child => visit(child)); return; }
         if (["disabled", "module", "annotation", "import-stmt", "require-stmt"].includes(node.kind) || node.kind.startsWith("type-")) return;
         if (value && (kinds.has(node.kind) || forExpression(node, tree.source)) && node.start < node.end &&
-            !(["yield", "await"].includes(node.kind) && statements.has(node))) {
+            !(node.kind === "yield" && statements.has(node))) {
             const info = callInfo({ kind: "call", start: node.start, end: node.end, line: node.line, column: node.column, fields: { target: node } });
             const inner = ["typeof", "box", "spread", "try", "pack", "unary", "yield", "await"].includes(node.kind) && (node.fields?.operand ?? node.fields?.value);
             const operand = Array.isArray(inner) ? inner.length === 1 ? inner[0] : undefined : inner;
             sites.push({ kind: node.kind, start: node.start, end: node.end,
                 ...(suspension.has(node) ? { suspensionAllowed: true } : {}),
+                ...(statements.has(node) ? { statementExpression: true,
+                    statementOperand: !!operand && canStandAlone(operand, tree.source) } : {}),
                 ...(operand && !Array.isArray(operand) ? { operand: { start: operand.start, end: operand.end } } : {}),
                 ...(spreadAllowed && node.kind !== "spread" ? { spreadAllowed: true } : {}),
                 ...(info ? { callArguments: info.inputs.map(input => input.default ?? (input.type === "number^" ? "0" : input.type === "string^" ? '\"\"' : input.type === "bool^" ? "false^" : "nil^")) } : {}),
@@ -96,7 +110,7 @@ export function validReference(text: string): boolean {
         : validName(head) || /^(?:(?:self|it|this|def)\^+|(?:super|L|t)\^)$/.test(head);
     return root && tail.every(validMember);
 }
-export const validExpressionReference = (site: ExpressionSite, text: string) => site.delegateName
+export const validExpressionReference = (site: ExpressionSite, text: string) => site.statementExpression ? false : site.delegateName
     ? (text.startsWith("self^.") ? validName(text.slice(6)) : validName(text))
     : site.errorName ? validNamePath(text) : (site.memberKey ? validMember : validReference)(text);
 
@@ -178,7 +192,7 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
     ];
     if (currentSite.suspensionAllowed) choices.push(["yield", "Yield statement", `(yield^(${current}))`], ["await", "Await statement", `await^(${current})`]);
     if (currentSite.spreadAllowed) choices.push(["spread", "Expand trailing argument", `(${current})...`]);
-    if (currentSite.operand) {
+    if (currentSite.operand && (!currentSite.statementExpression || currentSite.statementOperand)) {
         const operand = replacementSpan(tree, currentSite.operand);
         if (operand) choices.push(["unwrap", "Use the inner value", `(${tree.source.slice(operand.start, operand.end)})`]);
     }
@@ -186,7 +200,7 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         const name = current.replace(/^\$(?:\^+|\$*)/, "");
         choices.push(["scope:file", "Reference the unit scope", `$${name}`], ["scope:outer", "Reference the enclosing scope", `$^${name}`]);
     }
-    const references = new Set<string>(currentSite.errorName ? ["Problem.Failure"] : currentSite.delegateName ? ["value", "self^.value"] : currentSite.memberKey ? ["value", "0"] : ["self^", "it^", "this^", "super^", "def^", "L^"]);
+    const references = new Set<string>(currentSite.statementExpression ? [] : currentSite.errorName ? ["Problem.Failure"] : currentSite.delegateName ? ["value", "self^.value"] : currentSite.memberKey ? ["value", "0"] : ["self^", "it^", "this^", "super^", "def^", "L^"]);
     const names = (node: AstNode) => {
         if (["ident", "hat-ident", "member", "scope"].includes(node.kind)) {
             const name = tree.source.slice(node.start, node.end);
@@ -195,7 +209,9 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         for (const child of Object.values(node.fields ?? {}).flat()) names(child);
     };
     names(tree.root);
-    return [...choices.filter(([id]) => !currentSite.errorName && !currentSite.delegateName && !currentSite.memberKey && (!currentSite.assignmentTarget || ["index", "member"].includes(id))).map(([id, label, text]) => ({ id, label, text })),
+    return [...choices.filter(([id]) => !currentSite.errorName && !currentSite.delegateName && !currentSite.memberKey &&
+        (!currentSite.statementExpression || ["call", "selfTable", "try", "fallback", "await", "unwrap"].includes(id)) &&
+        (!currentSite.assignmentTarget || ["index", "member"].includes(id))).map(([id, label, text]) => ({ id, label, text })),
         ...[...references].sort().map(name => ({ id: `reference:${name}`, label: name, text: name }))];
 }
 

@@ -1648,7 +1648,17 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             const child = field("value");
             if (child) {
                 const built = build(child, voice, unfold, avail);
-                if (node.kind === "call-stmt") Object.assign(built.lhat!, from(node));
+                if (node.kind === "call-stmt") {
+                    Object.assign(built.lhat!, from(node));
+                    if (built.lhat!.layoutOnly) {
+                        const primary = built.lhat!.executionNode;
+                        const attach = (box: ElkNode): void => {
+                            if (box.id === primary && box.lhat) box.lhat.elementOwner = { start: node.start, end: node.end };
+                            else box.children?.forEach(attach);
+                        };
+                        attach(built);
+                    }
+                }
                 return built;
             }
         }

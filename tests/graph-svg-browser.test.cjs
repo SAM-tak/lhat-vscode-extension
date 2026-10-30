@@ -2617,6 +2617,36 @@ test('deleting a parallel value removes its binding and keeps the remaining grap
     });
 });
 
+test('standalone call menus preserve statement shape through handlers and keep target and argument editors', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, load } = require('./graph-browser-host.cjs');
+    const expressions = load('graphExpressions.ts');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), value = () => host.tree.root.fields.items[0].fields.value;
+            await ui.add('call');
+            await ui.expression(value().fields.target, 'reference:work');
+            await ui.expression(value(), 'try');
+            await ui.expression(value(), 'fallback');
+            const call = () => value().fields.left.fields.value;
+            const site = expressions.expressionSites(host.tree).find(s => s.kind === 'call' && s.start === call().start);
+            assert(site.statementExpression);
+            await client.evaluate(`document.querySelector('.expression-edit[data-expression-start="${call().start}"][data-expression-end="${call().end}"]').click()`);
+            await client.until(`document.querySelector('.statement-menu [role=option]')`);
+            assert(!await client.evaluate(`[...document.querySelectorAll('.statement-menu [role=option]')].some(e=>e.textContent.includes('数値')||e.textContent.includes('Number'))`));
+            await client.call('Input.dispatchKeyEvent', { type:'keyDown', key:'Escape', code:'Escape', windowsVirtualKeyCode:27 });
+            await ui.expression(call().fields.args?.[0] ?? call().fields.argument[0], 'number');
+            assert.equal(host.tree.root.fields.items[0].kind, 'call-stmt');
+            assert.equal(value().kind, 'binary');
+            assert(!JSON.stringify(host.tree.root).includes('"kind":"error"'), host.tree.source);
+            assert.equal(await client.evaluate(`document.querySelectorAll('.element-delete[data-delete-start="0"][data-delete-end="${host.tree.root.fields.items[0].end}"]').length`), 1);
+            await ui.remove(host.tree.root.fields.items[0]);
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('yield and await result expressions and phantom payload lists edit through live procedure controls', { timeout: 90000 }, async () => {
     const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {

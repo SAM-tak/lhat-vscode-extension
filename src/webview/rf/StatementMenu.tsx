@@ -249,7 +249,7 @@ export function ExpressionButton({ start, end }: { start?: number; end?: number 
 
 export function DeleteButton({ start, end, declaration, owner }: { start?: number; end?: number; declaration?: StatementSite; owner?: SourceSpan }) {
     const actions = useStatementActions();
-    const site = (owner && actions.deletions.find(site => site.category === "element" && site.start === owner.start && site.end === owner.end))
+    const site = (owner && actions.deletions.find(site => site.start === owner.start && site.end === owner.end))
         ?? actions.deletions.find(site => site.start === start && site.end === end)
         ?? (declaration && actions.deletions.find(site => site.category === "statement" && site.start === declaration.start && site.end === declaration.end));
     if (!site) return null;

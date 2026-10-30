@@ -90,7 +90,8 @@ function reconstruction(ui, host, client, blueprint, progress = () => {}) {
             await expression(() => one(get(), 'argument'), one(model, 'argument')); return;
         }
         if (model.kind === 'call') {
-            await expression(get, one(model, 'target')); await ui.expression(get(), 'call');
+            if (get().kind === 'call') await expression(() => one(get(), 'target'), one(model, 'target'));
+            else { await expression(get, one(model, 'target')); await ui.expression(get(), 'call'); }
             const args = array(model, 'argument');
             while (array(get(), 'argument').length > args.length) await ui.remove(array(get(), 'argument').at(-1));
             while (array(get(), 'argument').length < args.length) await ui.addElement('default', get(), 'argument');

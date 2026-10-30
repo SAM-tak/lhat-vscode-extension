@@ -68,6 +68,7 @@ node --test --test-name-pattern="language AST cases render" tests/graph-svg-brow
 位置要素・索引型・self節を含む型のPNGでは、引数が「テーブル型」と表示されることを確認した。この短縮は `06-visual-editor.md` の3.3節の表示方針に従う。完全な型をツールチップとメニューに保持することを含め、各型要素の表示内容を引き続き照合する。
 型のself節内の位置要素・個数と無制限の指定・索引型は、`typed instance sections`の実サーバーテストと`typed instance positions`のブラウザーテストで、空の文書からの作成・変更・削除と再表示を確認する。値を持つselfテーブルの追加候補は型の候補とは分け、索引型の重複と入れ子のself節は提示しない。
 `procedure`はyield/awaitの文と結果を受け取る式、phantom yieldを含む。展開したSVGの全体画像も目視し、値の入力欄・結果の束縛・見出しを確認した。`yield and await result expressions`のブラウザーテストは空の文書からの作成、phantomへの変更、値リストの追加・削除、内側の値への置き換え、再表示と文の削除を検証する。通常の関数と手続きの既定引数には中断する式の候補を出さない。
+`standalone expression menus`の実サーバーテストは、呼び出し文・try・フォールバック・self書き込み・awaitで提示する全候補を再解析し、文として成立することを確認する。tryやフォールバックの左側にも制約を引き継ぎ、関数の暗黙の戻り値とは区別する。`standalone call menus`のブラウザーテストは呼び出し先と引数を編集してから文全体を削除する。不可視のレイアウト用ノードに文の範囲が付く場合も、表示行に削除ボタンを1個だけ設ける。
 `handlers` と `cleanup-transfer` のPNGで、通常経路とcatchの合流後にfinallyが表示されることを確認した。実サーバーのブロック・if・手続き・ループから作ったグラフについて、finallyを除くと後続文への経路がなくなることを `graph-execution.test.cjs` で検証する。ループのcatchは反復内で合流し、finallyはループの後に置く。
 途中離脱は通常の続行と混同しない破線で後処理への関係を示す。return・panic・break・next、多重のbreak/next、入れ子のfinallyと別の手続きへの境界を検証した。折りたたんだ内側の離脱はその箱から関係を示し、同じ箱に収まる接続は描かない。
 `cleanup transfer ports` のブラウザーテストは折りたたみ・ドリルダウン・再展開後のポートと破線、SVGの破線を確認する。`lhat-finally-transfer.png` と `lhat-finally-transfer-tail.png` を一時ディレクトリへ保存する。空のreturnの入力・後処理用ポートも確認し、表示操作でソースが変わらないことを検証する。
@@ -77,4 +78,5 @@ varの宣言先は名前・引用名・メンバーへのパス・明示的な�
 引用名のリネームは lhat 本体の `327e092` 以降のLSPを使う。引用された使用箇所と通常表記の宣言が別ファイルにある場合も、各ファイルの実際の綴りの範囲を編集対象にする。C側の定義参照・references・ホバー・シグネチャ・LTONのテストと、実サーバーによる別ファイルのWorkspaceEditを確認した。
 自動採番とスコープ内の型候補は、通常名と同じ内容の引用名を同一の名前として扱う。変数・メンバー・焦点・ループ変数の衝突回避と、型名の隠蔽を実サーバーで検証した。
 各種類の表示方針と、UI作成・内容変更・構造変更・削除の検証との対応を照合し、残る描画内容と構文の細部を確認する。
+[構文ごとの操作監査](visual-editor-operation-audit.md)に、69種類のASTとUIで扱う編集単位、既存テストの対応をまとめた。
 `visual-editor-unimplemented.md` の最終確認欄は、この照合が完了するまで未完了のままにする。

@@ -41,7 +41,35 @@ test('yield and await expressions edit received results inside procedures and ph
         assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
     }
     const tree = await parse('let^run=p^{yield^0 await^nil^}');
-    assert(!expressions.expressionSites(tree).some(s => ['yield','await'].includes(s.kind)), 'standalone transfers retain their statement shape');
+    assert(!expressions.expressionSites(tree).some(s => s.kind === 'yield'), 'yield statements use their structural and payload controls');
+    const awaited = expressions.expressionSites(tree).find(s => s.kind === 'await');
+    assert(awaited.statementExpression);
+    assert(!expressions.expressionTemplates(tree, awaited).some(c => c.id === 'number' || c.id === 'unwrap'));
+}));
+
+test('standalone expression menus preserve statement grammar while value sites retain all value choices', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    for (const source of ['print(0)', 'try^print(0)', 'print(0) ?? 0', 'self^{value=0}', 'let^run=p^{await^nil^}', 'let^run=p^{await^print(0)}']) {
+        const tree = await parse(source), statement = flat(tree.root).find(n => n.kind === 'call-stmt'); assert(statement, source);
+        const value = statement.fields.value;
+        const site = expressions.expressionSites(tree).find(s => s.kind === value.kind && s.start === value.start && s.end === value.end);
+        assert(site?.statementExpression, source);
+        const choices = expressions.expressionTemplates(tree, site);
+        assert(choices.some(c => c.id === 'call'), source);
+        assert(!choices.some(c => ['number','nil','pack','reference:self^'].includes(c.id)), source);
+        assert.equal(expressions.replaceExpression(tree, { ...site, statementExpression:false }, 'reference:value'), undefined);
+        for (const choice of choices) {
+            const change = expressions.replaceExpression(tree, site, choice.id); assert(change, choice.id);
+            const updated = await parse(apply(source, change));
+            assert(!flat(updated.root).some(n => n.kind === 'error'), `${choice.id}: ${updated.source}`);
+        }
+    }
+    const handled = await parse('try^print(0) ?? 0');
+    const innerCall = expressions.expressionSites(handled).find(s => s.kind === 'call');
+    assert(innerCall.statementExpression, 'a statement handler still needs a call on its left');
+    assert.equal(expressions.replaceExpression(handled, innerCall, 'number'), undefined);
+    const tree = await parse('let^run=f^{print(0)}'), site = expressions.expressionSites(tree).find(s => s.kind === 'call');
+    assert(!site.statementExpression, 'an implicit function result is a value');
+    assert(expressions.expressionTemplates(tree, site).some(c => c.id === 'number'));
 }));
 
 test('mutable declarations edit member paths and introduction mode while immutable targets retain their grammar', { timeout: 30000 }, async () => withLhatServer(async parse => {
