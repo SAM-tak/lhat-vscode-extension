@@ -12,6 +12,32 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('interpolation parts delete independently, merge adjacent text and remain addable when empty', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const deletion = load('graphDelete.ts'), interpolation = load('graphInterpolation.ts');
+    let tree = await parse('let^s=$"one{(1+2):%04d}two{x}three"');
+    const value = () => tree.root.fields.items[0].fields.values[0];
+    const remove = async part => {
+        const site = deletion.deleteSites(tree).find(s => s.category === 'element' && s.start === part.start && s.end === part.end); assert(site);
+        tree = await parse(apply(tree.source, deletion.deleteFromGraph(tree, site)));
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    };
+    await remove(value().fields.items[1]);
+    assert.equal(tree.source, 'let^s=$"onetwo{x}three"');
+    await remove(value().fields.items[0]);
+    assert.equal(tree.source, 'let^s=$"{x}three"');
+    await remove(value().fields.items[0]);
+    await remove(value().fields.items[0]);
+    assert.equal(tree.source, 'let^s=$""');
+    const append = interpolation.interpolationFields(value(), tree.source).find(f => f.site.field === 'append');
+    tree = await parse(apply(tree.source, interpolation.editInterpolation(tree, append.site, 'expression')));
+    assert.equal(value().fields.items[0].kind, 'interp-hole');
+    assert.equal(deletion.deleteFromGraph(tree, { category:'element', start:value().start, end:value().end - 1 }), undefined);
+    tree = await parse('let^s=$"outer{$"inner{1}"}tail"');
+    const nested = flat(value()).findLast(n => n.kind === 'interp');
+    await remove(nested.fields.items[0]);
+    assert.equal(tree.source, 'let^s=$"outer{$"{1}"}tail"');
+}));
+
 test('yield and await expressions edit received results inside procedures and phantom yield keeps its complete marker', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structures = load('graphStructure.ts');
     for (const [source, allowed] of [

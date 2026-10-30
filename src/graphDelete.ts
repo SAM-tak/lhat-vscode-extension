@@ -7,6 +7,7 @@ import { assignmentOperator } from "./graphAssignments";
 import { syntaxTokens } from "./graphSyntax";
 import { annotationOwners } from "./graphAnnotations";
 import { structureTemplates, editStructure, type StructureSite } from "./graphStructure";
+import { interpolationParts } from "./graphInterpolation";
 
 export interface DeleteSite extends SourceSpan { category: "statement" | "element" }
 
@@ -88,10 +89,21 @@ function discardableBindings(tree: AstReply): AstNode[] {
         });
 }
 
+function interpolationElements(tree: AstReply): AstNode[] {
+    const result: AstNode[] = [];
+    const visit = (node: AstNode) => {
+        if (node.kind === "disabled") return;
+        if (node.kind === "interp") result.push(...interpolationParts(node).filter(part => ["interp-text", "interp-hole"].includes(part.kind)));
+        Object.values(node.fields ?? {}).flat().forEach(visit);
+    };
+    visit(tree.root); return result;
+}
+
 export function deleteSites(tree: AstReply): DeleteSite[] {
     return [...statementSites(tree).map(site => ({ start: site.start, end: site.end, category: "statement" as const })),
         ...[...removableLists(tree), ...bindingPairs(tree).flat()].flatMap(list => list.items.map(item => ({ start: item.start, end: item.end, category: "element" as const }))),
         ...structuralDeletions(tree).map(deletion => deletion.site),
+        ...interpolationElements(tree).map(part => ({ start: part.start, end: part.end, category: "element" as const })),
         ...discardableBindings(tree).map(target => ({ start: target.start, end: target.end, category: "element" as const }))];
 }
 
@@ -104,6 +116,8 @@ export function deleteFromGraph(tree: AstReply, site: DeleteSite): SourceEdit | 
         const end = next?.text === ";" ? next.end : site.end;
         return { start, end, text: end > site.end ? tree.source.slice(site.end, end - 1) : "" };
     }
+    if (interpolationElements(tree).some(part => part.start === site.start && part.end === site.end))
+        return { start: site.start, end: site.end, text: "" };
     const structural = structuralDeletions(tree).find(deletion => deletion.site.start === site.start && deletion.site.end === site.end);
     if (structural) return editStructure(tree, structural.owner, structural.action);
     const discarded = discardableBindings(tree).find(target => target.start === site.start && target.end === site.end);

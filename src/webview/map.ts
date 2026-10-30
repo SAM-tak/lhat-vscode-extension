@@ -1236,6 +1236,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 : build(expression, "expr", unfold, avail);
             memberHandles(value);
             const withFormat = (cell: ElkNode) => {
+                cell.lhat!.elementOwner = { start: part.start, end: part.end };
                 if (format) {
                     cell.lhat!.interpolationFormat = format;
                     cell.width = Math.max(cell.width ?? 0, px(120));

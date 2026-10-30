@@ -1418,6 +1418,81 @@ test('a wide top-level definition keeps its annotation sidebar inside the viewpo
 });
 
 
+test('literal, name and interpolation contents survive normal, folded and drilled SVG views', { timeout: 90000 }, async () => {
+    const source = 'let^large=1234567890123456789\nlet^fraction=2.5e-3\nlet^text="日本語 & <quote>"\nlet^tag=id^`a.b`\nlet^outer=$large\nlet^value=large\nlet^formatted=$"prefix{large:%04d}suffix"';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), interpolation = tree.root.fields.items.at(-1).fields.values[0];
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
+            const { evaluate, until, call } = client, ready = `document.querySelector('.svg-export>button') && !document.querySelector('.svg-export>button').disabled`;
+            const capture = async () => {
+                await until(ready); const count = await evaluate('window.exports.length');
+                await evaluate(`document.querySelector('.svg-export>button').click()`);
+                await until(`document.querySelector('.svg-export-menu>button')`);
+                await evaluate(`document.querySelector('.svg-export-menu>button').click()`);
+                await until(`window.exports.length===${count + 1}`);
+                return evaluate(`(()=>{const doc=new DOMParser().parseFromString(window.exports.at(-1).svg,'image/svg+xml');return [...doc.querySelectorAll('text')].map(t=>t.textContent)})()`);
+            };
+            const normal = await capture();
+            for (const text of ['1234567890123456789','2.5e-3','日本語 & <quote>','prefix','suffix','%04d']) assert(normal.includes(text), text + ': ' + normal.join('|'));
+            assert(normal.some(text => text.includes('a.b')));
+            assert(normal.join('').includes('$large'), normal.join('|'));
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Fold All').click()`);
+            const folded = await capture();
+            for (const text of ['1234567890123456789','2.5e-3','日本語 & <quote>']) assert(folded.includes(text), text);
+            assert(folded.join('').includes('$"…"'), folded.join('|'));
+            assert(folded.includes('formatted'));
+            const selector = `.box.folded[data-source-start="${interpolation.start}"][data-source-end="${interpolation.end}"]`;
+            await until(`document.querySelector(${JSON.stringify(selector)}) && ${ready}`);
+            const target = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.left,y:r.top}})()`);
+            await call('Input.dispatchMouseEvent', { type:'mouseWheel', x:500, y:350, deltaY:target.y - 160, deltaX:target.x < 0 || target.x > 900 ? target.x - 200 : 0 });
+            await evaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+            const point = await evaluate(`(()=>{const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.left+8,y:r.top+8}})()`);
+            for (const type of ['mousePressed','mouseReleased']) await call('Input.dispatchMouseEvent', { type, ...point, button:'left', clickCount:1 });
+            await until(`document.querySelector('#trail') && ${ready}`);
+            const drilled = await capture();
+            for (const text of ['prefix','suffix','%04d']) assert(drilled.includes(text), text + ': ' + drilled.join('|'));
+            assert(!drilled.includes('1234567890123456789'));
+            assert.equal(await evaluate('window.edits.length'), 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('interpolation text and formatted holes delete through live controls and empty interpolation remains editable', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('let^value=$"left{(0+0):%04d}"'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), binding = () => host.tree.root.fields.items[0];
+            const value = () => binding().fields.values[0], parts = () => value().fields?.items ?? [];
+            await ui.add('let');
+            await ui.expression(value(), 'interpolation');
+            await ui.input('.interpolation-field.text textarea', 'left');
+            await ui.expression(parts()[1].fields.value, 'add');
+            await ui.input('.interpolation-field.format textarea', '%04d');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.remove(parts()[1]);
+            assert.equal(parts().length, 1);
+            assert.equal(await client.evaluate(`document.querySelector('.interpolation-field.text textarea').value`), 'left');
+            await ui.remove(parts()[0]);
+            assert.equal(parts().length, 0);
+            assert.match(host.tree.source, /\$""/);
+            await ui.interpolationPart(value(), 'expression');
+            await ui.expression(parts()[0].fields.value, 'number');
+            await ui.input(`.box[data-source-start="${parts()[0].fields.value.start}"] .literal-input`, '2.5e-3');
+            assert.equal(parts()[0].fields.value.kind, 'float');
+            await ui.interpolationPart(value(), 'text');
+            await ui.input('.interpolation-field.text textarea', 'tail {literal}');
+            await ui.remove(parts()[0]);
+            assert.equal(await client.evaluate(`document.querySelector('.interpolation-field.text textarea').value`), 'tail {literal}');
+            await ui.remove(binding());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('ordinary literal inputs commit source values and redraw after the live document changes', { timeout: 60000 }, async () => {
     const fixture = source => {
         const at = source.indexOf('=') + 2;
