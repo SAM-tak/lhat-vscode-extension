@@ -8,6 +8,20 @@ mod._compile(require('esbuild').buildSync({ entryPoints: [entry], bundle: true, 
 const { structureSites, structureTemplates, editStructure } = mod.exports;
 const nodes = node => [node, ...Object.values(node.fields ?? {}).flat().flatMap(nodes)];
 
+test('finally statement menus forbid returning from cleanup but reset the restriction at a nested callable', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { load } = require('./graph-browser-host.cjs'), statements = load('graphStatements.ts');
+    const tree = await parse('do^{finally^: do^{} let^nested=p^{}}');
+    const sites = statements.statementInsertions(tree).filter(site => site.before === undefined);
+    const final = nodes(tree.root).find(node => node.kind === 'loop-clause');
+    const nested = nodes(tree.root).find(node => node.kind === 'func');
+    for (const site of sites.filter(site => site.start >= final.start && site.end <= final.end && site.start < nested.start)) {
+        assert(!statements.statementTemplates(tree, site).some(c => c.id === 'return'));
+        assert.equal(statements.insertStatementEdit(tree, site, 'return'), undefined);
+    }
+    const body = nested.fields.body, inside = sites.find(site => site.start === body.start && site.end === body.end);
+    assert(statements.statementTemplates(tree, inside).some(c => c.id === 'return'));
+}));
+
 test('catch and finally structures preserve main code and enforce the final catch-all across braced scopes', { timeout: 60000 }, async () => withLhatServer(async parse => {
     const { load } = require('./graph-browser-host.cjs'), deletion = load('graphDelete.ts');
     for (const source of ['do^{print(1)}', 'if^true^{print(1)}', 'let^f=f^{print(1)}', 'with^x=nil^{print(1)}',

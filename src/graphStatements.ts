@@ -23,7 +23,7 @@ export const STATEMENT_TEMPLATE_LABELS = {
     error: "Error definition", module: "Module declaration", import: "Import module", require: "Require file",
     focusedIf: "Condition with a local value",
 } as const;
-interface Context { callable?: "function" | "procedure"; loop: boolean }
+interface Context { callable?: "function" | "procedure"; loop: boolean; cleanup?: boolean }
 interface StatementList {
     node: AstNode; field: string; items: AstNode[]; context: Context;
     emptyAt?: number;
@@ -53,6 +53,8 @@ function lists(tree: AstReply): StatementList[] {
             (node.fields?.body as AstNode | undefined)?.kind === "block" && !forExpression(node, tree.source))) {
             context = { ...context, loop: true };
         }
+        if (node.kind === "loop-clause" && syntaxTokens(tree.source, node.start, node.end)[0]?.text === "finally^")
+            context = { ...context, cleanup: true };
         const field = node.kind === "block" ? "items" : node.kind === "loop-clause" ? "body" : undefined;
         if (field) {
             const value = node.fields?.[field];
@@ -148,7 +150,7 @@ export function statementTemplates(tree: AstReply, site: StatementInsertion): St
             choices.push(template("module", `module^${name("example")}`));
     }
     if (list.context.loop) choices.push(template("break", "break^"), template("next", "next^"));
-    return choices;
+    return choices.filter(choice => !list.context.cleanup || choice.id !== "return");
 }
 
 /** Insert a complete template while retaining all existing text and its newline style. */

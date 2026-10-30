@@ -45,6 +45,104 @@ const draw = async (reply, options = {}) => {
     return { graph, flow: toFlow(graph, {}, 947, undefined, noop, noop, noop, noop, { current: null }, noop) };
 };
 
+test('finally follows the main/catch merge and is never an if alternative or a loop iteration tail', { timeout: 30000 }, async () => require('./lhat-server.cjs').withLhatServer(async parse => {
+    const sources = [
+        'do^{work() catch^E.A:handle() catch^:other() finally^:cleanup()} after()',
+        'if^true^{work() el^:otherwise() catch^:handle() finally^:cleanup()} after()',
+        'p^{work() catch^:handle() finally^:cleanup()}',
+        'repeat^2{work() catch^:handle() last^:last() finally^:cleanup()} after()',
+    ];
+    for (const source of sources) {
+        const { graph, flow } = await draw(await parse(source));
+        const call = name => flow.nodes.find(n => n.data.isCall && n.data.start === source.indexOf(`${name}()`));
+        const cleanup = call('cleanup'); assert(cleanup, source);
+        const reaches = (from, to, excluded) => {
+            const pending = [from], seen = new Set([excluded]);
+            while (pending.length) {
+                const id = pending.pop(); if (seen.has(id)) continue;
+                if (id === to) return true;
+                seen.add(id); pending.push(...flow.exec.filter(e => e.source === id).map(e => e.target));
+            }
+            return false;
+        };
+        for (const name of ['work','otherwise','handle','other']) {
+            const start = call(name); if (!start) continue;
+            assert(reaches(start.id, cleanup.id), `${name} must reach cleanup: ${source}`);
+            const after = call('after');
+            if (after) assert(!reaches(start.id, after.id, cleanup.id), `${name} must not bypass cleanup: ${source}`);
+        }
+        const absoluteY = n => (n.y ?? 0) + (flatten(graph).find(p => p.children?.includes(n)) ? absoluteY(flatten(graph).find(p => p.children?.includes(n))) : 0);
+        const final = flatten(graph).find(n => n.lhat?.kind === 'loop-clause' && source.slice(n.lhat.start, n.lhat.end).startsWith('finally^'));
+        for (const header of flatten(graph).filter(n => n.lhat?.kind === 'catch'))
+            assert(absoluteY(final) > absoluteY(header), source);
+    }
+}));
+
+test('pending returns and loop transfers link to cleanup without acquiring ordinary fall-through', { timeout: 30000 }, async () => require('./lhat-server.cjs').withLhatServer(async parse => {
+    for (const transfer of ['return^','panic^0','break^','next^']) {
+        const loop = ['break^','next^'].includes(transfer);
+        const source = loop
+            ? `p^{repeat^2{do^{${transfer} finally^:localCleanup()} finally^:loopCleanup()}}`
+            : `p^{do^{do^{${transfer} finally^:localCleanup()} finally^:outerCleanup()} after()}`;
+        const { flow } = await draw(await parse(source));
+        const cleanup = flow.exec.filter(e => e.data?.cleanup);
+        const from = flow.nodes.find(n => n.data.start === source.indexOf(transfer) && n.data.cleanupExit);
+        const local = flow.nodes.find(n => n.data.isCall && n.data.start === source.indexOf('localCleanup()'));
+        assert(from && local, source);
+        assert(cleanup.some(e => e.source === from.id && e.target === local.id), source);
+        assert(!flow.exec.some(e => e.source === from.id && !e.data?.cleanup), source);
+        assert(cleanup.every(e => e.sourceHandle === 'flow-cleanup' && e.style.strokeDasharray), source);
+        assert.equal(from.data.cleanupExit, true);
+        assert.equal(from.data.noExecutionHandles, false, 'the terminal still has incoming and cleanup ports');
+        if (transfer === 'next^') assert.equal(cleanup.length, 1, 'advancing this loop does not leave its scope');
+        else {
+            const outerName = loop ? 'loopCleanup()' : 'outerCleanup()';
+            const outer = flow.nodes.find(n => n.data.isCall && n.data.start === source.indexOf(outerName));
+            assert(cleanup.some(e => e.target === outer.id), source);
+        }
+    }
+    const source = 'p^{do^{let^nested=p^{return^} work() finally^:cleanup()}}';
+    const { flow } = await draw(await parse(source));
+    assert(!flow.exec.some(e => e.data?.cleanup), 'a nested callable does not inherit the surrounding cleanup');
+}));
+
+test('a terminal finally makes subsequent code unreachable while conditional returns still permit normal cleanup', { timeout: 30000 }, async () => require('./lhat-server.cjs').withLhatServer(async parse => {
+    const { load } = require('./graph-browser-host.cjs');
+    const { analyzeExecution } = load('webview/execution.ts');
+    for (const scope of ['do^{work() catch^:handle() finally^:panic^0}', 'if^true^{work() finally^:panic^0}', 'repeat^0{work() finally^:panic^0}']) {
+        const source = `p^{${scope} after()}`, tree = await parse(source), execution = analyzeExecution(tree.root, source);
+        const astNodes = node => [node, ...Object.values(node.fields ?? {}).flat().flatMap(astNodes)];
+        const after = astNodes(tree.root).find(n => n.kind === 'func').fields.body.fields.items.at(-1);
+        assert(execution.unreachable.has(after), source);
+        const { flow } = await draw(tree);
+        const afterCard = flow.nodes.find(n => n.data.isCall && n.data.start === source.indexOf('after()'));
+        assert(!flow.exec.some(e => e.target === afterCard.id), source);
+    }
+    const source = 'p^{do^{if^true^{return^} work() finally^:cleanup()} after()}';
+    const { flow } = await draw(await parse(source));
+    const call = name => flow.nodes.find(n => n.data.isCall && n.data.start === source.indexOf(`${name}()`));
+    assert(flow.exec.some(e => e.target === call('after').id && !e.data?.cleanup));
+    assert(flow.exec.some(e => e.data?.cleanup && e.target === call('cleanup').id));
+    const tree = await parse(source), astNodes = node => [node, ...Object.values(node.fields ?? {}).flat().flatMap(astNodes)];
+    const branch = astNodes(tree.root).find(n => n.kind === 'if-stmt');
+    const folded = await draw(tree, { folds: { [`${branch.kind}:${branch.start}:${branch.end}`]: true } });
+    const summary = folded.flow.nodes.find(n => n.data.collapsed && n.data.start === branch.start);
+    assert(summary && folded.flow.exec.some(e => e.source === summary.id && e.data?.cleanup), 'a folded branch retains its hidden departure cleanup');
+
+}));
+
+test('stacked loop departures clean only the scopes they leave, in innermost-first order', { timeout: 30000 }, async () => require('./lhat-server.cjs').withLhatServer(async parse => {
+    const { load } = require('./graph-browser-host.cjs');
+    const { analyzeExecution, cleanupTransfers } = load('webview/execution.ts');
+    for (const transfer of ['break^^','next^^','next^[2]']) {
+        const source = `p^{repeat^2{do^{repeat^2{do^{${transfer} finally^:innerDo()} finally^:innerLoop()} finally^:outerDo()} finally^:outerLoop()}}`;
+        const tree = await parse(source), execution = analyzeExecution(tree.root, source);
+        const links = cleanupTransfers(tree.root, source, execution);
+        const targets = links.map(link => source.slice(link.target.start, link.target.end).match(/finally\^:(\w+)\(/)[1]);
+        assert.deepEqual(targets, transfer.startsWith('break') ? ['innerDo','innerLoop','outerDo','outerLoop'] : ['innerDo','innerLoop','outerDo']);
+    }
+}));
+
 test('loop direction marks follow right/up/left at regular spacing and scale with the graph', () => {
     const points = [[0, 300], [0, 310], [200, 310], [200, 10], [0, 10], [0, 20]];
     const arrows = loopDirectionArrows(points, 1).split('M ').filter(Boolean).map(part => part.match(/-?\d+(?:\.\d+)?/g).map(Number));

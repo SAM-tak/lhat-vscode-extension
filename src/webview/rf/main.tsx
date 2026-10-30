@@ -148,6 +148,7 @@ interface BoxData extends Record<string, unknown>, SlideData {
     executionAppend: boolean;
     executionMerge: boolean;
     executionTerminal: boolean;
+    cleanupExit: boolean;
     isReturn: boolean;
     isCondition: boolean;
     noExecutionHandles: boolean;
@@ -294,6 +295,11 @@ function toFlow(
         return node;
     };
 
+    const cleanupLinks = [...endpoints.values()].flatMap(node => node.lhat?.cleanupLinks ?? []);
+    const cleanupSources = new Set(cleanupLinks.flatMap(link => {
+        const source = endpoints.get(link.source);
+        return source ? [executionEnd(source, "Exit").id] : [];
+    }));
     // 8.6: wide split rows keep their declaration column in view. Other
     // views are centred. Anything longer than the view cannot be centred -- its
     // start would fall off the left, which is the wrong end to lose -- so it
@@ -462,6 +468,7 @@ function toFlow(
                     executionAppend: c.lhat?.executionAppend === true,
                     executionMerge: !!c.lhat?.executionBranchExits?.length || c.lhat?.executionBypass === true,
                     executionTerminal: c.lhat?.executionTerminal === true,
+                    cleanupExit: cleanupSources.has(c.id),
                     isReturn,
                     isCondition,
                     noExecutionHandles: c.lhat?.noExecutionHandles === true || unreachable || c.lhat?.unreachable === true,
@@ -645,8 +652,32 @@ function toFlow(
             Object.assign(node.data, { [key]: owner.data[key] });
         }
     }
+    const seenCleanup = new Set<string>();
+    for (const link of cleanupLinks) {
+        const source = endpoints.get(link.source), target = endpoints.get(link.target);
+        if (!source || !target) continue;
+        const from = executionEnd(source, "Exit"), to = executionEnd(target, "Entry");
+        const id = `x__cleanup__${from.id}__${to.id}`;
+        if (seenCleanup.has(id) || !rendered.has(from.id) || !rendered.has(to.id)) continue;
+        seenCleanup.add(id);
+        const ancestors = new Set<string>();
+        let owner: ElkNode | undefined = from;
+        while (owner) { ancestors.add(owner.id); owner = parents.get(owner.id); }
+        owner = to;
+        while (owner && !ancestors.has(owner.id)) owner = parents.get(owner.id);
+        exec.push({ ...routedExecutionEdge, type: "execution-bypass", id, source: from.id, target: to.id,
+            sourceHandle: "flow-cleanup", targetHandle: "flow-in", className: "exec cleanup",
+            style: { strokeDasharray: "4 3" }, data: { cleanup: true, owner: owner?.id, branchOffset: 10, laneInset: 10 }, selectable: false, focusable: false });
+    }
     const absoluteX = (node: BoxNodeType): number => node.position.x +
         (node.parentId && rendered.has(node.parentId) ? absoluteX(rendered.get(node.parentId)!) : 0);
+    for (const edge of exec) if (edge.data?.cleanup) {
+        const owner = rendered.get(edge.data.owner as string), source = rendered.get(edge.source);
+        if (!source) continue;
+        const right = owner ? absoluteX(owner) + (owner.width ?? 0) - 8
+            : Math.max(...nodes.map(node => absoluteX(node) + (node.width ?? 0))) + 12;
+        edge.data.laneOffset = right - absoluteX(source) - (source.data.flowHandleX ?? (source.width ?? 0) / 2);
+    }
     for (const edge of exec) if (edge.type === "execution-loop") {
         const owner = rendered.get(edge.data!.owner as string), source = rendered.get(edge.source);
         if (owner && source) edge.data!.laneOffset = absoluteX(owner) + (owner.width ?? 0) -
@@ -1160,6 +1191,9 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                     {data.executionMerge && <Handle type="target" position={Position.Bottom} id="flow-merge"
                         className="flowhandle" isConnectable={false}
                         style={data.flowHandleX !== undefined ? { left: data.flowHandleX } : undefined} />}
+                    {data.cleanupExit && <Handle type="source" position={Position.Bottom} id="flow-cleanup"
+                        className="flowhandle" isConnectable={false}
+                        style={data.flowHandleX !== undefined ? { left: data.flowHandleX } : undefined} />}
                     {!data.executionTerminal && <Handle type="source" position={Position.Bottom} id="flow-out"
                             className="flowhandle" isConnectable={false}
                             style={data.flowHandleX !== undefined
@@ -1236,7 +1270,7 @@ function ExecutionBypassEdge({ id, sourceX, sourceY, targetX, targetY, style, ma
         ` H ${lane - side * radius} Q ${lane} ${top} ${lane} ${top + radius}` +
         ` V ${bottom - radius} Q ${lane} ${bottom} ${lane - side * radius} ${bottom}` +
         ` H ${targetX + side * radius} Q ${targetX} ${bottom} ${targetX} ${bottom + radius} V ${targetY}`;
-    return <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} />;
+    return <g>{data?.cleanup ? <title>{l10n.t("Run finally before leaving this scope")}</title> : null}<BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} /></g>;
 }
 
 // The branch output shares its top input position, but heads down into

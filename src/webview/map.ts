@@ -21,7 +21,7 @@ import { literalOf, textLiteralRows, type LiteralValue } from "./literals";
 import { createLabeler, displayType, ENGLISH_VOCABULARY, labelColumns, labelText, nameColumns, renameTargetKey, type DisplayLabel, type LabelPart, type Vocabulary } from "./labels";
 import { arrangeCallTrees, alignCallPorts } from "./callLayout";
 import { definitionSource } from "./definitionSource";
-import { analyzeExecution } from "./execution";
+import { analyzeExecution, cleanupTransfers } from "./execution";
 import { assignmentOperator } from "../graphAssignments";
 import { syntaxTokens, templateMarker } from "../graphSyntax";
 import { interpolationFields, interpolationParts, type InterpolationField } from "../graphInterpolation";
@@ -119,6 +119,7 @@ export interface ElkNode {
         commentAnchor?: { id: string; dx?: number; dy: number };
         /** Main execution and independently entered exception handlers. */
         catchScope?: boolean;
+        cleanupLinks?: { source: string; target: string }[];
         operatorExpression?: boolean;
         /** Presentation policy, independent of whether this box is an inline layout container. */
         inlineable?: boolean;
@@ -586,6 +587,10 @@ export function stackWideDefinitions(laid: ElkNode, usableWidth: number): ElkNod
 
 export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     const source = reply.source;
+    const sharedFinally = new Map<AstNode, AstNode>();
+    const representations = new Map<AstNode, ElkNode>();
+    const parents = new Map<AstNode, AstNode>();
+    const visibleChildren = (node: AstNode) => drawnChildren(node).filter(child => child.node !== sharedFinally.get(node));
     const lists = commaLists(reply);
     const patterns = patternLists(reply);
     const iteratorFocus = new Map<AstNode, AstNode>();
@@ -595,7 +600,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         names.forEach(name => iteratorBindings.add(name));
         const focus = node.fields?.focus;
         if (names.length === 1 && Array.isArray(focus) && focus[0]?.kind === "define") iteratorFocus.set(focus[0], names[0]);
-        Object.values(node.fields ?? {}).flat().forEach(collectIterators);
+        Object.values(node.fields ?? {}).flat().forEach(child => { parents.set(child, node); collectIterators(child); });
     };
     collectIterators(reply.root);
     const editableLists = listInsertions(reply);
@@ -618,7 +623,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     const vocabulary = options.vocabulary ?? ENGLISH_VOCABULARY;
     const makeLabel = createLabeler(source, reply.root, vocabulary);
     const labelFor = (node: AstNode, drawn: Child[]) => makeLabel(node,
-        [...drawn, ...allChildren(node).filter(child => child.field === "arms")].map((c) => c.node), MAX_LABEL,
+        [...drawn, ...allChildren(node).filter(child => child.field === "arms" || child.node === sharedFinally.get(node))].map((c) => c.node), MAX_LABEL,
         ["define", "table-entry", "member-decl", "param", "func"].includes(node.kind));
     // Only executable scopes get an entry point. A function's body starts a
     // new chain; its declaration is never connected to the code inside it.
@@ -671,6 +676,8 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 }
             }
         }
+        const final = execution.finallyOf(node);
+        if (final && !loopBodies.has(node)) sharedFinally.set(node, final);
         if (node.kind === "func" && body !== undefined && !Array.isArray(body)) {
             entryScopes.add(body);
         }
@@ -688,7 +695,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             matchBodies.add(body);
         }
         if (node.kind === "if-stmt" || node.kind === "if-expr") {
-            for (const { node: child } of drawnChildren(node)) {
+            for (const { node: child } of visibleChildren(node)) {
                 if (child.kind === "if-clause") {
                     if (matchBodies.has(node)) matchClauses.add(child);
                     (node.kind === "if-stmt" ? statementClauses : expressionClauses).add(child);
@@ -1443,6 +1450,13 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     // since that one is a way further in rather than part of what is shown.
     function build(node: AstNode, voice: "stmt" | "expr",
                    unfold: boolean, avail: number): ElkNode {
+        const built = buildMapped(node, voice, unfold, avail);
+        representations.set(node, built);
+        return built;
+    }
+
+    function buildMapped(node: AstNode, voice: "stmt" | "expr",
+                         unfold: boolean, avail: number): ElkNode {
         const key = `${node.kind}:${node.start}:${node.end}`;
         // Catch and statement-clause lanes hoist their immediate body's
         // children. Fold those statements, not the block whose children are
@@ -1452,7 +1466,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             (node.kind === "table-entry" && node.fields?.key === undefined);
         const entered = options.root !== undefined && node === viewRoot;
         const fold = (): ElkNode => {
-            const label = labelFor(node, drawnChildren(node));
+            const label = labelFor(node, visibleChildren(node));
             const built = leaf(node, label);
             built.width = (built.width ?? 0) + px(FOLD_BTN);
             Object.assign(built.lhat!, { foldKey: key, collapsed: true, foldable: true });
@@ -1496,20 +1510,35 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     function buildNode(node: AstNode, voice: "stmt" | "expr",
                        unfold: boolean, avail: number): ElkNode {
         const main = buildNodeContents(node, voice, unfold, avail);
+        if (main.lhat?.collapsed || loopBodies.has(node)) return main;
+        let contents = withHandlers(node, main, unfold, avail);
+        const final = sharedFinally.get(node);
+        if (!final) return contents;
+        const label = contents.labels?.[0]?.text ?? "", parts = contents.lhat?.labelParts;
+        contents.labels = [];
+        contents.lhat = { ...contents.lhat!, layoutOnly: true, statement: undefined, insertion: undefined, reorder: undefined,
+            executionTerminal: execution.stopsBeforeFinally(node) };
+        const cleanup = build(final, "stmt", unfold, avail), id = nextId("finally-scope");
+        const built = container(id, parts ? { text: label, parts } : label, "DOWN", [contents, cleanup], flow(id, [contents, cleanup]), node);
+        built.lhat!.executionEntry = contents.id;
+        built.lhat!.executionExit = cleanup.id;
+        built.layoutOptions!["elk.padding"] = `[top=${px(HEAD_H + PAD)},left=${px(PAD)},bottom=${px(PAD)},right=${px(PAD + 24)}]`;
+        return built;
+    }
+
+    function withHandlers(node: AstNode, main: ElkNode, unfold: boolean, avail: number): ElkNode {
         const arms = allChildren(node).filter(child => child.field === "arms");
-        if (!arms.length || main.lhat?.collapsed) return main;
-        const label = main.labels?.[0]?.text ?? "";
-        const parts = main.lhat?.labelParts;
+        if (!arms.length) return main;
+        const label = main.labels?.[0]?.text ?? "", parts = main.lhat?.labelParts;
         main.labels = [];
         main.lhat = { ...main.lhat!, layoutOnly: true, executionTerminal: execution.stopsMain(node),
             statement: undefined, insertion: undefined, reorder: undefined };
         const handlers = arms.map(child => build(child.node, "stmt", unfold, avail));
         const lanes = [main, ...handlers];
-        const built = container(nextId("catch-scope"), parts ? { text: label, parts } : label,
-            "RIGHT", lanes, [], node);
+        const built = container(nextId("catch-scope"), parts ? { text: label, parts } : label, "RIGHT", lanes, [], node);
         alignGroupTops(lanes, built);
         const entry = firstStatement(main);
-        built.lhat = { ...built.lhat!, catchScope: true,
+        built.lhat = { ...built.lhat!, catchScope: true, executionTerminal: execution.stopsBeforeFinally(node),
             executionBranches: entry && !entryScopes.has(node) ? [entry.id] : [], branchOffset: px(18),
             executionBranchExits: lanes.flatMap(lane => {
                 const last = lastStatement(lane); return last ? [last.id] : [];
@@ -1561,7 +1590,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         if (node.kind === "disabled") {
             // The delimiters are syntax, not another visible box. Keep the
             // source-backed group for layout/reordering and enabling it again.
-            const children = drawnChildren(node).map(child => build(child.node, voice, unfold, avail));
+            const children = visibleChildren(node).map(child => build(child.node, voice, unfold, avail));
             const id = nextId("disabled");
             const built = children.length ? container(id, "", "DOWN", children, chain(id, children), node, false)
                 : leaf(node, source.slice(node.start + 3, node.end - 2).trim());
@@ -1643,7 +1672,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                     const box = leaf({ ...node, kind: "delimiter", end: node.start }, text); box.width = px(12); return box;
                 };
                 children.push(delimiter("("), listContent(list, unfold, avail), delimiter(")"));
-                const built = inlineBox(node, children); built.labels = [{ text: labelFor(node, drawnChildren(node)).text }]; return built;
+                const built = inlineBox(node, children); built.labels = [{ text: labelFor(node, visibleChildren(node)).text }]; return built;
             }
         }
         if (node.kind === "func" || node.kind === "type-func") {
@@ -1655,7 +1684,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
             const id = nextId(node.kind), children = [header, ...bodyChildren];
             const built = container(id, "", "DOWN", children,
                 [...chain(id, children.slice(0, 2)), ...bodyEdges], node);
-            built.labels = [{ text: labelFor(node, drawnChildren(node)).text }];
+            built.labels = [{ text: labelFor(node, visibleChildren(node)).text }];
             built.lhat = { ...built.lhat!, inline: true, collapsed, foldable: !!body };
             built.layoutOptions!["elk.padding"] = `[top=${px(PAD)},left=${px(PAD)},bottom=${px(PAD)},right=${px(PAD + FOLD_BTN)}]`;
             return built;
@@ -1672,6 +1701,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 const built = inlineBox(node, [returnNode(node), listGroup(list, unfold, avail)]);
                 built.lhat!.executionNode = built.children![0].id;
                 built.children![0].lhat!.insertion = undefined;
+                built.children![0].lhat!.noExecutionHandles = false;
                 return built;
             }
             return returnNode(node);
@@ -1806,14 +1836,14 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         const foldable =
             (COLLAPSIBLE.has(node.kind) ||
                 (FOLDS_WITH_VALUE.has(node.kind) && holdsCollapsible(node))) &&
-            (node.kind === "table" || drawnChildren(node).length > 0);
+            (node.kind === "table" || visibleChildren(node).length > 0);
 
         // A manual fold outweighs the default, but never folds the root we
         // just entered: that view must show its body even if it was entered
         // from a box the reader explicitly folded shut.
         if (foldable && !unfold &&
             (options.folds?.[`${node.kind}:${node.start}:${node.end}`] ?? options.folds?.[node.start] ?? options.collapse === true)) {
-            const label = labelFor(node, drawnChildren(node));
+            const label = labelFor(node, visibleChildren(node));
             const concise = node.kind === "table" || node.kind === "def" || node.kind === "self-table";
             const text = label.text + (concise ? "" : " …");
             const parts = concise ? label.parts : [...label.parts, { text: " …" }];
@@ -1883,7 +1913,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         // What is left for this node's own children, one padding in.
         const inner_avail = avail - 2 * px(PAD);
         const kind = node.kind;
-        const kids = drawnChildren(node);
+        const kids = visibleChildren(node);
         const expressionClause = expressionClauses.has(node);
         const clause = statementClauses.has(node) || expressionClause;
         const condition = node.fields?.condition;
@@ -2193,9 +2223,11 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 next.layoutOptions["elk.nodeSize.constraints"] = "MINIMUM_SIZE";
                 next.layoutOptions["elk.nodeSize.minimum"] = `(${minimum}, 0)`;
             }
-            if (execution.stopsMain(node)) next.lhat!.unreachable = true;
+            if (execution.stopsBeforeFinally(node)) next.lhat!.unreachable = true;
         }
-        const iteration = group("loop-main", [...firstLane ? [firstLane] : [], ...main, ...next ? [next] : []]);
+        const handled = node.fields?.arms ? withHandlers(node, group("loop-work", main), unfold, avail) : undefined;
+        const mainPath = handled ? [handled] : main;
+        const iteration = group("loop-main", [...firstLane ? [firstLane] : [], ...mainPath, ...next ? [next] : []]);
         const writtenMain = source.indexOf("main^", node.start);
         const mainDeletion = writtenMain >= node.start && writtenMain < node.end
             ? (structuralDeletes ??= structuralDeletions(reply)).find(entry => entry.owner.start === owner.start && entry.owner.end === owner.end && entry.action === "remove-section:main^") : undefined;
@@ -2229,8 +2261,8 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         built.lhat = { ...built.lhat!, ...from(node), layoutOnly: true };
         // Main's normal exit repeats instead of falling through to last.
         // Break/return/next paths are terminal and keep their existing policy.
-        const exit = execution.stopsMain(node) ? undefined : next ? lastStatement(next) : main.length
-            ? [...main].reverse().map(lastStatement).find(child => child !== undefined) : lastStatement(iteration);
+        const exit = execution.stopsBeforeFinally(node) ? undefined : next ? lastStatement(next) : mainPath.length
+            ? [...mainPath].reverse().map(lastStatement).find(child => child !== undefined) : lastStatement(iteration);
         if (exit) built.lhat!.executionLoop = {
             entry: pre?.id ?? gate.id, exit: exit.id, inset: px(8), clearance: px(10),
         };
@@ -2242,6 +2274,19 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     const root = arrangeCallTrees(options.rootTarget?.role
         ? conditionBox(viewRoot, viewRoot, true, width - 2 * px(PAD), options.rootTarget.mode)
         : build(viewRoot, "stmt", options.root !== undefined, width - 2 * px(PAD)), S);
+    const representation = (node: AstNode): ElkNode | undefined => {
+        let current: AstNode | undefined = node;
+        while (current) {
+            const box = representations.get(current);
+            if (box) return box;
+            current = parents.get(current);
+        }
+    };
+    const links = cleanupTransfers(reply.root, source, execution).flatMap(link => {
+        const source = representation(link.source), target = representation(link.target);
+        return source && target && source.id !== target.id ? [{ source: source.id, target: target.id }] : [];
+    });
+    if (links.length) root.lhat = { ...root.lhat!, cleanupLinks: links };
     // A leaf needs a wrapper. A branch view retains its outer box: its top
     // handle is the branch origin and must not disappear with the view root.
     if (options.rootTarget?.role || !root.children?.length || root.lhat?.bindingGroup || root.lhat?.callTree || root.lhat?.operatorExpression || root.lhat?.expressionTree || ["func", "type-func", "interp"].includes(viewRoot.kind) || root.lhat?.executionBranches !== undefined ||
@@ -2261,7 +2306,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     }
     root.layoutOptions = {
         ...root.layoutOptions,
-        "elk.padding": `[top=${PAD},left=${PAD},bottom=${PAD},right=${PAD}]`,
+        "elk.padding": `[top=${PAD},left=${PAD},bottom=${PAD},right=${PAD + (links.length ? 24 : 0)}]`,
     };
     root.labels = [];
     // The view's root has no visible box/title; only its children are drawn.

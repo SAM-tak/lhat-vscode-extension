@@ -595,6 +595,12 @@ AST では所有する `BLOCK` または `IF_STMT` の `arms` に `IF_CLAUSE` �
 
 `BLOCK` の `extra`（02 の 9 章の `prolog^` / `pre^` / `first^` / `main^` / `last^` / `epilog^` / `finally^`）は
 **縦に並べる**。実行順が決まっている以上これは順次であり、文脈の既定に従う。
+catchを持つスコープでは、通常処理とcatchの列を合流させてからfinallyへ進む。ifのfinallyも分岐の一つにはしない。
+ループのcatchはmainの反復内へ戻り、finallyはループを抜ける側へ置く。
+return・panic・break・nextは通常の実行線を終端に保ち、離脱前に必要なfinallyへの関係を破線で示す。
+破線は実行ステップの直結ではなく後処理の依存を表す。複数のfinallyは内側から外側へたどり、別の関数・手続きの境界を越えない。
+nextが進める対象のループ自身は離脱しないため、そのfinallyは含めない。破線はスコープ端の経路を使い、SVGにも保持する。
+
 
 宣言リスト（`t^{ … }` の `MEMBER_DECL`、関数の `PARAM` リスト）は
 **描かず、ラベルのテキストに畳む**。

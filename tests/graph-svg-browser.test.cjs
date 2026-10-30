@@ -94,7 +94,7 @@ test('language AST cases render and export in normal, folded and drilled views w
                 await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
                 await until(ready);
                 await snapshot(item, index, 'expanded');
-                if (['annotation','callable-modifiers','coroutine','position-types','handlers'].includes(item.name)) {
+                if (['annotation','callable-modifiers','coroutine','position-types','handlers','cleanup-transfer'].includes(item.name)) {
                     if (item.name === 'annotation') assert(await evaluate(`!!document.querySelector('.annotation-box')`));
                     const screenshot = await call('Page.captureScreenshot', { format: 'png' });
                     fs.writeFileSync(path.join(artifactDirectory, `${index}-expanded.png`), Buffer.from(screenshot.data, 'base64'));
@@ -3007,6 +3007,45 @@ test('a typed variadic function is constructed through parameter, reference and 
             await ui.structure(returned(), 'return:implicit');
             assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
             assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('cleanup transfer ports survive folding and drilling and export dashed links as standalone SVG', { timeout: 90000 }, async () => {
+    const source = require('./graph-language-cases.cjs').languageCases().find(c => c.name === 'cleanup-transfer').source;
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), fn = tree.root.fields.items[0].fields.values[0];
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree) } }, async ({ evaluate, until, call, errors }) => {
+            const ready = `!document.querySelector('.svg-export>button').disabled`;
+            await until(`document.querySelector('#app')?.dataset.graphVersion==='1' && ${ready}`);
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await until(`document.querySelector('.react-flow__edge.cleanup path') && ${ready}`);
+            assert(await evaluate(`!!document.querySelector('[data-handleid="flow-cleanup"]')`));
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Fold All')?.click()`);
+            await until(`document.querySelector('.box.folded[data-source-start="${fn.start}"]') && !document.querySelector('.react-flow__edge.cleanup') && ${ready}`);
+            const point = await evaluate(`(()=>{const r=document.querySelector('.box.folded[data-source-start="${fn.start}"]').getBoundingClientRect();return {x:r.left+12,y:r.top+12}})()`);
+            for (const type of ['mousePressed','mouseReleased']) await call('Input.dispatchMouseEvent', { type, ...point, button:'left', clickCount:1 });
+            await until(`document.querySelector('#trail') && ${ready}`);
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await until(`document.querySelector('.react-flow__edge.cleanup path') && ${ready}`);
+            const geometry = await evaluate(`(()=>{const e=document.querySelector('.react-flow__edge.cleanup path');return {d:e.getAttribute('d'),dash:getComputedStyle(e).strokeDasharray}})()`);
+            assert(!/NaN|undefined|Infinity/.test(geometry.d));
+            assert(geometry.dash !== 'none');
+            await evaluate(`document.querySelector('.svg-export>button').click()`);
+            await until(`document.querySelector('.svg-export-menu>button')`);
+            await evaluate(`document.querySelector('.svg-export-menu>button').click()`);
+            await until(`window.exports.length===1`);
+            const exported = await evaluate(`(()=>{const doc=new DOMParser().parseFromString(window.exports[0].svg,'image/svg+xml');return {error:!!doc.querySelector('parsererror'),dash:[...doc.querySelectorAll('path')].some(p=>p.getAttribute('stroke-dasharray')?.includes('4'))}})()`);
+            assert(!exported.error && exported.dash);
+            const screenshot = await call('Page.captureScreenshot', { format:'png' });
+            fs.writeFileSync(path.join(require('node:os').tmpdir(), 'lhat-finally-transfer.png'), Buffer.from(screenshot.data, 'base64'));
+            await call('Input.dispatchMouseEvent', { type:'mouseWheel', x:500, y:400, deltaY:500, deltaX:0 });
+            await evaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+            const tail = await call('Page.captureScreenshot', { format:'png' });
+            fs.writeFileSync(path.join(require('node:os').tmpdir(), 'lhat-finally-transfer-tail.png'), Buffer.from(tail.data, 'base64'));
+
+            assert.equal(await evaluate(`window.edits.length`), 0);
+            assert.deepEqual(errors, []);
         });
     });
 });
