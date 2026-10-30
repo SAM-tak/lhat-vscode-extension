@@ -1055,7 +1055,9 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     }
 
     function typeSlot(node: AstNode, kind: string, type: string, name = ""): ElkNode {
-        const slot = leaf({ ...node, kind }, { text: name, parts: [{ text: name, typeLabel: displayType(type, vocabulary, true), source: type }] });
+        // Inferred output ports are not source expressions with their own edit/delete actions.
+        const slot = leaf({ ...node, kind, ...(kind === "output-slot" ? { end: node.start } : {}) },
+            { text: name, parts: [{ text: name, typeLabel: displayType(type, vocabulary, true), source: type }] });
         slot.lhat = { ...slot.lhat!, noExecutionHandles: true, statement: undefined, insertion: undefined, reorder: undefined };
         return slot;
     }

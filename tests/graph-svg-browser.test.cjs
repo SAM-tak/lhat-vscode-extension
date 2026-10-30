@@ -3218,6 +3218,85 @@ test('parallel initializer controls create a three-output call without extra arg
     });
 });
 
+test('parallel bindings preserve pairs through modifiers edits deletion and reinsertion', { timeout: 120000 }, async () => {
+    const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs');
+    const { assignmentValues } = load('graphAssignments.ts');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('public^var^alpha:number^,beta:string^=17,"second" alpha,beta:=23,"next" alpha?+=29'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/': { type:'text/html', body:html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), items = () => host.tree.root.fields.items, declaration = () => items()[0];
+            const target = index => declaration().fields.targets[index].fields?.name ?? declaration().fields.targets[index];
+            const rename = (node, text) => ui.input(`.name-input[data-reference-start="${node.start}"]`, text);
+            const literal = (node, text) => ui.input(`.box[data-source-start="${node.start}"] .literal-input`, text);
+            await ui.add('var'); await rename(target(0), 'alpha');
+            await literal(declaration().fields.values[0], '17'); await ui.type(target(0), 'number^');
+            await ui.addElement('binding', declaration(), 'targets'); await rename(target(1), 'beta');
+            await ui.expression(declaration().fields.values[1], 'string');
+            await literal(declaration().fields.values[1], 'second'); await ui.type(target(1), 'string^');
+            await ui.structure(declaration(), 'public');
+            await ui.add('assign'); const paired = () => items()[1];
+            await ui.expression(paired().fields.targets[0], 'reference:alpha'); await literal(assignmentValues(paired(), host.tree.source)[0], '23');
+            await ui.addElement('binding', paired(), 'targets');
+            await ui.expression(paired().fields.targets[1], 'reference:beta');
+            await ui.expression(assignmentValues(paired(), host.tree.source)[1], 'string');
+            await literal(assignmentValues(paired(), host.tree.source)[1], 'next');
+            await ui.add('assign'); const compound = () => items()[2];
+            await ui.expression(compound().fields.targets[0], 'reference:alpha');
+            await literal(assignmentValues(compound(), host.tree.source)[0], '29');
+            await ui.structure(compound(), 'assignment:+='); await ui.structure(compound(), 'assignment:nil-check');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            for (const id of ['assignment:*=','assignment:nil-check','assignment::=']) await ui.structure(compound(), id);
+            const rhs = assignmentValues(compound(), host.tree.source)[0];
+            assert.equal(host.tree.source.slice(rhs.start, rhs.end), '29');
+            await ui.remove(assignmentValues(paired(), host.tree.source)[0]);
+            assert.equal(paired().fields.targets.length, 1);
+            assert.equal(host.tree.source.slice(paired().fields.targets[0].start, paired().fields.targets[0].end), 'beta');
+            await ui.addElement('binding', paired(), 'targets'); await ui.expression(paired().fields.targets[1], 'reference:alpha');
+            await ui.expression(assignmentValues(paired(), host.tree.source)[1], 'number');
+            await literal(assignmentValues(paired(), host.tree.source)[1], '31');
+            const changed = normalizedAst(await parse('public^var^alpha:number^,beta:string^=17,"second" beta,alpha:="next",31 alpha:=29'));
+            assert.deepEqual(normalizedAst(host.tree), changed, host.tree.source);
+            await ui.remove(paired().fields.targets[1]);
+            assert.equal(paired().fields.targets.length, 1); assert.equal(assignmentValues(paired(), host.tree.source).length, 1);
+            await ui.remove(compound()); await ui.remove(paired());
+            await ui.type(target(0), undefined); await ui.structure(declaration(), 'mutability'); await ui.structure(declaration(), 'public');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('let^alpha,beta:string^=17,"second"')), host.tree.source);
+            await ui.structure(declaration(), 'mutability'); await ui.remove(declaration());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            await ui.add('var'); await ui.add('assign'); await ui.remove(items()[1]); await ui.remove(declaration());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('declaration and reassignment captions keep each value and modifier in semantic views', { timeout: 90000 }, async () => {
+    const source = 'public^var^alpha:number^,beta:string^=17,"second" let^run=p^{var^count,limit=19,23 count,limit:=29,31 count?+=37 limit*=41}';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), fn = tree.root.fields.items[1].fields.values[0];
+        const flat = n => [n,...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        await browser({ ...routes, '/': { type:'text/html', body:html(tree, false) } }, async client => {
+            const outer = async () => {
+                const text = (await svgTexts(client)).join('');
+                for (const value of ['alpha','beta','17','second','run',ja.Public,ja['Mutable Variable Definition']]) assert(text.includes(value), value + ': ' + text);
+            };
+            const inner = async () => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const number of ['19','23','29','31','37','41']) assert.equal(texts.filter(t => t === number).length, 1, text);
+                for (const name of ['count','limit']) assert.equal(texts.filter(t => t === name).length, 3, text);
+                for (const label of [ja.Reassignment,ja['Multiplication Assignment'],ja['{0} (nil-checked)'].replace('{0}', ja['Addition Assignment'])]) assert(text.includes(label), label + ': ' + text);
+            };
+            await outer(); await graphToolbar(client, 'Unfold All'); await outer(); await inner(); await saveSemanticSvg(client, 'parallel-bindings');
+            await graphToolbar(client, 'Fold All'); await outer();
+            await drillGraphNode(client, fn); await graphToolbar(client, 'Unfold All'); await inner();
+            const drilled = await svgTexts(client); assert(!drilled.includes('17')); assert(!drilled.join('').includes('second'));
+            assert.equal(await client.evaluate('window.edits.length'), 0); assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('parallel reassignment adds its target and value in one edit', { timeout: 60000 }, async () => {
     const { graphHost, graphUi } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
@@ -3369,7 +3448,7 @@ test('deleting a parallel value removes its binding and keeps the remaining grap
 });
 
 test('standalone call menus preserve statement shape through handlers and keep target and argument editors', { timeout: 90000 }, async () => {
-    const { graphHost, graphUi, load } = require('./graph-browser-host.cjs');
+    const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs');
     const expressions = load('graphExpressions.ts');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
         const host = await graphHost(parse, server);
@@ -3387,6 +3466,7 @@ test('standalone call menus preserve statement shape through handlers and keep t
             assert(!await client.evaluate(`[...document.querySelectorAll('.statement-menu [role=option]')].some(e=>e.textContent.includes('数値')||e.textContent.includes('Number'))`));
             await client.call('Input.dispatchKeyEvent', { type:'keyDown', key:'Escape', code:'Escape', windowsVirtualKeyCode:27 });
             await ui.expression(call().fields.args?.[0] ?? call().fields.argument[0], 'number');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('(try^(work(0)))??nil^')), host.tree.source);
             assert.equal(host.tree.root.fields.items[0].kind, 'call-stmt');
             assert.equal(value().kind, 'binary');
             assert(!JSON.stringify(host.tree.root).includes('"kind":"error"'), host.tree.source);
@@ -3394,6 +3474,49 @@ test('standalone call menus preserve statement shape through handlers and keep t
             await ui.remove(host.tree.root.fields.items[0]);
             assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
             assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('standalone calls retain arguments propagation fallback and one deletion control in semantic views', { timeout: 90000 }, async () => {
+    const source = 'let^run=p^{plain(17) try^risky(19) maybe(23)??backup(29) after(31)}';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), fn = tree.root.fields.items[0].fields.values[0], statements = fn.fields.body.fields.items;
+        assert.deepEqual(statements.map(n => n.kind), ['call-stmt','call-stmt','call-stmt','call-stmt']);
+        await browser({ ...routes, '/': { type:'text/html', body:html(tree, false) } }, async client => {
+            const normal = (await svgTexts(client)).join(''); assert(normal.includes('run')); assert(normal.includes(ja.Procedure));
+            const check = async () => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const number of ['17','19','23','29','31']) assert.equal(texts.filter(t => t === number).length, 1, text);
+                for (const name of ['plain','risky','maybe','backup','after']) assert(text.includes(name), name + ': ' + text);
+                assert.equal(texts.filter(t => t === ja.Call).length, 5, text);
+                assert(text.includes(ja['Propagate error']), text); assert(texts.includes('??'), text);
+                for (const node of statements) assert.equal(await client.evaluate(`document.querySelectorAll('.element-delete[data-delete-start="${node.start}"][data-delete-end="${node.end}"]').length`), 1, source.slice(node.start, node.end));
+                const fallback = statements[2];
+                const route = await client.evaluate(`(()=>{
+                    const row=document.querySelector('.operator-expression[data-source-start="${fallback.start}"][data-source-end="${fallback.end}"]');
+                    const handle=row.closest('.react-flow__node').querySelector('[data-handleid="flow-out"]').getBoundingClientRect();
+                    const paths=[...document.querySelectorAll('.react-flow__edge-execution .react-flow__edge-path,.react-flow__edge-execution-bypass .react-flow__edge-path')];
+                    const path=paths.find(p=>{const point=p.getPointAtLength(0),screen=new DOMPoint(point.x,point.y).matrixTransform(p.getScreenCTM());return Math.hypot(screen.x-handle.left-handle.width/2,screen.y-handle.bottom)<3});
+                    if(!path)return {collisions:-1,handle:{x:handle.left+handle.width/2,y:handle.top+handle.height/2},paths:paths.map(p=>{const point=p.getPointAtLength(0),screen=new DOMPoint(point.x,point.y).matrixTransform(p.getScreenCTM());return {x:screen.x,y:screen.y,kind:p.parentElement.getAttribute('class')}})};
+                    const obstacles=[...document.querySelectorAll('.call-node,.literal-node')].map(n=>n.getBoundingClientRect());
+                    let collisions=0;
+                    for(let distance=0;distance<=path.getTotalLength();distance+=2){const point=path.getPointAtLength(distance),screen=new DOMPoint(point.x,point.y).matrixTransform(path.getScreenCTM());if(obstacles.some(r=>screen.x>r.left+1&&screen.x<r.right-1&&screen.y>r.top+1&&screen.y<r.bottom-1))collisions++}
+                    return {collisions};
+                })()`);
+                assert(route, 'The standalone fallback must have a continuation');
+                assert.equal(route.collisions, 0, 'Continuation must pass outside the extracted operands: ' + JSON.stringify(route));
+            };
+            await graphToolbar(client, 'Unfold All'); await check(); await saveSemanticSvg(client, 'standalone-calls');
+            await graphToolbar(client, 'Fold All'); assert((await svgTexts(client)).join('').includes('run'));
+            await drillGraphNode(client, fn); await graphToolbar(client, 'Unfold All'); await check();
+            await graphToolbar(client, 'A+'); await check();
+            await graphToolbar(client, 'Fold All'); await drillGraphNode(client, statements[2]); await graphToolbar(client, 'Unfold All');
+            const isolated = await svgTexts(client), isolatedText = isolated.join('');
+            for (const value of ['maybe','backup','23','29','??']) assert(isolatedText.includes(value), isolatedText);
+            for (const value of ['17','19','31']) assert(!isolated.includes(value), isolatedText);
+            assert.equal(isolated.filter(t => t === ja.Call).length, 2);
+            assert.equal(await client.evaluate('window.edits.length'), 0); assert.deepEqual(client.errors, []);
         });
     });
 });

@@ -671,6 +671,19 @@ function toFlow(
     }
     const absoluteX = (node: BoxNodeType): number => node.position.x +
         (node.parentId && rendered.has(node.parentId) ? absoluteX(rendered.get(node.parentId)!) : 0);
+    // A standalone operator row can own extracted calls below it. Continue
+    // outside the whole expression instead of descending through those cards.
+    for (const edge of exec) if (edge.type === "execution") {
+        let tree = endpoints.get(edge.source);
+        while (tree && !tree.lhat?.expressionTree) tree = parents.get(tree.id);
+        if (tree?.lhat?.kind !== "call-stmt" || tree.lhat.executionNode !== edge.source) continue;
+        const owner = rendered.get(tree.id), source = rendered.get(edge.source);
+        if (!owner || !source) continue;
+        const right = absoluteX(owner) + (owner.width ?? 0) + 12;
+        edge.type = "execution-bypass";
+        edge.data = { branchOffset: 8, laneInset: 12,
+            laneOffset: right - absoluteX(source) - (source.data.flowHandleX ?? (source.width ?? 0) / 2) };
+    }
     for (const edge of exec) if (edge.data?.cleanup) {
         const owner = rendered.get(edge.data.owner as string), source = rendered.get(edge.source);
         if (!source) continue;
