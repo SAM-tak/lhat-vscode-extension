@@ -617,9 +617,9 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
     const execution = analyzeExecution(reply.root, source);
     const insertions = statementInsertions(reply).filter(site => site.before === undefined || !execution.unreachableStarts.has(site.before));
     const beforeStatement = new Map(insertions.filter(site => site.before !== undefined).map(site => [site.before!, site]));
-    const appendTo = new Map(insertions.filter(site => site.before === undefined).map(site => [`${site.kind}:${site.start}:${site.end}`, site]));
+    const appendTo = new Map(insertions.filter(site => site.before === undefined).map(site => [`${!!site.root}:${site.kind}:${site.start}:${site.end}`, site]));
     const appendSite = (node: AstNode) => execution.stopsMain(node) || execution.unreachable.has(node) ? undefined
-        : appendTo.get(`${node.kind}:${node.start}:${node.end}`);
+        : appendTo.get(`${node === reply.root}:${node.kind}:${node.start}:${node.end}`);
     const vocabulary = options.vocabulary ?? ENGLISH_VOCABULARY;
     const makeLabel = createLabeler(source, reply.root, vocabulary);
     const labelFor = (node: AstNode, drawn: Child[]) => makeLabel(node,

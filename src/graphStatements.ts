@@ -9,6 +9,7 @@ export interface StatementSite extends SourceSpan { disabled: boolean }
 export interface StatementInsertion extends SourceSpan {
     kind: string;
     field: string;
+    root?: true;
     /** Absent means append to this statement list. */
     before?: number;
 }
@@ -28,6 +29,7 @@ interface Context { callable?: "function" | "procedure"; loop: boolean; cleanup?
 interface StatementList {
     node: AstNode; field: string; items: AstNode[]; context: Context;
     emptyAt?: number;
+    loopBody: boolean;
 }
 
 function mainHeading(source: string, node: AstNode): number | undefined {
@@ -70,7 +72,7 @@ function lists(tree: AstReply): StatementList[] {
                     emptyAt = comment?.end ?? marker.end;
                 }
             }
-            result.push({ node, field, items, context, emptyAt });
+            result.push({ node, field, items, context, emptyAt, loopBody: !!parent && ["for", "repeat"].includes(parent.kind) });
         }
         for (const value of Object.values(node.fields ?? {})) {
             for (const child of Array.isArray(value) ? value : [value]) visit(child, context, node);
@@ -87,12 +89,13 @@ export function statementSites(tree: AstReply): StatementSite[] {
 }
 
 export function statementInsertions(tree: AstReply): StatementInsertion[] {
-    return lists(tree).flatMap(({ node, field, items }) => {
-        const base = { start: node.start, end: node.end, kind: node.kind, field };
+    return lists(tree).flatMap(({ node, field, items, loopBody }) => {
+        const base = { start: node.start, end: node.end, kind: node.kind, field,
+            ...(node === tree.root ? { root: true as const } : {}) };
         const extra = node.fields?.extra;
         // In an explicitly sectioned loop, an empty implicit main has no
         // source position. Its named clauses provide their own append sites.
-        const unnamedEmptyBody = node.kind === "block" && !items.length && (Array.isArray(extra) ? extra.length > 0 : !!extra)
+        const unnamedEmptyBody = loopBody && node.kind === "block" && !items.length && (Array.isArray(extra) ? extra.length > 0 : !!extra)
             && mainHeading(tree.source, node) === undefined;
         return [...items.filter(item => item.kind !== "module").map(item => ({ ...base, before: item.start })),
             ...unnamedEmptyBody ? [] : [base]];
@@ -100,12 +103,12 @@ export function statementInsertions(tree: AstReply): StatementInsertion[] {
 }
 
 const sameInsertion = (a: StatementInsertion, b: StatementInsertion) =>
-    a.start === b.start && a.end === b.end && a.kind === b.kind && a.field === b.field && a.before === b.before;
+    a.start === b.start && a.end === b.end && a.kind === b.kind && a.field === b.field && a.root === b.root && a.before === b.before;
 
 export function statementTemplates(tree: AstReply, site: StatementInsertion): StatementTemplate[] {
     if (!statementInsertions(tree).some(candidate => sameInsertion(candidate, site))) return [];
     const list = lists(tree).find(list => list.node.start === site.start && list.node.end === site.end &&
-        list.node.kind === site.kind && list.field === site.field)!;
+        list.node.kind === site.kind && list.field === site.field && (list.node === tree.root) === !!site.root)!;
     const used = new Set<string>();
     const names = (node: AstNode) => {
         if (node.kind === "ident") used.add(nameValue(tree.source.slice(node.start, node.end)));
@@ -159,7 +162,7 @@ export function insertStatementEdit(tree: AstReply, site: StatementInsertion, te
     const choice = statementTemplates(tree, site).find(choice => choice.id === template);
     if (!choice) return undefined;
     const list = lists(tree).find(list => list.node.start === site.start && list.node.end === site.end &&
-        list.node.kind === site.kind && list.field === site.field)!;
+        list.node.kind === site.kind && list.field === site.field && (list.node === tree.root) === !!site.root)!;
     const source = tree.source, newline = source.includes("\r\n") ? "\r\n" : "\n";
     const lineStart = (offset: number) => offset <= 0 ? 0 : source.lastIndexOf("\n", offset - 1) + 1;
     const indentation = (offset: number) => /^[\t ]*/.exec(source.slice(lineStart(offset), offset))![0];

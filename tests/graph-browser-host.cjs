@@ -212,7 +212,7 @@ async function graphUi(host, { evaluate, until, call }) {
             await choose(selector, choices, action, index !== undefined);
         },
         async add(id, owner = host.tree.root, before) {
-            const site = statements.statementInsertions(host.tree).find(s => s.kind === owner.kind && s.start === owner.start && s.end === owner.end && s.before === before?.start);
+            const site = statements.statementInsertions(host.tree).find(s => !!s.root === (owner === host.tree.root) && s.kind === owner.kind && s.start === owner.start && s.end === owner.end && s.before === before?.start);
             assert(site, `Insertion site for ${owner.kind}`);
             await choose(`[data-insertion-site=${JSON.stringify(JSON.stringify(site))}]`, statements.statementTemplates(host.tree, site), id);
         },

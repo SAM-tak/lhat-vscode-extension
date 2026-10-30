@@ -70,6 +70,55 @@ test('annotation owners exclude header bindings and retain Unicode names across 
     }
 }));
 
+test('empty ordinary block bodies retain insertion sites beside cleanup sections', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    for (const source of [
+        'do^{finally^:cleanup()}', 'let^run=p^{finally^:cleanup()}',
+        'with^resource={} {finally^:cleanup()}',
+        'repeat^2{do^{finally^:cleanup()}}',
+    ]) {
+        const tree = await parse(source);
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        const body = flat(tree.root).find(n => n.kind === 'block' && !n.fields.items?.length && n.fields.extra);
+        assert(body, source);
+        const site = api.statementInsertions(tree).find(s => !s.root && s.start === body.start && s.end === body.end && s.before === undefined);
+        assert(site, source);
+        const updated = await parse(apply(source, api.insertStatementEdit(tree, site, 'call')));
+        assert(!flat(updated.root).some(n => n.kind === 'error'), updated.source);
+        const edited = flat(updated.root).find(n => n.kind === 'block' && n.fields.extra);
+        assert.equal(edited.fields.items.length, 1, updated.source);
+    }
+    for (const source of ['repeat^2{finally^:cleanup()}', 'for^i from^0 to^2{pre^:setup()}']) {
+        const tree = await parse(source), body = tree.root.fields.items[0].fields.body;
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        assert(!api.statementInsertions(tree).some(s => s.start === body.start && s.end === body.end && s.before === undefined), source);
+    }
+}));
+
+test('promoting conditional branches preserves grouped tests values and their comments', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts'), { normalizedAst } = require('./graph-browser-host.cjs');
+    for (const [source, expected] of [
+        ['if^true^{first() el^((29)<31):next() el^:last()}', 'if^(29<31){next() el^:last()}'],
+        ['let^v=(if^true^:17 el^((29)<31):((37)+41) el^:43;)', 'let^v=(if^(29<31):(37+41) el^:43;)'],
+        ['let^v=(if^true^:17 el^:((19)+23);)', 'let^v=(19+23)'],
+        ['if^true^{first() el^:do^{nested()}}', 'if^true^{do^{nested()}}'],
+    ]) {
+        const tree = await parse(source), node = flat(tree.root).find(n => ['if-stmt','if-expr'].includes(n.kind));
+        const edit = structure.editStructure(tree, node, 'remove-branch:0'); assert(edit, source);
+        const updated = await parse(apply(source, edit));
+        assert.deepEqual(normalizedAst(updated), normalizedAst(await parse(expected)), updated.source);
+    }
+    for (const source of [
+        'if^true^{first() el^(#[test]#(29)<31): #[body]# next() el^:last()}',
+        'let^v=(if^true^:17 el^(#[test]#(29)<31): #[body]# ((37)+41) el^:43;)',
+        'let^v=(if^true^:17 el^#[test]#: #[body]# ((19)+23) #[tail]#;)',
+    ]) {
+        const tree = await parse(source), node = flat(tree.root).find(n => ['if-stmt','if-expr'].includes(n.kind));
+        const updated = await parse(apply(source, structure.editStructure(tree, node, 'remove-branch:0')));
+        assert(!flat(updated.root).some(n => n.kind === 'error'), updated.source);
+        for (const comment of source.match(/#\[.*?\]#/g)) assert.equal(updated.source.split(comment).length, 2, updated.source);
+    }
+}));
+
 test('single focus values switch between named and anonymous forms in expressions, conditions and shared drivers', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structure = load('graphStructure.ts');
     for (const source of [

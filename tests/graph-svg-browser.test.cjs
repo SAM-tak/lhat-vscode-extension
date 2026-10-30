@@ -1867,6 +1867,82 @@ test('delete control removes a statement and the graph redraws as an empty edita
 });
 
 
+test('conditional branches preserve their bodies when promoted removed and rebuilt through live controls', { timeout: 120000 }, async () => {
+    const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('if^true^{print(17) el^false^:print(19) el^:print(23)}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/':{type:'text/html',body:html(host.tree,false)} }, async client => {
+            const ui = await graphUi(host, client), conditional = () => host.tree.root.fields.items[0];
+            const branch = index => conditional().fields.items[index];
+            const literal = (node, value) => ui.input(`.box[data-source-start="${node.start}"] .literal-input`, value);
+            const call = async (index, value) => {
+                await ui.add('call', branch(index).fields.body);
+                const argument = () => branch(index).fields.body.fields.items[0].fields.value.fields.argument[0];
+                await ui.expression(argument(), 'number'); await literal(argument(), value);
+            };
+            await ui.add('if'); await graphToolbar(client, 'Unfold All'); await call(0, '17');
+            await ui.structure(conditional(), 'branch'); await call(1, '19');
+            await ui.structure(conditional(), 'else'); await call(2, '23');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.expression(branch(1).fields.condition, 'number'); await ui.expression(branch(1).fields.condition, 'compare');
+            await graphToolbar(client, 'Unfold All'); await ui.operator(branch(1).fields.condition, '<');
+            await literal(branch(1).fields.condition.fields.left, '29'); await literal(branch(1).fields.condition.fields.right, '31');
+            await ui.structure(conditional(), 'remove-branch:0');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('if^(29<31){print(19) el^:print(23)}')), host.tree.source);
+            await ui.remove(branch(1)); await ui.structure(conditional(), 'remove-branch:0');
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            await ui.add('let');
+            const value = () => conditional().fields.values[0], alternative = index => value().fields.items[index];
+            await ui.expression(value(), 'conditional'); await graphToolbar(client, 'Unfold All');
+            await literal(alternative(0).fields.body, '17'); await literal(alternative(1).fields.body, '19');
+            await ui.structure(value(), 'branch'); await literal(alternative(1).fields.body, '23');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('let^value=(if^true^:17 el^false^:23 el^:19;)')), host.tree.source);
+            assert(!load('graphStructure.ts').structureTemplates(host.tree, value()).some(c => c.id === 'remove-branch:2'));
+            await ui.remove(alternative(1)); await ui.structure(value(), 'remove-branch:0');
+            assert.equal(value().kind, 'int'); assert.equal(host.tree.source.slice(value().start,value().end), '19');
+            await ui.expression(value(), 'conditional'); await ui.remove(conditional());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0); assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('conditional and pattern frames retain predicates alternatives and values across semantic views', { timeout: 120000 }, async () => {
+    const source = 'let^flow=p^{if^ready(17){left(19) el^other(23):middle(29) el^:right(31)} for^subject(37){when^41,43:hit(47) other^:miss(53)}} let^values={choice=(if^test(59):61 el^:67;),match=(for^subject(71):when^73:79 other^:83;)}';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), [flow, values] = tree.root.fields.items.map(n => n.fields.values[0]);
+        const flat = n => [n,...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        await browser({ ...routes, '/':{type:'text/html',body:html(tree,false)} }, async client => {
+            const numbers = ['17','19','23','29','31','37','41','43','47','53','59','61','67','71','73','79','83'];
+            const check = async (visible, absent = []) => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const number of visible) assert.equal(texts.filter(t => t === number).length, 1, number + ': ' + text);
+                for (const number of absent) assert(!texts.includes(number), number + ': ' + text);
+                return text;
+            };
+            for (const state of ['normal','folded']) {
+                if (state === 'folded') await graphToolbar(client, 'Fold All');
+                const text = (await svgTexts(client)).join(''); assert(text.includes('flow')); assert(text.includes('values'));
+            }
+            await graphToolbar(client, 'Unfold All');
+            const expanded = await check(numbers);
+            for (const role of ['Conditional Branch','Conditional Selection','Pattern Matching Branch','Pattern Matching Selection']) assert(expanded.includes(ja[role]), role + ': ' + expanded);
+            for (const name of ['ready','left','other','middle','right','subject','hit','miss','test','choice','match']) assert(expanded.includes(name), name + ': ' + expanded);
+            await saveSemanticSvg(client, 'conditional-pattern-frames');
+            await graphToolbar(client, 'Fold All'); await drillGraphNode(client, flow); await graphToolbar(client, 'Unfold All');
+            await check(numbers.slice(0,10), numbers.slice(10));
+            await graphToolbar(client, 'Fold All'); await drillGraphNode(client, flow.fields.body.fields.items[0]); await graphToolbar(client, 'Unfold All');
+            await check(numbers.slice(0,5), numbers.slice(5));
+            await client.evaluate(`document.querySelector('#trail button').click()`); await client.until(graphReady); await graphToolbar(client, 'Fold All');
+            await drillGraphNode(client, values); await graphToolbar(client, 'Unfold All'); await check(numbers.slice(10),numbers.slice(0,10));
+            await graphToolbar(client, 'Fold All'); await drillGraphNode(client, values.fields.items[1].fields.value); await graphToolbar(client, 'Unfold All');
+            const pattern = await check(numbers.slice(13),numbers.slice(0,13)); assert(pattern.includes(ja['Pattern Matching Selection']), pattern);
+            assert.equal(await client.evaluate('window.edits.length'), 0); assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('branch menu updates a real parsed document and displays new branch conditions', { timeout: 60000 }, async () => {
     const { withLhatServer } = require('./lhat-server.cjs');
     await withLhatServer(async parse => {
@@ -4129,6 +4205,82 @@ test('if, callable, with and loop handler menus remain reachable after real sour
                 assert.equal(scope().fields?.extra?.length ?? 0, 0);
             }
             assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('a sole scoped block keeps its append control distinct from the file append control', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'do^{finally^:cleanup()}');
+        await browser({ ...routes, '/':{type:'text/html',body:html(host.tree,false)} }, async client => {
+            const ui = await graphUi(host, client);
+            await graphToolbar(client, 'Unfold All');
+            await ui.add('let', host.tree.root.fields.items[0]);
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('do^{let^value=0 finally^:cleanup()}')), host.tree.source);
+            await ui.add('let');
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('do^{let^value=0 finally^:cleanup()} let^value2=0')), host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('block bodies and handlers remain editable after clearing and rebuilding their statements', { timeout: 120000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const expected = normalizedAst(await parse('do^{\n# inner note\nlet^value=17 print(value) catch^error^:print(19) finally^:print(23)}'));
+        const rebuilt = normalizedAst(await parse('do^{\n# inner note\nprint(29) catch^error^:print(31) finally^:print(37)}'));
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/':{type:'text/html',body:html(host.tree,false)} }, async client => {
+            const ui = await graphUi(host, client), block = () => host.tree.root.fields.items[0];
+            const caught = () => block().fields.arms[0].fields.body, final = () => block().fields.extra[0];
+            const argument = statement => statement.fields.value.fields.argument[0];
+            const number = async (statement, text) => { await ui.expression(argument(statement), 'number');
+                const owner = statement.start;
+                const flat = n => [n,...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+                const updated = flat(host.tree.root).find(n => n.kind === 'call-stmt' && n.start === owner);
+                await ui.input(`.box[data-source-start="${argument(updated).start}"] .literal-input`, text); };
+            await ui.add('block'); await graphToolbar(client, 'Unfold All');
+            await ui.add('comment', block()); await ui.input('.comment-box textarea', 'inner note');
+            await ui.add('let', block());
+            await ui.input(`.box[data-source-start="${block().fields.items[0].fields.values[0].start}"] .literal-input`, '17');
+            await ui.add('call', block()); await ui.expression(argument(block().fields.items[1]), 'reference:value');
+            await ui.structure(block(), 'catch:add'); await ui.add('call', caught()); await number(caught().fields.items[0], '19');
+            await ui.structure(block(), 'finally:add'); await ui.add('call', final()); await number(final().fields.body[0], '23');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await ui.remove(block().fields.items[0]); await ui.remove(block().fields.items[0]);
+            assert.equal(block().fields?.items?.length ?? 0, 0);
+            await ui.add('call', block()); await number(block().fields.items[0], '29');
+            await ui.remove(caught().fields.items[0]); await ui.add('call', caught()); await number(caught().fields.items[0], '31');
+            await ui.remove(final().fields.body[0]); await ui.add('call', final()); await number(final().fields.body[0], '37');
+            assert.deepEqual(normalizedAst(host.tree), rebuilt, host.tree.source);
+            await ui.remove(block().fields.arms[0]); await ui.remove(final());
+            assert(!block().fields?.arms?.length && !block().fields?.extra?.length);
+            await ui.remove(block().fields.items[0]); await ui.add('let', block()); await ui.remove(block().fields.items[0]);
+            await ui.remove(block()); assert.equal(host.tree.root.fields?.items?.length ?? 0, 0);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('block scopes preserve comments handler filters cleanup and local contents in semantic views', { timeout: 90000 }, async () => {
+    const source = 'errordef^Issue{Bad,Other} do^{# inner note\nlet^mainValue=17 print(mainValue) catch^Issue.Bad|Issue.Other:print(19) catch^:print(23) finally^:print(29)} after(31)';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), block = tree.root.fields.items[1];
+        await browser({ ...routes, '/':{type:'text/html',body:html(tree,false)} }, async client => {
+            assert((await svgTexts(client)).join('').includes('Issue'));
+            const check = async (inside = false) => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const number of ['17','19','23','29']) assert.equal(texts.filter(t => t === number).length, 1, text);
+                for (const value of ['inner note','mainValue','Issue.Bad','Issue.Other',ja.Catch,ja.Finally]) assert(text.includes(value), value + ': ' + text);
+                if (inside) { assert(!texts.includes('31')); assert(!text.includes(ja['Error definition'])); }
+                else { assert.equal(texts.filter(t => t === '31').length, 1); assert(text.includes('after')); }
+            };
+            await graphToolbar(client, 'Unfold All'); await check(); await saveSemanticSvg(client, 'block-handlers');
+            await graphToolbar(client, 'Fold All');
+            assert((await svgTexts(client)).join('').includes('Issue'));
+            await drillGraphNode(client, block); await graphToolbar(client, 'Unfold All'); await check(true);
+            assert.equal(await client.evaluate('window.edits.length'), 0); assert.deepEqual(client.errors, []);
         });
     });
 });

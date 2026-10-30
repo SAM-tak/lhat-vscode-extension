@@ -589,11 +589,16 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
                     const owner = parent?.kind === "for" && one(parent, "body") === node ? parent : node!;
                     add("remove-branch:0", "Remove first branch", { start: owner.start, end: owner.end, text: "" });
                 } else if (nextBody) {
+                    const header = syntaxTokens(source, next.start, nextBody.start);
+                    const colon = header.filter(token => token.text === ":").slice(-1)[0];
+                    if (!colon) return;
+                    // Clause boundaries retain grouping and trivia omitted from expression spans.
+                    const test = source.slice(header[0].end, colon.start);
                     if (expression && !condition) add("remove-branch:0", "Remove first branch",
-                        { start: node!.start, end: node!.end, text: `(${source.slice(nextBody.start, nextBody.end)})` });
+                        { start: node!.start, end: node!.end, text: `(${test}${source.slice(colon.end, close.start)})` });
                     else add("remove-branch:0", "Remove first branch", { start: node!.start,
-                        end: Math.min(nextBody.start, end),
-                        text: `if^${condition ? source.slice(condition.start, condition.end) : "true^"}${expression ? ": " : " { "}` });
+                        end: colon.end,
+                        text: `if^(${test}${condition ? "" : "true^"})${expression ? ": " : " { "}` });
                 }
                 return;
             }
