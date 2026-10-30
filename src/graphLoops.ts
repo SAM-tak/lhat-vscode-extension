@@ -37,9 +37,9 @@ export function forExpression(node: AstNode, source: string): boolean {
 }
 
 /** Wrapping a scope must not capture any existing reference. */
-export function freshFocus(source: string): string {
+export function freshFocus(source: string, base = "local"): string {
     const used = sourceNames(source);
-    let name = "local", index = 2;
-    while (used.has(name)) name = `local${index++}`;
+    let name = base, index = 2;
+    while (used.has(name)) name = `${base}${index++}`;
     return name;
 }

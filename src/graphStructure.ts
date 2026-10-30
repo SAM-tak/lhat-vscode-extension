@@ -141,6 +141,14 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         return result;
     }
     result.push(...handlerActions(tree, node, parent));
+    if (node.kind === "with") {
+        const body = one(node, "extra"), bindings = array(node.fields?.items);
+        if (body) add("resource:add", "Add resource binding", { start: body.start, end: body.start,
+            text: `with^ ${freshFocus(source, "resource")} = nil^ ` });
+        if (bindings.length > 1) bindings.forEach((binding, index) =>
+            add(`remove-resource:${index}`, "Remove resource binding", { start: binding.start, end: binding.end, text: "" }));
+        return result;
+    }
     if (parent?.kind === "table-entry" && syntaxTokens(source, parent.start, parent.end)[0]?.text === "delegate^") return [];
     const access = !isTypeNode(node) && accessOperator(node, source);
     if (access) add("access:nil-check", access.optional ? "Use ordinary access" : "Use nil-checked access", access.optional
@@ -472,6 +480,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         return result;
     }
     if (["define", "enumdef", "errordef"].includes(node.kind)) {
+        if (node.kind === "define" && parent?.kind === "with") return result;
         if (parent === tree.root) {
             const published = head[0]?.text === "public^";
             add("public", published ? "Make declaration private" : "Publish declaration", {

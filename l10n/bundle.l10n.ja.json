@@ -476,6 +476,8 @@
     "Remove catch": "catchを削除",
     "Remove finally section": "finally節を削除",
     "Add finally section": "finally節を追加",
+    "Add resource binding": "リソースの束縛を追加",
+    "Remove resource binding": "リソースの束縛を削除",
     "Catch filter": "catchの型指定",
     "Enter an error kind or alternatives": "エラー種別または選択肢を入力",
     "Use catch filter": "この型指定を使う",

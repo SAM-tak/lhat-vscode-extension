@@ -132,6 +132,7 @@ export function hasCallInitializer(node: AstNode, source?: string): boolean {
 
 /** Binding pairs are editable only when each written value owns one position. */
 export function canInsertBinding(node: AstNode, source?: string): boolean {
+    if (source !== undefined && syntaxTokens(source, node.start, node.end)[0]?.text === "with^") return false;
     const targets = nodes(node.fields?.targets), values = bindingValues(node, source);
     return (node.kind === "define" || node.kind === "reassign" && source !== undefined && !!assignmentOperator(node, source)) &&
         targets.length > 0 && targets.length === values.length && !hasCallInitializer(node, source) &&

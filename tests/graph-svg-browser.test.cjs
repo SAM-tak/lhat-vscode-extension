@@ -3716,7 +3716,7 @@ test('nested loop transfers are created, retargeted and deleted through live gra
 });
 
 test('loop controls edit focus initialization, advance, direction and step through the live document', { timeout: 90000 }, async () => {
-    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
         const host = await graphHost(parse, server, 'var^m=5');
         await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
@@ -3736,6 +3736,9 @@ test('loop controls edit focus initialization, advance, direction and step throu
             await ui.structure(loop(), 'step:add'); assert(host.tree.source.includes('step^1'));
             await ui.structure(loop(), 'step:remove'); assert(!host.tree.source.includes('step^'));
             assert.equal(host.tree.source.slice(loop().fields.body.start, loop().fields.body.end), body);
+            await ui.remove(loop()); await ui.add('repeat'); await ui.remove(loop());
+            await ui.add('for'); await ui.remove(loop());
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('var^m=5')));
             assert.deepEqual(client.errors, []);
         });
     });
@@ -5631,6 +5634,103 @@ test('unresolved calls retain argument insertion before and after existing value
             await ui.remove(call().fields.argument[0]);
             assert.equal(call().fields.argument.length, 1);
             assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('loop semantic views retain section contents bounds steps updates and iterator values', { timeout: 120000 }, async () => {
+    const source = 'let^run=p^{repeat^17{prolog^:boot(19) pre^:before(23) first^:first(29) main^:work(31) last^:last(37) epilog^:end(41) finally^:cleanup(43)} for^i from^53 downto^47 step^59{visit(i,61)} for^var^v=67 while^ready(v,71) next^v+=73{tick(v,79)} for^item in^{89,97}{see(item,101)}} let^outside=83';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), fn = tree.root.fields.items[0].fields.values[0];
+        const flat = n => [n,...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        const groups = [['17','19','23','29','31','37','41','43'],['47','53','59','61'],['67','71','73','79'],['89','97','101']];
+        const all = groups.flat().concat('83');
+        await browser({ ...routes, '/':{type:'text/html',body:html(tree,false)} }, async client => {
+            assert((await svgTexts(client)).join('').includes('run'));
+            const check = async selected => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const number of all) assert.equal(texts.filter(t => t === number).length, selected.includes(number) ? 1 : 0, text);
+                return text;
+            };
+            await graphToolbar(client, 'Unfold All');
+            const text = await check(all);
+            for (const label of ['Before loop','Before each','First iteration','Loop body','Last iteration','After loop','Finally','Down through','Step'])
+                assert(text.includes(ja[label]), label + ': ' + text);
+            for (const name of ['boot','before','first','work','last','end','cleanup','visit','ready','tick','see']) assert(text.includes(name), name);
+            await saveSemanticSvg(client, 'loop-sections-and-modes');
+            await graphToolbar(client, 'Fold All'); await drillGraphNode(client, fn); await graphToolbar(client, 'Unfold All');
+            await check(groups.flat());
+            for (const [index, loop] of fn.fields.body.fields.items.entries()) {
+                await graphToolbar(client, 'Fold All'); await drillGraphNode(client, loop);
+                await graphToolbar(client, 'Unfold All');
+                const text = await check(groups[index]);
+                if (index === 1) for (const label of ['Down through','Step']) assert(text.includes(ja[label]), text);
+                await saveSemanticSvg(client, `loop-mode-${index}`);
+                await client.evaluate('document.querySelector("#trail button").click()'); await graphToolbar(client);
+                await graphToolbar(client, 'Fold All'); await drillGraphNode(client, fn); await graphToolbar(client, 'Unfold All');
+            }
+            assert.equal(await client.evaluate('window.edits.length'), 0); assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('resource bindings add remove and retain their shared body through live controls', { timeout: 120000 }, async () => {
+    const { graphHost, graphUi, normalizedAst, load } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        await browser({ ...routes, '/':{type:'text/html',body:html(host.tree,false)} }, async client => {
+            const ui = await graphUi(host, client), scope = () => host.tree.root.fields.items[0];
+            const bindings = () => scope().fields.items, body = () => scope().fields.extra[0];
+            const literal = (node, text) => ui.input(`.box[data-source-start="${node.start}"] .literal-input`, text);
+            await ui.add('with'); await graphToolbar(client, 'Unfold All');
+            await ui.input(`.name-input[data-reference-start="${bindings()[0].fields.targets[0].start}"]`, 'lease');
+            await ui.expression(bindings()[0].fields.values[0], 'number'); await literal(bindings()[0].fields.values[0], '17');
+            await ui.structure(scope(), 'resource:add');
+            await ui.expression(bindings()[1].fields.values[0], 'string'); await literal(bindings()[1].fields.values[0], 'second');
+            const lists = load('graphLists.ts'), deletion = load('graphDelete.ts');
+            for (const binding of bindings()) {
+                assert(!lists.listInsertions(host.tree).some(s => s.kind === 'define' && s.start === binding.start));
+                assert(!deletion.deleteSites(host.tree).some(s => s.start === binding.fields.targets[0].start && s.end === binding.fields.targets[0].end));
+            }
+            await ui.add('call', body());
+            const argument = () => body().fields.items[0].fields.value.fields.argument[0];
+            await ui.expression(argument(), 'number'); await literal(argument(), '23');
+            await ui.structure(scope(), 'catch:all'); await ui.add('call', body().fields.arms[0].fields.body);
+            await ui.structure(scope(), 'finally:add'); await ui.add('call', body().fields.extra[0]);
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('with^lease=17 with^resource="second" {print(23) catch^:print(nil^) finally^:print(nil^)}')), host.tree.source);
+            await ui.remove(bindings()[0]);
+            assert.deepEqual(normalizedAst(host.tree), normalizedAst(await parse('with^resource="second" {print(23) catch^:print(nil^) finally^:print(nil^)}')), host.tree.source);
+            assert(!load('graphStructure.ts').structureTemplates(host.tree, scope()).some(c => c.id.startsWith('remove-resource:')));
+            await ui.structure(scope(), 'resource:add'); await ui.remove(bindings()[1]);
+            await ui.remove(body().fields.items[0]); await ui.add('call', body());
+            await ui.remove(scope()); await ui.add('with'); await ui.remove(scope());
+            assert.equal(host.tree.root.fields?.items?.length ?? 0, 0); assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('resource views retain acquisition order local references handlers and disposal scope', { timeout: 90000 }, async () => {
+    const source = 'let^run=p^{with^lease=acquire(17) with^spare=acquire(19) {use(lease,23) catch^Issue.Bad:handle(29) finally^:close(31)} after(37)} let^outside=41';
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse(source), fn = tree.root.fields.items[0].fields.values[0];
+        const flat = n => [n,...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        await browser({ ...routes, '/':{type:'text/html',body:html(tree,false)} }, async client => {
+            assert((await svgTexts(client)).join('').includes('run'));
+            const check = async inside => {
+                const texts = await svgTexts(client), text = texts.join('');
+                for (const number of ['17','19','23','29','31']) assert.equal(texts.filter(t => t === number).length, 1, text);
+                for (const number of ['37','41']) assert.equal(texts.filter(t => t === number).length, inside ? 0 : 1, text);
+                for (const value of ['lease','spare','acquire','use','Issue.Bad','handle','close',ja.Catch,ja.Finally]) assert(text.includes(value), value + ': ' + text);
+            };
+            await graphToolbar(client, 'Unfold All'); await check(false); await saveSemanticSvg(client, 'resource-bindings');
+            await graphToolbar(client, 'Fold All'); await drillGraphNode(client, fn);
+            await graphToolbar(client, 'Unfold All');
+            const texts = await svgTexts(client); assert(texts.includes('37')); assert(!texts.includes('41'));
+            await graphToolbar(client, 'Fold All'); await drillGraphNode(client, fn.fields.body.fields.items[0]);
+            await graphToolbar(client, 'Unfold All'); await check(true);
+            assert.equal(await client.evaluate('window.edits.length'), 0); assert.deepEqual(client.errors, []);
         });
     });
 });

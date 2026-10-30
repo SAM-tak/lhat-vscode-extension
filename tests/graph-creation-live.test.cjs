@@ -70,6 +70,26 @@ test('annotation owners exclude header bindings and retain Unicode names across 
     }
 }));
 
+test('resource structure edits preserve ordered acquisitions shared handlers and local binding restrictions', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts'), deletion = load('graphDelete.ts'), lists = load('graphLists.ts');
+    const { normalizedAst } = require('./graph-browser-host.cjs');
+    let tree = await parse('let^`resource`=0 with^lease=acquire(17) {use(lease) catch^:handle() finally^:close()}');
+    const scope = () => tree.root.fields.items[1];
+    tree = await parse(apply(tree.source, structure.editStructure(tree, scope(), 'resource:add')));
+    assert.deepEqual(normalizedAst(tree), normalizedAst(await parse('let^`resource`=0 with^lease=acquire(17) with^resource2=nil^ {use(lease) catch^:handle() finally^:close()}')));
+    for (const binding of scope().fields.items) {
+        assert(!lists.listInsertions(tree).some(s => s.kind === 'define' && s.start === binding.start));
+        assert.deepEqual(structure.structureTemplates(tree, binding), []);
+        for (const target of binding.fields.targets) assert(!deletion.deleteSites(tree).some(s => s.start === target.start && s.end === target.end));
+    }
+    const first = scope().fields.items[0], site = deletion.deleteSites(tree).find(s => s.start === first.start && s.end === first.end);
+    assert(site); tree = await parse(apply(tree.source, deletion.deleteFromGraph(tree, site)));
+    assert.deepEqual(normalizedAst(tree), normalizedAst(await parse('let^`resource`=0 with^resource2=nil^ {use(lease) catch^:handle() finally^:close()}')));
+    assert(!structure.structureTemplates(tree, scope()).some(c => c.id.startsWith('remove-resource:')));
+    tree = await parse('with^callback=f^{let^inside=1 return^inside} {}');
+    assert.deepEqual(structure.structureTemplates(tree, tree.root.fields.items[0].fields.items[0]), []);
+}));
+
 test('empty ordinary block bodies retain insertion sites beside cleanup sections', { timeout: 30000 }, async () => withLhatServer(async parse => {
     for (const source of [
         'do^{finally^:cleanup()}', 'let^run=p^{finally^:cleanup()}',

@@ -476,6 +476,8 @@
     "Remove catch": "Remove catch",
     "Remove finally section": "Remove finally section",
     "Add finally section": "Add finally section",
+    "Add resource binding": "Add resource binding",
+    "Remove resource binding": "Remove resource binding",
     "Catch filter": "Catch filter",
     "Enter an error kind or alternatives": "Enter an error kind or alternatives",
     "Use catch filter": "Use catch filter",

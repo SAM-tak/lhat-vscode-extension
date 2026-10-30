@@ -2092,7 +2092,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         const rangeBound = kind === "for" ? kids.find(child => child.field === "bound")?.node : undefined;
         const rangeTokens = rangeBound ? syntaxTokens(source, node.start, rangeBound.start) : [];
         const rangeTo = rangeTokens.slice(-1)[0];
-        const rangeFocus = rangeTo?.text === "to^" && rangeTokens.some(token => token.text === "from^")
+        const rangeFocus = ["to^", "downto^"].includes(rangeTo?.text ?? "") && rangeTokens.some(token => token.text === "from^")
             ? kids.filter(child => child.field === "focus") : [];
         let rangeDrawn = false;
         const lastStatementEnd = kids.filter(child => child.field === "items").slice(-1)[0]?.node.end ?? node.start;
@@ -2103,9 +2103,10 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                     const list = commaList(node, "focus");
                     const focus = list ? [listContent(list, childUnfold, inner_avail)]
                         : rangeFocus.map(child => build(child.node, "expr", childUnfold, inner_avail));
-                    const arrow = leaf({ ...node, kind: "range-arrow", start: rangeTo.start, end: rangeTo.end }, "");
+                    const marker = { ...node, kind: rangeTo.text === "to^" ? "range-arrow" : "binding-keyword", start: rangeTo.start, end: rangeTo.end };
+                    const arrow = leaf(marker, rangeTo.text === "to^" ? "" : makeLabel(marker, [], MAX_LABEL));
                     arrow.lhat = { ...arrow.lhat!, noExecutionHandles: true };
-                    arrow.width = px(40);
+                    if (rangeTo.text === "to^") arrow.width = px(40);
                     const children = [...focus, arrow, build(rangeBound, "expr", childUnfold, inner_avail)];
                     children.forEach(memberHandles);
                     const rowId = nextId("loop-range");
@@ -2118,6 +2119,16 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
                 continue;
             }
             if (field === "bound" && loopConditions.has(node)) continue;
+            if (kind === "for" && field === "step") {
+                const token = syntaxTokens(source, node.start, c.start).slice(-1)[0];
+                if (token?.text === "step^") {
+                    const keyword = { ...node, kind: "binding-keyword", start: token.start, end: token.end };
+                    const step = inlineBox({ ...c, kind: "loop-step", start: token.start },
+                        [leaf(keyword, makeLabel(keyword, [], MAX_LABEL)), build(c, "expr", childUnfold, inner_avail)]);
+                    step.lhat = { ...step.lhat!, layoutOnly: true, noExecutionHandles: true };
+                    inner.push(step); continue;
+                }
+            }
             const list = commaList(node, field);
             if (list && node.kind === "for") {
                 if (!consumedLists.has(field)) { inner.push(listContent(list, childUnfold, inner_avail)); consumedLists.add(field); }

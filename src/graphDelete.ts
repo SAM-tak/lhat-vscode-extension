@@ -28,6 +28,9 @@ export function structuralDeletions(tree: AstReply): { site: DeleteSite; owner: 
                 if (branch) {
                     const branches = (node.kind === "for" ? body : node)?.fields?.items;
                     if (Array.isArray(branches)) element = branches[Number(branch[1])];
+                } else if (choice.id.startsWith("remove-resource:")) {
+                    const bindings = node.fields?.items;
+                    if (Array.isArray(bindings)) element = bindings[Number(choice.id.slice("remove-resource:".length))];
                 } else if (choice.id.startsWith("remove-catch:")) {
                     const arms = scope?.fields?.arms;
                     if (Array.isArray(arms)) element = arms[Number(choice.id.slice("remove-catch:".length))];
@@ -80,7 +83,7 @@ function bindingPairs(tree: AstReply): [CommaList, CommaList][] {
 
 /** Discard a result without shifting later bindings or evaluating the call again. */
 function discardableBindings(tree: AstReply): AstNode[] {
-    return commaLists(tree).filter(list => list.field === "targets" && hasCallInitializer(list.node, tree.source) &&
+    return commaLists(tree).filter(list => list.field === "targets" && syntaxTokens(tree.source, list.node.start, list.node.end)[0]?.text !== "with^" && hasCallInitializer(list.node, tree.source) &&
         (list.node.kind === "define" || list.node.kind === "reassign" && assignmentOperator(list.node, tree.source)?.base === ":="))
         .flatMap(list => list.items).filter(target => {
             const name = target.fields?.name;
