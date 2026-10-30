@@ -3,6 +3,8 @@ import { syntaxTokens } from "./graphSyntax";
 import type { SourceEdit } from "./graphReorder";
 import { literalOf, quoteString } from "./webview/literals";
 
+import { validMemberName, validNamePath } from "./graphNames";
+
 export interface TextSite extends SourceSpan {
     field: "comment" | "module" | "import" | "require" | "name";
     part?: SourceSpan;
@@ -56,7 +58,7 @@ export function editTextField(tree: AstReply, site: TextSite, value: string): So
         }
         return { start: current.start, end: current.end, text: value.split(/\r\n?|\n/).map(line => `# ${line}`).join(newline) };
     }
-    if (site.field === "name") return /^[\p{L}_][\p{L}\p{N}_]*\^?$/u.test(value) ? { ...current.part!, text: value } : undefined;
-    if (site.field !== "require" && !/^[\p{L}_][\p{L}\p{N}_]*(?:\.[\p{L}_][\p{L}\p{N}_]*)*$/u.test(value)) return undefined;
+    if (site.field === "name") return validMemberName(value) ? { ...current.part!, text: value } : undefined;
+    if (site.field !== "require" && !validNamePath(value)) return undefined;
     return { ...current.part!, text: site.field === "require" ? quoteString(value) : value };
 }

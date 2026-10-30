@@ -41,3 +41,22 @@ test('declaration names and member keys cannot be replaced but default values ca
     assert(sites.some(s => s.start === source.lastIndexOf('a')));
     assert.deepEqual(expressionSites({ ...tree, root: { ...tree.root, kind: 'disabled' } }), []);
 });
+
+test('quoted names keep dots, pipes and escaped backticks inside one reference segment', () => {
+    const { validReference, validMember, validExpressionReference } = mod.exports;
+    for (const name of ['`a b`','`a``b`','obj.`a.b`','`a|b`.`c,d`','self^.`count value`','$obj.`a b`'])
+        assert(validReference(name), name);
+    for (const name of ['``','`open','`a\nb`','`a`^','$`a b`','obj.','`a` ; print(1)','obj..`a b`'])
+        assert(!validReference(name), name);
+    assert(validMember('`a.b`'));
+    assert(validExpressionReference({ errorName:true }, '`problem name`.`bad|state`'));
+    assert(validExpressionReference({ delegateName:true }, 'self^.`field.name`'));
+    assert(!validExpressionReference({ delegateName:true }, 'obj.`field.name`'));
+    const tree = operatorExpression(), site = expressionSites(tree).find(s => tree.source.slice(s.start,s.end) === '3');
+    assert.equal(replaceExpression(tree, site, 'reference:`a.b`').text, '`a.b`');
+    assert.equal(replaceExpression(tree, site, 'reference:`a` ; print(1)'), undefined);
+    const { quoteName, nameValue } = require('./graph-browser-host.cjs').load('graphNames.ts');
+    for (const value of ['plain','a b','a`b','`a`','a.b','a|b','123']) assert.equal(nameValue(quoteName(value)), value);
+    for (const value of ['', 'a\nb']) assert.equal(quoteName(value), undefined);
+
+});

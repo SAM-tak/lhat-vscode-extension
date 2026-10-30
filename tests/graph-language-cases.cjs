@@ -22,6 +22,7 @@ function languageCases() {
         { name: 'position-types', source: 'let^f=f^arg:t^{number^[3],[string^]:any^,self^{field:number^}}{0}' },
         { name: 'handlers', source: 'errordef^Problem{First,Second} if^true^{try^work() catch^Problem.First|Problem.Second: print(1) catch^: finally^:print(2)}' },
         { name: 'cleanup-transfer', source: 'let^run=p^{do^{if^true^{return^} work() catch^:handle() finally^:cleanup()} after()}' },
+        { name: 'quoted-names', source: 'let^`display name`={`a.b`=1} let^`a``b`=`display name`.`a.b` let^kind=id^`a|b` let^read=f^value:t^{`a.b`:number^}{value.`a.b`}' },
         { name: 'recovery', source: 'let^value=)', recovery: true },
         { name: 'annotation', source: '@game let^value=0' },
     );

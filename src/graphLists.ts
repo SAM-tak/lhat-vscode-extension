@@ -1,3 +1,4 @@
+import { validName, sourceNames } from "./graphNames";
 import { freshMarker } from "./graphTypes";
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
@@ -152,7 +153,7 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
     const list = findList(tree, site);
     if (!list) return [];
     const sourceText = (node: AstNode) => tree.source.slice(node.start, node.end);
-    const used = new Set(syntaxTokens(tree.source).map(t => t.text));
+    const used = sourceNames(tree.source);
     const name = (base: string) => { let next = base, i = 2; while (used.has(next)) next = `${base}${i++}`; return next; };
     const choice = (id: keyof typeof LIST_TEMPLATE_LABELS, text: string): StatementTemplate => ({ id, label: LIST_TEMPLATE_LABELS[id], text });
     if (list.node.kind === "define") return [choice("binding", "_^ = nil^")];
@@ -196,7 +197,7 @@ export function listTemplates(tree: AstReply, site: ListInsertion): StatementTem
     if (list.node.kind === "pattern-list") return [...values, choice("typePattern", "fits^number^"), choice("rangePattern", "0 to^1")];
     if (list.mode === "member") {
         const member = choice("member", `${name("value")} = 0`);
-        const delegate = list.items.map(item => one(item, "key")).find(key => key?.kind === "ident" && /^[\p{L}_][\p{L}\p{N}_]*$/u.test(sourceText(key)));
+        const delegate = list.items.map(item => one(item, "key")).find(key => key?.kind === "ident" && validName(sourceText(key)));
         if (list.node.kind === "def") return [member, choice("typeMember", `${name("value")}: number^`),
             choice("abstract", `abstract^${name("value")}: number^`),
             choice("operator", "op^<=> = f^self^, rhs:Self^ { return^0 }"),

@@ -94,7 +94,7 @@ test('language AST cases render and export in normal, folded and drilled views w
                 await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
                 await until(ready);
                 await snapshot(item, index, 'expanded');
-                if (['annotation','callable-modifiers','coroutine','position-types','handlers','cleanup-transfer'].includes(item.name)) {
+                if (['annotation','callable-modifiers','coroutine','position-types','handlers','cleanup-transfer','quoted-names'].includes(item.name)) {
                     if (item.name === 'annotation') assert(await evaluate(`!!document.querySelector('.annotation-box')`));
                     const screenshot = await call('Page.captureScreenshot', { format: 'png' });
                     fs.writeFileSync(path.join(artifactDirectory, `${index}-expanded.png`), Buffer.from(screenshot.data, 'base64'));
@@ -2895,6 +2895,7 @@ test('nested table patterns are built, edited and deleted with shared expression
             await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
             await client.until(`!document.querySelector('.svg-export>button').disabled`);
             await ui.expression(table(), 'table');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
             await ui.addElement('member', table());
             await ui.input(`.name-input[data-reference-start="${entry().fields.key.start}"]`, 'child');
             await ui.expression(entry().fields.value, 'table');
@@ -3005,6 +3006,62 @@ test('a typed variadic function is constructed through parameter, reference and 
             await ui.expression(returned().fields.value[0], 'reference:...');
             await ui.expression(returned().fields.value[0], 'index');
             await ui.structure(returned(), 'return:implicit');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('quoted declarations and member references are reconstructed and remain renameable through live graph controls', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        const expected = normalizedAst(await parse('let^`a``b`={`a.b`=0} print(`a``b`.`a.b`)'));
+        await browser({ ...routes, '/': { type:'text/html', body:html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), definition = () => host.tree.root.fields.items[0];
+            const target = () => definition().fields.targets[0], table = () => definition().fields.values[0];
+            const rename = async name => ui.input(`.name-input[data-reference-start="${target().start}"]`, name);
+            await ui.add('let');
+            await rename('`display name`');
+            await ui.expression(table(), 'table');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.addElement('member', table());
+            const key = table().fields.items[0].fields.key;
+            await ui.input(`.name-input[data-reference-start="${key.start}"]`, '`a.b`');
+            await ui.add('call');
+            const argument = () => host.tree.root.fields.items[1].fields.value.fields.argument[0];
+            await ui.expression(argument(), 'reference:`display name`.`a.b`');
+            await rename('`a``b`');
+            assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
+            await rename('normal');
+            assert(host.tree.source.includes('print(normal.`a.b`)'), host.tree.source);
+            await rename('`日本 語`');
+            assert(host.tree.source.includes('print(`日本 語`.`a.b`)'), host.tree.source);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
+test('quoted type member names, qualified types and error alternatives are editable in their live menus', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server);
+        const expected = normalizedAst(await parse('let^function=f^value:`module name`.`a.b`{return^0} do^{catch^`problem|name`.`bad state`|Other:}'));
+        await browser({ ...routes, '/': { type:'text/html', body:html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), fn = () => host.tree.root.fields.items[0].fields.values[0];
+            await ui.add('function');
+            await client.evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.textContent==='Unfold All')?.click()`);
+            await ui.addElement('parameter', fn(), 'params');
+            const name = () => fn().fields.params[0].fields.name;
+            await ui.typeStructure(name(), 'type:name:t^{}');
+            await ui.typeStructure(name(), 'type:append:items');
+            await ui.typeStructure(name(), 'type:rename:0:`a.b`');
+            assert(host.tree.source.includes('`a.b`: number^'), host.tree.source);
+            await ui.typeStructure(name(), 'type:reference:`module name`.`a.b`');
+            await ui.add('block');
+            const block = () => host.tree.root.fields.items[1];
+            await ui.structure(block(), 'catch:all');
+            await ui.structure(block().fields.arms[0], 'catch:filter:`problem|name`.`bad state`|Other');
             assert.deepEqual(normalizedAst(host.tree), expected, host.tree.source);
             assert.deepEqual(client.errors, []);
         });

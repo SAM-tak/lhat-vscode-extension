@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { AstReply, FromWebview } from "./protocol";
 import { typeSites } from "./graphTypes";
+import { validName } from "./graphNames";
 
 /** Use the registered LSP provider, never textual search/replace or serialization. */
 export async function renameFromGraph(document: vscode.TextDocument,
@@ -19,7 +20,7 @@ export async function renameFromGraph(document: vscode.TextDocument,
     // declaration, using the same version/span checks as every graph edit.
     if (message.oldName === "_^" && tree?.source === document.getText() &&
         typeSites(tree).some(site => site.start === message.start && site.end === message.end)) {
-        if (!/^[\p{L}_][\p{L}\p{N}_]*$/u.test(message.newName)) {
+        if (!validName(message.newName)) {
             throw new Error(vscode.l10n.t("The language server did not accept this name."));
         }
         const edit = new vscode.WorkspaceEdit();

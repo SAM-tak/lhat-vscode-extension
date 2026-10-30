@@ -1,3 +1,4 @@
+import { sourceNames } from "./graphNames";
 import type { AstNode } from "./protocol";
 import { syntaxTokens } from "./graphSyntax";
 
@@ -31,7 +32,7 @@ export function forExpression(node: AstNode, source: string): boolean {
 
 /** Wrapping a scope must not capture any existing reference. */
 export function freshFocus(source: string): string {
-    const used = new Set(syntaxTokens(source).map(token => token.text));
+    const used = sourceNames(source);
     let name = "local", index = 2;
     while (used.has(name)) name = `local${index++}`;
     return name;

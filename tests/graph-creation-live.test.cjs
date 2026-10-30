@@ -12,6 +12,113 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('quoted references, type names, type member keys and catch filters preserve their complete syntax', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const structure = load('graphStructure.ts'), texts = load('graphTextFields.ts');
+    for (const name of ['`a b`','`a``b`','`a.b`.`c|d`','obj.`a,b`','self^.`a b`']) {
+        let tree = await parse('let^value=nil^');
+        const site = expressions.expressionSites(tree).find(s => s.kind === 'hat-ident');
+        const change = expressions.replaceExpression(tree, site, `reference:${name}`); assert(change, name);
+        tree = await parse(apply(tree.source, change));
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+        assert(tree.source.includes(name));
+    }
+    let tree = await parse('let^read=f^x:t^{value:number^}{0}');
+    const type = () => tree.root.fields.items[0].fields.values[0].fields.params[0].fields.type;
+    tree = await parse(apply(tree.source, structure.editStructure(tree, type(), 'type:rename:0:`a.b`')));
+    assert(tree.source.includes('`a.b`:number^'));
+    tree = await parse(apply(tree.source, structure.editStructure(tree, type(), 'type:reference:`module name`.`a.b`')));
+    assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    tree = await parse('do^{catch^error^:}');
+    const arm = tree.root.fields.items[0].fields.arms[0];
+    tree = await parse(apply(tree.source, structure.editStructure(tree, arm, 'catch:filter:`problem|name`.`bad state` | Other')));
+    assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    assert.equal(tree.root.fields.items[0].fields.arms[0].fields.condition.kind, 'type-union');
+    for (const source of ['module^old.name','import^old.name','let^name=id^old']) {
+        tree = await parse(source); const field = texts.textFields(tree).find(f => f.site.field !== 'comment');
+        const change = texts.editTextField(tree, field.site, '`a.b`'); assert(change);
+        tree = await parse(apply(tree.source, change));
+        assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    }
+    tree = await parse('let^value={["a`b"]=1}');
+    const entry = tree.root.fields.items[0].fields.values[0].fields.items[0];
+    tree = await parse(apply(tree.source, structure.editStructure(tree, entry, 'key:identifier')));
+    assert(tree.source.includes('`a``b`=1'));
+    assert(!flat(tree.root).some(n => n.kind === 'error'), tree.source);
+    const namedEntry = tree.root.fields.items[0].fields.values[0].fields.items[0];
+    tree = await parse(apply(tree.source, structure.editStructure(tree, namedEntry, 'key:string')));
+    const stringKey = tree.root.fields.items[0].fields.values[0].fields.items[0].fields.key;
+    assert.equal(load('webview/literals.ts').literalOf(stringKey, tree.source).value, 'a`b');
+
+    tree = await parse('let^`option name`=1 for^1{when^`option name`:print(0)}');
+    const pattern = load('graphPatterns.ts').patternLists(tree)[0].items[0];
+    assert.equal(tree.source.slice(pattern.start, pattern.end), '`option name`');
+    const replacement = expressions.replaceExpression(tree, pattern, 'reference:`other name`'); assert(replacement);
+    tree = await parse(apply(tree.source, replacement));
+    assert(tree.source.includes('when^`other name`:print(0)'), tree.source);
+
+}));
+
+test('source-backed quoted declarations rename through the real server and keep all references', { timeout: 30000 }, async () => withLhatServer(async (parse, server) => {
+    const { graphHost, load } = require('./graph-browser-host.cjs'), { toElk } = load('webview/map.ts');
+    const host = await graphHost(parse, server, 'let^value=1 print(value)');
+    for (const name of ['`display name`','`日本 語`','`a``b`','normal']) {
+        const target = host.tree.root.fields.items[0].fields.targets[0];
+        await host.edit({ type:'rename', id:'quoted', start:target.start, end:target.end,
+            oldName:host.tree.source.slice(target.start,target.end), newName:name, version:host.version });
+        assert.equal(host.tree.source, `let^${name}=1 print(${name})`);
+        const boxes = node => [node, ...(node.children ?? []).flatMap(boxes)];
+        assert(boxes(toElk(host.tree)).flatMap(n => n.lhat?.labelParts ?? []).some(part => part.name?.value === name), 'the declaration remains an editable name');
+    }
+    const discard = await graphHost(parse, server, 'let^_^=1');
+    const target = discard.tree.root.fields.items[0].fields.targets[0];
+    await discard.edit({ type:'rename', id:'materialize', start:target.start, end:target.end,
+        oldName:'_^', newName:'`replacement name`', version:discard.version });
+    assert.equal(discard.tree.source, 'let^`replacement name`=1');
+}));
+
+test('quoted cross-unit rename keeps the actual declaration width when a use has another spelling', { timeout: 30000 }, async () => withLhatServer(async (parse, server) => {
+    const fs = require('node:fs'), { fileURLToPath, pathToFileURL } = require('node:url');
+    const library = path.join(path.dirname(fileURLToPath(server.uri)), 'quoted-library.lh');
+    const librarySource = 'public^let^value=1'; fs.writeFileSync(library, librarySource);
+    const source = 'let^lib=require^"quoted-library.lh"\nprint(lib.`value`)';
+    const tree = await parse(source);
+    assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+    const edit = await server.request('textDocument/rename', { textDocument:{ uri:server.uri }, position:{ line:1, character:10 }, newName:'`new name`' });
+    const files = new Map([[server.uri, source], [pathToFileURL(library).href, librarySource]]);
+    assert.equal(Object.keys(edit.changes).length, 2);
+    for (const [uri, changes] of Object.entries(edit.changes)) {
+        const text = [...files].find(([key]) => key.toLowerCase() === uri.toLowerCase())[1];
+        const offset = pos => text.split('\n').slice(0,pos.line).reduce((n,line)=>n+line.length+1,0)+pos.character;
+        const expected = text === source ? '`value`' : 'value';
+        assert.equal(changes.length, 1);
+        assert.equal(text.slice(offset(changes[0].range.start), offset(changes[0].range.end)), expected);
+        assert.equal(changes[0].newText, '`new name`');
+    }
+    assert.equal(fs.readFileSync(library, 'utf8'), librarySource);
+}));
+
+test('fresh graph names and type shadowing compare quoted and ordinary spellings by identity', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const lists = load('graphLists.ts'), structure = load('graphStructure.ts');
+    let tree = await parse('let^`value`=0');
+    const choice = api.statementTemplates(tree, api.statementInsertions(tree).find(s => s.before === undefined)).find(c => c.id === 'let');
+    assert(choice.text.includes('value2'), choice.text);
+    tree = await parse('let^items={`value`=0}');
+    const member = lists.listTemplates(tree, lists.listInsertions(tree).find(s => s.kind === 'table' && s.before === undefined)).find(c => c.id === 'member');
+    assert(member.text.includes('value2'), member.text);
+    tree = await parse('let^`local`=7 let^value=`local`');
+    const value = tree.root.fields.items[1].fields.values[0];
+    const edit = expressions.replaceExpression(tree, value, 'local'); assert(edit);
+    assert(edit.text.includes('let^local2'), edit.text);
+    for (const source of ['let^Item=def^{} let^f=f^`Item`:number^,x:any^{}', 'let^`Item`=def^{} let^f=f^Item:number^,x:any^{}']) {
+        tree = await parse(source);
+        const type = tree.root.fields.items[1].fields.values[0].fields.params[1].fields.type;
+        assert(!structure.structureTemplates(tree, type).some(c => c.id === 'type:name:Item' || c.id === 'type:name:`Item`'), source);
+    }
+    tree = await parse('let^`i`=7 repeat^2{print(`i`)}');
+    const loop = tree.root.fields.items[1], change = structure.editStructure(tree, loop, 'mode:range');
+    assert(change.text.startsWith('for^i2 '), change.text);
+}));
+
 test('qualified type references replace the whole type and never expose value access controls', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const structures = load('graphStructure.ts');
     const type = tree => tree.root.fields.items[0].fields.values[0].fields.params[0].fields.type;

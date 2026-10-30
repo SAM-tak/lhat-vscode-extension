@@ -1,3 +1,4 @@
+import { validSymbolName } from "./graphNames";
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import { syntaxTokens, type SyntaxToken } from "./graphSyntax";
 
@@ -33,7 +34,7 @@ export function patternLists(tree: AstReply): WrittenPatternList[] {
             const operator = left && right && left.end <= right.start
                 ? syntaxTokens(source, left.end, right.start).find(t => !["(", ")"].includes(t.text)) : undefined;
             const generated = node.kind === "binary" && (!operator || [",", ":", "to^", "downto^"].includes(operator.text))
-                || node.kind === "ident" && !/^[\p{L}_][\p{L}\p{N}_]*\^*$/u.test(text);
+                || node.kind === "ident" && !validSymbolName(text);
             const isLiteral = ["int", "float", "string", "bool", "nil", "hat-ident"].includes(node.kind);
             const width = node.end - node.start;
             if (!generated && node.start >= span.start && node.end <= span.end && width > 0 &&

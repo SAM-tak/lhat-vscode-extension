@@ -12,14 +12,14 @@ npm run bundle:rf
 node --test --test-name-pattern="language AST cases render" tests/graph-svg-browser.test.cjs
 ```
 
-出力の `AST audit artifacts` にある一時ディレクトリへ、各状態の SVG、補足例6種類の PNG、`coverage.json` を保存する。
+出力の `AST audit artifacts` にある一時ディレクトリへ、各状態の SVG、補足例7種類の PNG、`coverage.json` を保存する。
 各題材は新しいブラウザーで開き、初期の表示設定をそろえる。
 通常・全展開・全折りたたみを検証し、展開先がある場合は実際のホイール操作とクリックでドリルダウンして元へ戻る。
 空の文書、単純な公開文字列、エラー回復の葉、単位のアノテーションには独立した展開先がない。
 
 ## 確認結果
 
-2026-10-30、28題材・108表示状態で以下が通過した。
+2026-10-30、29題材・112表示状態で以下が通過した。
 
 - ブラウザーの実行時例外がない。
 - ノードの座標・寸法と辺の経路が有限で、寸法が負でない。
@@ -57,6 +57,7 @@ node --test --test-name-pattern="language AST cases render" tests/graph-svg-brow
 | position-types | 13 / 17 / 13 | 確認済み |
 | handlers | 51 / 57 / 4 | 確認済み |
 | cleanup-transfer | 15 / 70 / 15 | 確認済み |
+| quoted-names | 25 / 33 / 25 | 確認済み |
 | recovery | 6 / 6 / 6 | 展開先なし |
 | annotation | 7 / 7 / 7 | 展開先なし |
 
@@ -68,5 +69,8 @@ node --test --test-name-pattern="language AST cases render" tests/graph-svg-brow
 `handlers` と `cleanup-transfer` のPNGで、通常経路とcatchの合流後にfinallyが表示されることを確認した。実サーバーのブロック・if・手続き・ループから作ったグラフについて、finallyを除くと後続文への経路がなくなることを `graph-execution.test.cjs` で検証する。ループのcatchは反復内で合流し、finallyはループの後に置く。
 途中離脱は通常の続行と混同しない破線で後処理への関係を示す。return・panic・break・next、多重のbreak/next、入れ子のfinallyと別の手続きへの境界を検証した。折りたたんだ内側の離脱はその箱から関係を示し、同じ箱に収まる接続は描かない。
 `cleanup transfer ports` のブラウザーテストは折りたたみ・ドリルダウン・再展開後のポートと破線、SVGの破線を確認する。`lhat-finally-transfer.png` と `lhat-finally-transfer-tail.png` を一時ディレクトリへ保存する。空のreturnの入力・後処理用ポートも確認し、表示操作でソースが変わらないことを検証する。
+`quoted-names` のPNGで、引用名の宣言入力・メンバー参照・名前値の表示を確認した。空の文書からのUI作成とAST・字句列の一致、引用名→通常名→日本語の引用名への再リネームも検証する。型のメンバー名・修飾型名・catchの選択肢でも同じ引用表記を使う。
+引用名のリネームは lhat 本体の `327e092` 以降のLSPを使う。引用された使用箇所と通常表記の宣言が別ファイルにある場合も、各ファイルの実際の綴りの範囲を編集対象にする。C側の定義参照・references・ホバー・シグネチャ・LTONのテストと、実サーバーによる別ファイルのWorkspaceEditを確認した。
+自動採番とスコープ内の型候補は、通常名と同じ内容の引用名を同一の名前として扱う。変数・メンバー・焦点・ループ変数の衝突回避と、型名の隠蔽を実サーバーで検証した。
 各種類の表示方針と、UI作成・内容変更・構造変更・削除の検証との対応を照合し、残る描画内容と構文の細部を確認する。
 `visual-editor-unimplemented.md` の最終確認欄は、この照合が完了するまで未完了のままにする。

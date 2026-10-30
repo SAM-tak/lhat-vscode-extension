@@ -1,3 +1,4 @@
+import { nameValue } from "./graphNames";
 import { forExpression } from "./graphLoops";
 import type { AstNode, AstReply, SourceSpan } from "./protocol";
 import type { SourceEdit } from "./graphReorder";
@@ -107,7 +108,7 @@ export function statementTemplates(tree: AstReply, site: StatementInsertion): St
         list.node.kind === site.kind && list.field === site.field)!;
     const used = new Set<string>();
     const names = (node: AstNode) => {
-        if (node.kind === "ident") used.add(tree.source.slice(node.start, node.end));
+        if (node.kind === "ident") used.add(nameValue(tree.source.slice(node.start, node.end)));
         for (const value of Object.values(node.fields ?? {})) {
             for (const child of Array.isArray(value) ? value : [value]) names(child);
         }

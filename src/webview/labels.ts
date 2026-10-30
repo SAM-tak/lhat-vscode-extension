@@ -1,3 +1,4 @@
+import { validSymbolName } from "../graphNames";
 import type { AstNode, SourceSpan, TypeSite } from "../protocol";
 import { typeSites } from "../graphTypes";
 import { HATS, type LabelCategory } from "./vocabulary";
@@ -75,7 +76,7 @@ function semanticTokens(source: string, root: AstNode,
         });
         if (node.kind === "ident" || node.kind === "hat-ident") {
             const text = source.slice(node.start, node.end);
-            if (/^[\p{L}_][\p{L}\p{N}_]*\^*$/u.test(text) || /^`(?:[^`]|``)+`$/u.test(text)) {
+            if (validSymbolName(text)) {
                 symbols.set(node.start, { start: node.start, end: node.end });
             }
         }
@@ -92,7 +93,7 @@ function semanticTokens(source: string, root: AstNode,
                 /^self\^+$/.test(source.slice(name.start, name.end)))) protectName(name);
             if (name && !Array.isArray(name) && ["ident", "hat-ident"].includes(name.kind) &&
                 !/^self\^+$/.test(source.slice(name.start, name.end)) &&
-                (/^[\p{L}_][\p{L}\p{N}_]*\^*$/u.test(source.slice(name.start, name.end)) || /^`(?:[^`]|``)+`$/u.test(source.slice(name.start, name.end)))) {
+                validSymbolName(source.slice(name.start, name.end))) {
                 tokens.push({ start: name.start, end: name.end,
                     name: { start: name.start, end: name.end, value: source.slice(name.start, name.end) } });
             }
@@ -103,7 +104,7 @@ function semanticTokens(source: string, root: AstNode,
                 const name = target.fields?.name ?? target;
                 if (Array.isArray(name)) continue;
                 const value = source.slice(name.start, name.end);
-                if ((name.kind === "ident" || name.kind === "hat-ident") && /^[\p{L}_][\p{L}\p{N}_]*\^*$/u.test(value)) {
+                if ((name.kind === "ident" || name.kind === "hat-ident") && validSymbolName(value)) {
                     const span = { start: name.start, end: name.end, value };
                     tokens.push({ ...span, name: span });
                     protectName(name);

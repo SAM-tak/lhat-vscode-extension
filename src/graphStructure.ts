@@ -10,16 +10,18 @@ import { assignmentOperator, ASSIGNMENT_LABELS } from "./graphAssignments";
 import { typeSites, freshMarker, isTypeNode } from "./graphTypes";
 import { iteratorNames, freshFocus } from "./graphLoops";
 import { handlerActions, validCatchFilter } from "./graphHandlers";
+import { validMemberName, nameSegments, quoteName, nameValue, sourceNames, sameName } from "./graphNames";
 
-export const validTypeMemberName = (name: string) => /^[\p{L}_][\p{L}\p{N}_]*\^?$/u.test(name);
-
-export const validTypeReference = (name: string) => /^(?:[\p{L}_][\p{L}\p{N}_]*\^?|Self\^+)(?:\.[\p{L}_][\p{L}\p{N}_]*\^?)*$/u.test(name)
-    && !["f^", "p^"].includes(name.split(".")[0]);
+export function validTypeReference(text: string): boolean {
+    const path = nameSegments(text);
+    return !!path && !["f^", "p^"].includes(path[0]) &&
+        (validMemberName(path[0]) || /^Self\^+$/.test(path[0])) && path.slice(1).every(validMemberName);
+}
 
 export function validStructureInput(input: NonNullable<StatementTemplate["input"]>, value: string): boolean {
     if (input.kind === "catchType") return validCatchFilter(value);
     if (input.kind === "typeName") return validTypeReference(value);
-    if (input.kind !== "count") return validTypeMemberName(value);
+    if (input.kind !== "count") return validMemberName(value);
     if (!/^[0-9]/.test(value) || !isNumberLiteral(value)) return false;
     try { const count = BigInt(value.replace(/_/g, "")); return count > 0n && count <= 256n; } catch { return false; }
 }
@@ -126,21 +128,23 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
     if (isTypeNode(node)) {
         const names = new Set(["number^", "string^", "bool^", "nil^", "any^", "t^{}"]);
         const owner = typeSites(tree).find(site => site.annotation && site.annotation.start <= node!.start && site.annotation.end >= node!.end);
+        const removeName = (name: string) => { for (const candidate of names) if (sameName(candidate, name)) names.delete(candidate); };
         const collect = (scope: AstNode) => {
             if (scope.kind === "def") names.add("Self^");
             if (scope.kind === "block") for (const declaration of array(scope.fields?.items)) {
                 if (["enumdef", "errordef"].includes(declaration.kind)) {
-                    const name = one(declaration, "name"); if (name) names.add(source.slice(name.start, name.end));
+                    const name = one(declaration, "name");
+                    if (name) { const text = source.slice(name.start, name.end); removeName(text); names.add(text); }
                 }
                 if (declaration.kind === "define") array(declaration.fields?.targets).forEach((target, index) => {
                     const value = array(declaration.fields?.values)[index], name = one(target, "name") ?? target;
                     const text = source.slice(name.start, name.end);
+                    removeName(text);
                     if (value && ["def", "type"].includes(value.kind)) names.add(text);
-                    else names.delete(text);
                 });
             }
             if (scope.kind === "func") array(scope.fields?.params).forEach(parameter => {
-                const name = one(parameter, "name"); if (name) names.delete(source.slice(name.start, name.end));
+                const name = one(parameter, "name"); if (name) removeName(source.slice(name.start, name.end));
             });
             Object.values(scope.fields ?? {}).flat().filter(child => child.start <= node!.start && child.end >= node!.end).forEach(collect);
         };
@@ -167,7 +171,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
             if (target.kind !== "self-table") {
                 change("type:reference", "Use a named type", { ...span, text: current });
                 result[result.length - 1].input = { kind: "typeName", value: validTypeReference(current) ? current : "any^" };
-                for (const name of names) if (name !== owner?.name) replace(`type:name:${name}`, "Use type", name);
+                for (const name of names) if (!owner || !sameName(name, owner.name)) replace(`type:name:${name}`, "Use type", name);
                 for (const [id, label, text] of [
                     ["nullable", "Allow nil", `(${current})|nil^`],
                     ["sequence", "Use sequence type", `t^{(${current})[]}`],
@@ -356,13 +360,13 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
                 if (close) end = close.end;
             }
             if (!node.computed) {
-                add("key:string", "Use string key", { start: key.start, end, text: `[${quoteString(source.slice(key.start, key.end))}]` });
+                add("key:string", "Use string key", { start: key.start, end, text: `[${quoteString(nameValue(source.slice(key.start, key.end)))}]` });
                 add("key:number", "Use numeric key", { start: key.start, end, text: "[0]" });
             } else {
                 if (key.kind !== "string") add("key:string", "Use string key", { start: node.start, end, text: '[""]' });
                 if (literalOf(key, source)?.kind !== "number") add("key:number", "Use numeric key", { start: node.start, end, text: "[0]" });
-                const value = key.kind === "string" ? literalOf(key, source)?.value : undefined;
-                if (value && /^[\p{L}_][\p{L}\p{N}_]*$/u.test(value))
+                const value = key.kind === "string" ? quoteName(literalOf(key, source)?.value ?? "") : undefined;
+                if (value)
                     add("key:identifier", "Use identifier key", { start: node.start, end, text: value });
             }
             return result;
@@ -387,7 +391,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         const introduced = ["let^", "var^"].includes(header[1]?.text);
         if (focus.length === 1 && binding?.kind === "define" && targets?.length === 1) {
             if (!introduced) {
-                const used = new Set(syntaxTokens(source).map(t => t.text));
+                const used = sourceNames(source);
                 let name = "subject", serial = 2; while (used.has(name)) name = `subject${serial++}`;
                 add("match-focus:bind", "Name the matched value", { start: marker.end, end: marker.end, text: `let^${name} = ` });
             } else {
@@ -466,7 +470,7 @@ function actions(tree: AstReply, site: StructureSite): Action[] {
         const ranged = header.some(t => t.text === "from^");
         const bound = one(node, "bound"), focus = array(node.fields?.focus), advance = array(node.fields?.advance);
         const textOf = (n: AstNode | undefined, fallback: string) => n ? source.slice(n.start, n.end) : fallback;
-        const used = new Set(syntaxTokens(source).map(t => t.text));
+        const used = sourceNames(source);
         let fresh = "i", serial = 2;
         while (used.has(fresh)) fresh = `i${serial++}`;
         const binding = focus[0], target = binding && array(binding.fields?.targets)[0];

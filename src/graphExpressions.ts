@@ -7,6 +7,8 @@ import { assignmentValues } from "./graphAssignments";
 import { patternLists, patternExpressions } from "./graphPatterns";
 import { iteratorNames, forExpression, freshFocus } from "./graphLoops";
 
+import { validName, validMemberName, validNamePath, nameSegments } from "./graphNames";
+
 export interface ExpressionSite extends SourceSpan { kind: string; assignmentTarget?: boolean; memberKey?: boolean; errorName?: boolean; delegateName?: boolean;
     owner?: SourceSpan; callArguments?: string[]; spreadAllowed?: boolean; operand?: SourceSpan }
 const kinds = new Set(["int", "float", "string", "bool", "nil", "ident", "hat-ident", "hole",
@@ -74,13 +76,20 @@ export function expressionSites(tree: AstReply): ExpressionSite[] {
     return sites;
 }
 
-export const validMember = (text: string) => /^(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+)$/u.test(text);
-export const validReference = (text: string) => text === "..." || /^(?:[\p{L}_][\p{L}\p{N}_]*|(?:\$+|\$\^+)[\p{L}_][\p{L}\p{N}_]*\^?|(?:self|it|this|def)\^+|(?:super|L|t)\^)(?:\.(?:[\p{L}_][\p{L}\p{N}_]*\^?|[0-9]+))*$/u.test(text);
+export const validMember = (text: string) => validMemberName(text) || /^[0-9]+$/.test(text);
+export function validReference(text: string): boolean {
+    if (text === "...") return true;
+    const scope = /^\$(?:\^+|\$*)/.exec(text)?.[0];
+    const path = nameSegments(scope ? text.slice(scope.length) : text);
+    if (!path) return false;
+    const [head, ...tail] = path;
+    const root = scope ? /^[\p{L}_][\p{L}\p{N}_]*\^?$/u.test(head)
+        : validName(head) || /^(?:(?:self|it|this|def)\^+|(?:super|L|t)\^)$/.test(head);
+    return root && tail.every(validMember);
+}
 export const validExpressionReference = (site: ExpressionSite, text: string) => site.delegateName
-    ? /^(?:self\^\.)?[\p{L}_][\p{L}\p{N}_]*$/u.test(text)
-    : site.errorName
-    ? /^[\p{L}_][\p{L}\p{N}_]*(?:\.[\p{L}_][\p{L}\p{N}_]*)*$/u.test(text)
-    : (site.memberKey ? validMember : validReference)(text);
+    ? (text.startsWith("self^.") ? validName(text.slice(6)) : validName(text))
+    : site.errorName ? validNamePath(text) : (site.memberKey ? validMember : validReference)(text);
 
 /** Grouping has no AST node. A binary span may start inside a grouped left operand. */
 export function replacementSpan(tree: AstReply, site: SourceSpan): SourceSpan | undefined {

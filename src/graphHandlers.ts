@@ -3,11 +3,20 @@ import type { SourceEdit } from "./graphReorder";
 import type { StatementTemplate } from "./graphStatements";
 import { syntaxTokens } from "./graphSyntax";
 
+import { validName, validMemberName, nameSegments } from "./graphNames";
+
 const array = (value: AstNode | AstNode[] | undefined): AstNode[] => value ? Array.isArray(value) ? value : [value] : [];
 const one = (node: AstNode, field: string) => array(node.fields?.[field])[0];
 
-export const validCatchFilter = (text: string) => text.split(/\s*\|\s*/).every(name =>
-    /^(?:error\^|localerror\^|[\p{L}_][\p{L}\p{N}_]*(?:\.[\p{L}_][\p{L}\p{N}_]*\^?)*)$/u.test(name));
+export function validCatchFilter(text: string): boolean {
+    const separators = syntaxTokens(text).filter(token => token.text === "|");
+    let from = 0;
+    return [...separators, { start: text.length, end: text.length }].every(separator => {
+        const path = nameSegments(text.slice(from, separator.start).trim());
+        from = separator.end;
+        return !!path && (validName(path[0]) || ["error^", "localerror^"].includes(path[0])) && path.slice(1).every(validMemberName);
+    });
+}
 
 /** A handler belongs to a braced scope, never a branch's unbraced body. */
 export function handlerActions(tree: AstReply, node: AstNode, parent?: AstNode): (StatementTemplate & { edit: SourceEdit })[] {
