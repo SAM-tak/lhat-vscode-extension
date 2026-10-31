@@ -2074,7 +2074,6 @@ function App() {
             data-layout-pending={layoutPending} data-handles-settled={settledNodes === nodes}>
             <DiagnosticTooltip revision={nodes} />
             <div id="bar">
-                <AddAnnotation unit />
                 <button
                     type="button"
                     className={trail.length > 0 ? "active" : undefined}

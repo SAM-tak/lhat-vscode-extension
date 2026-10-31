@@ -494,6 +494,7 @@
     "Add comment": "コメントを追加",
     "Delete comment": "コメントを削除",
     "Node actions": "ノードの操作",
+    "Graph actions": "グラフの操作",
     "Toggle Fold/Unfold": "折りたたみ・展開を切り替え",
     "Toggle statement enabled": "文の有効・無効を切り替え",
     "Cut": "切り取り",

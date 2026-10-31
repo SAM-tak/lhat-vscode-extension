@@ -1,7 +1,7 @@
 import { structureSites, structureTemplates, validStructureInput, type StructureSite } from "../../graphStructure";
 import { deleteSites, type DeleteSite } from "../../graphDelete";
 import { expressionSites, expressionTemplates, validExpressionReference, type ExpressionSite } from "../../graphExpressions";
-import type { AnnotationOwner } from "../../graphAnnotations";
+import { annotationOwners, type AnnotationOwner } from "../../graphAnnotations";
 import React, { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import * as l10n from "@vscode/l10n";
@@ -134,23 +134,27 @@ export function StatementProvider({ value, children }: { value: Host; children: 
             const target = event.target as HTMLElement;
             if (event.defaultPrevented || target.closest('textarea, input, select, [contenteditable="true"], .statement-menu')) return;
             event.preventDefault(); event.stopPropagation();
-            const anchor = target.closest<HTMLElement>('[data-vscode-context]');
+            let anchor = target.closest<HTMLElement>('[data-vscode-context]');
+            const background = !anchor && target.matches('.react-flow__pane, .react-flow__background, .react-flow__background *');
+            if (background) anchor = target.closest<HTMLElement>('.react-flow__pane') ?? target.closest<HTMLElement>('#flow');
             if (!anchor || value.version === undefined) return;
-            const context = JSON.parse(anchor.dataset.vscodeContext ?? "{}");
+            const unit = background && value.tree ? annotationOwners(value.tree)[0] : undefined;
+            const context = background ? { lhatCanAddAnnotation: unit?.canAdd, lhatAnnotationStart: unit?.start,
+                lhatAnnotationEnd: unit?.end, lhatAnnotationKind: unit?.kind } : JSON.parse(anchor.dataset.vscodeContext ?? "{}");
             const actions: { id: string; label: string; run: () => void }[] = [];
             const clip = clipboardTarget(target);
             if (clip && clipboard.available) for (const action of ["cut", "copy", "paste"] as const) actions.push({
                 id: action, label: { cut:"Cut", copy:"Copy", paste:"Paste" }[action], run: () => clipboard.act(action, clip) });
             if (context.lhatCommentTarget) actions.push({ id: "comment-add", label: "Add comment", run: () => comment(context.lhatCommentTarget, "add") });
             if (context.lhatCommentBlock) actions.push({ id: "comment-remove", label: "Delete comment", run: () => comment(context.lhatCommentBlock, "remove") });
-            if (context.lhatCanAddAnnotation) actions.push({ id: "annotation", label: "Add annotation", run: () => window.dispatchEvent(new MessageEvent("message", { data: {
+            if (context.lhatCanAddAnnotation) actions.push({ id: "annotation", label: background ? "Add unit annotation" : "Add annotation", run: () => window.dispatchEvent(new MessageEvent("message", { data: {
                 type: "showAnnotations", ownerStart: context.lhatAnnotationStart, ownerEnd: context.lhatAnnotationEnd,
                 ownerKind: context.lhatAnnotationKind, version: value.version } })) });
             if (context.lhatFoldable) actions.push({ id: "fold", label: "Toggle Fold/Unfold", run: () => window.dispatchEvent(new MessageEvent("message", { data: {
                 type: "toggleFold", key: context.lhatFoldKey, version: value.version } })) });
             if (context.lhatStatement) actions.push({ id: "toggle", label: "Toggle statement enabled", run: () => value.post({ type: "toggleStatement",
                 id: `toggle-${++sequence}`, start: context.lhatStatementStart, end: context.lhatStatementEnd, version: value.version! }) });
-            if (actions.length) setPicker({ id: `context-${++sequence}`, title: "Node actions", anchor, version: value.version,
+            if (actions.length) setPicker({ id: `context-${++sequence}`, title: background ? "Graph actions" : "Node actions", anchor, version: value.version,
                 point: event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined,
                 choices: actions.map(action => ({ id: action.id, label: action.label, text: "" })),
                 apply: async id => { actions.find(action => action.id === id)?.run(); return undefined; } });

@@ -196,15 +196,15 @@ export function useAnnotationOwner(node: { start?: number; end?: number; kind?: 
         ?? actions.owners.find(o => o.start === node.statement?.start && o.end === node.statement?.end && o.kind === "define");
 }
 
-export function AddAnnotation({ start, end, kind, unit = false }: { start?: number; end?: number; kind?: string; unit?: boolean }) {
+export function AddAnnotation({ start, end, kind }: { start?: number; end?: number; kind?: string }) {
     const actions = useContext(Annotations);
-    const owner = unit ? actions.owners[0] : actions.owners.find(o => o.start === start && o.end === end && o.kind === kind);
-    if (!owner || !owner.canAdd || (!unit && (owner.annotations.length || actions.boxes[annotationOwnerKey(owner)]))) return null;
-    const title = unit ? l10n.t("Add unit annotation") : l10n.t("Add annotation");
-    return <button type="button" className={unit ? "annotation-unit-add" : "add-annotation statement-button nodrag nopan nokey"}
+    const owner = actions.owners.find(o => o.start === start && o.end === end && o.kind === kind);
+    if (!owner || !owner.canAdd || owner.annotations.length || actions.boxes[annotationOwnerKey(owner)]) return null;
+    const title = l10n.t("Add annotation");
+    return <button type="button" className="add-annotation statement-button nodrag nopan nokey"
         title={title} aria-label={title} disabled={actions.version === undefined || actions.busy}
         onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
         onClick={event => { event.stopPropagation(); actions.show(owner); }}>
-        {unit ? title : <InsertionIcon />}
+        <InsertionIcon />
     </button>;
 }

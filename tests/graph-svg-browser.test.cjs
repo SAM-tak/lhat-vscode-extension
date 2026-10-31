@@ -87,6 +87,45 @@ async function drillGraphNode({ evaluate, until, call }, node) {
     await until(`document.querySelector('#trail') && ${graphReady}`);
 }
 
+test('background context menus open unit annotation boxes without a toolbar button or source edit', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        for (const source of ['', 'module^demo\nlet^value=1']) {
+            const host = await graphHost(async text => ({ ...await parse(text), annotationChoices: [{ name: 'tool', targets: { unit: true } }] }), server, source);
+            await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+                const { evaluate, until, call } = client, ui = await graphUi(host, client);
+                await until(graphReady);
+                assert.equal(await evaluate(`document.querySelector('#bar').textContent.includes('単位のアノテーションを追加')`), false);
+                const open = async () => {
+                    const point = { x: 800, y: 180 };
+                    assert(await evaluate(`document.elementFromPoint(800,180).matches('.react-flow__pane')`));
+                    for (const type of ['mousePressed', 'mouseReleased']) await call('Input.dispatchMouseEvent', { type, ...point, button: 'right', clickCount: 1 });
+                    await until(`document.querySelector('.statement-menu [role=option]')`);
+                    assert.equal(await evaluate(`document.querySelector('.type-menu-header>span').textContent`), 'グラフの操作');
+                    assert.equal(await evaluate(`document.querySelectorAll('.statement-menu [role=option]').length`), 1);
+                    assert.equal(await evaluate(`document.querySelector('.statement-menu [role=option]>span').textContent`), '単位のアノテーションを追加');
+                    await evaluate(`document.querySelector('.statement-menu [role=option]').click()`);
+                    await until(`document.querySelector('.annotation-box') && !document.querySelector('.statement-menu') && ${graphReady}`);
+                };
+                await open();
+                assert.equal(host.tree.source, source); assert.equal(host.version, 1);
+                assert.equal(await evaluate('window.edits.length'), 0);
+                assert.equal(await evaluate(`document.querySelectorAll('.annotation-row').length`), 0);
+                await open();
+                assert.equal(await evaluate(`document.querySelectorAll('.annotation-box').length`), 1);
+                await ui.annotation(host.tree.root, 'tool');
+                assert(host.tree.source.startsWith('@tool\n'));
+                assert.equal(await evaluate(`document.querySelectorAll('.annotation-row').length`), 1);
+                await evaluate(`window.postMessage({type:'pending'},'*')`);
+                await until(`document.querySelector('#app').dataset.graphVersion===undefined`);
+                await evaluate(`document.querySelector('.react-flow__pane').dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:800,clientY:180}))`);
+                assert.equal(await evaluate(`document.querySelectorAll('.statement-menu').length`), 0);
+                assert.deepEqual(client.errors, []);
+            });
+        }
+    });
+});
+
 test('graph diagnostics highlight visible owners and show error text over input controls without moving nodes', { timeout: 60000 }, async () => {
     await require('./lhat-server.cjs').withLhatServer(async parse => {
         const tree = await parse('let^run=p^{let^bad=1\nprint(bad)}\nlet^other=2');

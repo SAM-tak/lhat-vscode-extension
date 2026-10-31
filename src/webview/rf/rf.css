@@ -757,7 +757,6 @@ textarea.literal-input {
 .annotation-add:has(select:disabled) { opacity: 0.45; cursor: default; }
 .annotation-add:focus-within { border-color: var(--vscode-focusBorder); }
 .annotation-error { position: absolute; top: 100%; left: 0; z-index: 5; padding: 4px; color: var(--vscode-errorForeground); background: var(--vscode-editorWidget-background); min-width: 180px; }
-.annotation-unit-add { display: inline-flex; align-items: center; }
 .add-annotation { position: absolute; right: calc(24px * var(--lhat-scale)); top: calc(-18.7px * var(--lhat-scale)); opacity: 0; z-index: 2; }
 
 .react-flow__node:hover > .add-annotation, .react-flow__node:focus-within > .add-annotation { opacity: 1; }
