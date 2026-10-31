@@ -65,6 +65,30 @@ npm run install-extension
 ライセンスは本体と同じ Apache-2.0（`LICENSE`）。`vsce` は `.vsix` の中に
 これが入っていることを求めるので、リポジトリに置いてある。
 
+## Marketplaceへの公開（GitHub Actions）
+
+`.github/workflows/release.yml` は `v*` タグのpushで各プラットフォームの拡張を公開する。
+認証には Marketplace Trusted Publishing（OIDC）を使う。`@vscode/vsce` 4.1以降を
+`npm ci` で導入し、公開ジョブに `contents: read` と `id-token: write` を付与して
+`vsce publish --oidc` を実行する。PATやAzureのクライアントシークレットは不要。
+
+Publisher `SAMtak` のTrusted Publishingポリシーには、次の値を設定する。
+
+- Repository owner: `SAM-tak`
+- Repository: `lhat-vscode-extension`
+- Workflow: `release.yml`（表示名やディレクトリを含めない）
+- Environment: 空欄（現在の公開ジョブはGitHub Environmentを使わない）
+
+ポリシーでEnvironmentを指定した場合は、公開ジョブの `environment` に同じ名前が必要。
+初回の公開成功後、ほかで使っていなければGitHubの `VSCE_PAT` Secretを削除し、旧PATを失効させる。
+
+手動実行は既定で `dry_run: true` となり、ビルド・パッケージ作成のみを行う。
+OIDCの認証・公開まで確認するには、変更を含む未公開バージョンの `v*` タグで実行する
+（手動実行の場合もタグを選択し、`dry_run: false` にする）。dry runではOIDC認証は検証されない。
+各再試行では新しい `vsce` プロセスがトークンを取得するため、使用済みOIDCトークンを再利用しない。
+
+参照: [VSCodeの公開手順](https://code.visualstudio.com/api/working-with-extensions/publishing-extension#publish-with-github-actions-and-trusted-publishing)
+
 ## ホバー
 
 名前にマウスを乗せると、その名前が届いた定義が出る（07 の 4 章）。

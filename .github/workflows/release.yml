@@ -28,6 +28,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       # One version, several targets: the Marketplace takes them as one
       # release, and publishing them at once has raced before.
@@ -87,7 +90,7 @@ jobs:
           if-no-files-found: error
 
       # A tag publishes; a manual run defaults to proving the package builds.
-      - name: Publish
+      - name: Publish with Trusted Publishing
         if: startsWith(github.ref, 'refs/tags/v') && inputs.dry_run != true
         # vsce has no --no-wait-validation option: it does not wait for that
         # Marketplace operation. Its initial Gallery API call can time out,
@@ -95,7 +98,7 @@ jobs:
         # reached the Marketplace even when its response was lost.
         run: |
           for attempt in 1 2 3; do
-            if npx vsce publish --target ${{ matrix.target }} --githubBranch main --no-dependencies --skip-duplicate; then
+            if npx vsce publish --oidc --target ${{ matrix.target }} --githubBranch main --no-dependencies --skip-duplicate; then
               exit 0
             fi
             if [ "$attempt" -lt 3 ]; then
@@ -103,5 +106,3 @@ jobs:
             fi
           done
           exit 1
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}

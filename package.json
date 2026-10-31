@@ -3,7 +3,7 @@
   "displayName": "L^(Lhat) Language Support",
   "description": "Real-time type-check diagnostics for the L^ (lhat) language, via lhatls",
   "icon": "./images/lhat-logo.png",
-  "version": "0.4.13",
+  "version": "0.4.14",
   "publisher": "SAMtak",
   "license": "Apache-2.0",
   "repository": {
@@ -547,7 +547,7 @@
     "@types/vscode": "^1.85.0",
     "@vscode/l10n": "^0.0.18",
     "@vscode/l10n-dev": "^0.0.35",
-    "@vscode/vsce": "^3.9.2",
+    "@vscode/vsce": "^4.1.0",
     "@xyflow/react": "^12.11.3",
     "elkjs": "^0.12.0",
     "esbuild": "^0.28.2",
@@ -558,6 +558,6 @@
     "vscode-textmate": "^9.3.2"
   },
   "allowScripts": {
-    "@vscode/vsce-sign@2.0.9": true
+    "@vscode/vsce-sign@2.1.0": true
   }
 }
