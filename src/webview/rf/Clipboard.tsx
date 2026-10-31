@@ -13,7 +13,7 @@ export function clipboardTarget(element: Element | null): ClipboardTarget | unde
         start: Number(box.dataset.sourceStart), end: Number(box.dataset.sourceEnd), kind: box.dataset.sourceKind };
 }
 
-type Action = "copy" | "cut" | "paste";
+type Action = "copy" | "cut" | "paste" | "delete";
 const Clipboard = createContext({ insert: true, toggle: () => {},
     act: (_action: Action, _target?: ClipboardTarget) => {}, available: false });
 export const useGraphClipboard = () => useContext(Clipboard);
@@ -43,6 +43,11 @@ export function ClipboardProvider({ version, post, children }: {
         const out = (event: PointerEvent) => { if (!event.relatedTarget) leave(); };
         const key = (event: KeyboardEvent) => {
             if (event.defaultPrevented || event.isComposing || editing()) return;
+            if (event.key === "Delete" && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+                event.preventDefault(); event.stopPropagation();
+                if (!event.repeat) act("delete");
+                return;
+            }
             if (event.key === "Insert" && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
                 event.preventDefault(); event.stopPropagation();
                 if (!event.repeat) setInsert(value => !value);

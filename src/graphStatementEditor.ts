@@ -26,7 +26,9 @@ export async function editStatementFromGraph(document: vscode.TextDocument, tree
     check();
     if (message.type === "clipboard") {
         let change;
-        if (message.action === "paste") {
+        if (message.action === "delete") {
+            change = cutGraphFragment(tree, message.target);
+        } else if (message.action === "paste") {
             const text = await vscode.env.clipboard.readText();
             check();
             change = pasteGraphFragment(tree, message.target, copied?.text === text ? copied : externalGraphFragment(text), message.insert);

@@ -153,6 +153,10 @@ test('clipboard copy leaves the document untouched and asynchronous cut or paste
     assert.equal(options.copied, 'work()'); assert.equal(f.edits.length, 0);
     await f.run({ type: 'clipboard', action: 'paste', target, insert: true });
     assert.equal(f.edits.length, 1);
+    f.mock.env.clipboard = { readText() { assert.fail('delete must not read the clipboard'); }, writeText() { assert.fail('delete must not overwrite the clipboard'); } };
+    await f.run({ type: 'clipboard', action: 'delete', target, insert: false });
+    assert.equal(f.edits.length, 2);
+    assert.equal(f.edits[1].changes[0].text, '');
     for (const action of ['copy', 'cut', 'paste']) {
         const stale = host({ clipboard: document => document.version++ });
         await assert.rejects(stale.run({ type: 'clipboard', action, target, insert: false }), /source changed/);

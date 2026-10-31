@@ -96,10 +96,11 @@ test('hover clipboard shortcuts toggle Insert mode and preserve decorated nodes 
             await graphToolbar(client, 'Unfold All');
             const key = async (key, modifiers = 0) => {
                 for (const type of ['keyDown', 'keyUp']) await call('Input.dispatchKeyEvent', { type, key, modifiers,
-                    code: key === 'Insert' ? 'Insert' : 'Key' + key.toUpperCase(), windowsVirtualKeyCode: key === 'Insert' ? 45 : key.toUpperCase().charCodeAt(0) });
+                    code: ['Insert', 'Delete'].includes(key) ? key : 'Key' + key.toUpperCase(), windowsVirtualKeyCode: { Insert:45, Delete:46 }[key] ?? key.toUpperCase().charCodeAt(0) });
             };
             const hover = async selector => {
                 await until(`document.querySelector(${JSON.stringify(selector)}) && ${graphReady}`);
+                await evaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
                 const point = await evaluate(`(()=>{document.activeElement?.blur();const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.left+5,y:r.top+5}})()`);
                 await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
             };
@@ -135,9 +136,15 @@ test('hover clipboard shortcuts toggle Insert mode and preserve decorated nodes 
             assert.equal(host.clipboard, '9');
             const count = await evaluate('window.edits.length');
             await evaluate(`document.querySelector('.literal-input').focus()`);
-            await key('Insert'); await key('c', 2);
+            await key('Insert'); await key('c', 2); await key('Delete');
             assert.equal(await evaluate('window.edits.length'), count);
             assert.equal(await evaluate(`document.querySelector('.clipboard-mode').getAttribute('aria-pressed')`), 'false');
+            await hover(box(host.tree.root.fields.items[2])); await key('Delete'); await ui.accept();
+            assert(!host.tree.source.includes('speed'));
+            assert(!host.tree.source.includes('# speed note'));
+            assert(!host.tree.source.includes('@export'));
+            assert.equal(host.clipboard, '9');
+            assert.equal(host.tree.root.fields.items.length, 2);
             assert.deepEqual(client.errors, []);
         });
     });
