@@ -414,6 +414,9 @@ VSCode を使わない人にも同じように効く。
 実際の言語サーバーを用いた構造編集の検証は `npm run test:graph-live`。
 `LHAT_TEST_SERVER` で lhatls のパスを指定でき、既定は隣接する lhat リポジトリの debug ビルドを使う。
 ブラウザーテストの実AST分岐編集ケースでも同じ設定を使う。
+`npm test` の実行線テストにも実サーバーを使うケースが含まれるため、lhatlsが必要。
+GitHub ActionsのCIは `.lhat-version` に対応するLinux x64版をリリースから取得し、
+`LHAT_TEST_SERVER` を設定してからテストを実行する。
 
 文の追加メニューでは呼び出し・再代入・with・例外処理ブロック、型・テーブル・列挙・エラー定義も作成できる。
 ファイル直下には import / require、未宣言のファイル先頭には module の候補を表示する。

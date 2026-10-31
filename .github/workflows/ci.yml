@@ -16,6 +16,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v5
 
@@ -31,6 +33,19 @@ jobs:
 
       - name: Type-check the webview
         run: npm run check:rf
+
+      - name: Fetch lhatls for parser-backed tests
+        run: |
+          version="$(tr -d '[:space:]' < .lhat-version)"
+          server_dir="$RUNNER_TEMP/lhatls"
+          mkdir -p "$server_dir"
+          gh release download "$version" --repo SAM-tak/lhat \
+            --pattern lhatls-linux-x64.tar.gz --output "$server_dir/pack.tar.gz"
+          tar -C "$server_dir" -xzf "$server_dir/pack.tar.gz"
+          chmod +x "$server_dir/lhatls"
+          echo "LHAT_TEST_SERVER=$server_dir/lhatls" >> "$GITHUB_ENV"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Graph mapping and syntax highlighting tests
         run: npm test
