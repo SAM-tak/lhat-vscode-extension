@@ -117,6 +117,7 @@ export interface ElkNode {
         annotationList?: import("../graphAnnotations").AnnotationOwner;
         commentLink?: { x: number; y: number }[];
         commentAnchor?: { id: string; dx?: number; dy: number };
+        annotationLinkWidth?: number;
         /** Main execution and independently entered exception handlers. */
         catchScope?: boolean;
         cleanupLinks?: { source: string; target: string }[];

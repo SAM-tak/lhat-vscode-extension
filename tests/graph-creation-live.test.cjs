@@ -12,6 +12,32 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('comment addition and block removal preserve annotated declarations and inline code', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { editComment, commentBlocks } = load('graphComments.ts');
+    const { annotationOwners } = load('graphAnnotations.ts');
+    for (const newline of ['\n']) {
+        for (const spacing of ['', newline + '\t']) {
+            const source = `let^Player=def^{self^{${spacing}@export speed=400,${newline}\tother=2}}`;
+            let tree = await parse(source);
+            const field = () => flat(tree.root).find(n => n.kind === 'table-entry' && tree.source.slice(n.fields?.key?.start, n.fields?.key?.end) === 'speed');
+            tree = await parse(apply(tree.source, editComment(tree, field(), 'add')));
+            assert.equal(field().comments?.length, 1);
+            assert.equal(annotationOwners(tree).find(o => o.start === field().start).annotations.length, 1);
+            const block = commentBlocks(tree.source, field())[0];
+            tree = await parse(apply(tree.source, editComment(tree, block, 'remove')));
+            assert(!field().comments?.length);
+            assert(tree.source.includes('@export speed=400,'));
+            assert(tree.source.includes('other=2'));
+            assert.equal(editComment(tree, block, 'remove'), undefined);
+        }
+        let tree = await parse(`let^value=1 # trailing${newline}print(value)`);
+        const comment = flat(tree.root).flatMap(n => commentBlocks(tree.source, n))[0];
+        tree = await parse(apply(tree.source, editComment(tree, comment, 'remove')));
+        assert.equal(tree.source, `let^value=1 ${newline}print(value)`);
+        assert.equal(flat(tree.root).filter(n => n.kind === 'define').length, 1);
+    }
+}));
+
 test('annotation argument structure edits retain real parser ownership, comments and byte literals', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const api = load('graphAnnotations.ts');
     for (const initial of ['@a(#[before]#1, #[middle]#"a,b", #[after]#)', '@a(1 # first\n, "a,b" # last\n,)', '@a(1, """line,)text\n)']) {

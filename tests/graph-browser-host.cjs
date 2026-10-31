@@ -81,18 +81,6 @@ async function graphHost(parse, server, initial = '') {
                 { sendRequest: (method, params) => server.request(method, params) }, () => true);
             tree = await parse(source);
         },
-        async toggleStatement(context) {
-            const Provider = load('graphEditor.ts', vscode).LhatGraphEditorProvider;
-            const provider = new Provider({}, () => undefined), panel = { active: true };
-            // The browser harness supplies the native shell's panel registry;
-            // command validation and source editing remain production code.
-            provider.panels.set(context.lhatGraphUri, new Set([panel]));
-            let pending;
-            provider.statementEditors.set(panel, message => { pending = host.edit(message); });
-            provider.toggleStatement(context);
-            assert(pending, 'Native context must select a registered statement');
-            await pending;
-        },
     };
     return host;
 }
@@ -188,6 +176,7 @@ async function graphUi(host, { evaluate, until, call }) {
         await accept();
     };
     return {
+        accept,
         async annotation(owner, name, previous) {
             const selector = `.annotation-box[data-source-start="${owner.start}"][data-source-end="${owner.end}"] ${previous ? '.annotation-name' : '.annotation-add'} select`;
             await until(`document.querySelector(${JSON.stringify(selector)}) && ${ready}`);
@@ -282,26 +271,17 @@ async function graphUi(host, { evaluate, until, call }) {
             await choose(`.type-label[data-type-start="${name.start}"][data-type-end="${name.end}"]`, structures.structureTemplates(host.tree, structure), id, true);
         },
         async toggleStatement(node) {
-            // VS Code owns this menu. Emulate its contributed entry using only
-            // the context rendered by the webview, then invoke the real provider.
             await evaluate(`(()=>{
                 const owner=[...document.querySelectorAll('.box[data-vscode-context]')].find(element=>{
                     const context=JSON.parse(element.dataset.vscodeContext);
                     return context.lhatStatement && context.lhatStatementStart===${node.start} && context.lhatStatementEnd===${node.end};
                 });
-                if(!owner)throw Error('Missing native statement context');
-                owner.addEventListener('contextmenu',event=>{
-                    event.preventDefault();
-                    const context=JSON.parse(owner.dataset.vscodeContext), button=document.createElement('button');
-                    button.id='native-toggle-statement';button.textContent='Toggle Disabled Code';
-                    button.onclick=()=>{window.nativeStatementContext=context;button.remove()};document.body.append(button);
-                },{once:true});
+                if(!owner)throw Error('Missing statement context');
                 owner.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}));
             })()`);
-            await until(`document.querySelector('#native-toggle-statement')`);
-            await evaluate(`document.querySelector('#native-toggle-statement').click()`);
-            const context = await evaluate('window.nativeStatementContext');
-            await host.toggleStatement(context); await refresh();
+            await until(`document.querySelector('.statement-menu [role=option]')`);
+            await evaluate(`[...document.querySelectorAll('.statement-menu [role=option]')].find(button=>/文の有効|Toggle statement enabled/.test(button.textContent)).click()`);
+            await accept();
         },
         async input(selector, text, index = 0) {
             await until(`document.querySelectorAll(${JSON.stringify(selector)}).length>${index} && ${ready}`);

@@ -35,7 +35,7 @@ import type { LiteralValue } from "../literals";
 import { LiteralEditProvider, LiteralInput } from "./LiteralInput";
 import { NameInput, RenameProvider } from "./NameInput";
 import { TypeLabel, TypeProvider } from "./TypeLabel";
-import { StatementProvider, StatementButton, ExpressionButton, DeleteButton, StructureButton, useStatementActions } from "./StatementMenu";
+import { StatementProvider, StatementButton, ExpressionButton, DeleteButton, StructureButton, CommentButton, useStatementActions } from "./StatementMenu";
 import { CommentLink } from "./CommentLink";
 import { AnnotationProvider, AnnotationList, AddAnnotation, useAnnotationOwner } from "./AnnotationEditor";
 import { annotationOwners, annotationOwnerKey, type AnnotationOwner } from "../../graphAnnotations";
@@ -128,6 +128,7 @@ interface BoxData extends Record<string, unknown>, SlideData {
     label: string;
     commentOwner?: string;
     commentLink?: { x: number; y: number }[];
+    annotationLinkWidth?: number;
     annotationList?: AnnotationOwner;
     operatorExpression?: boolean;
     operandInput?: boolean;
@@ -456,6 +457,7 @@ function toFlow(
                     commentOwner: c.lhat?.commentOwner,
                     commentLink: c.lhat?.commentLink,
                     annotationList: c.lhat?.annotationList,
+                    annotationLinkWidth: c.lhat?.annotationLinkWidth,
                     drillTarget: c.lhat?.drillTarget,
                     operatorExpression: c.lhat?.operatorExpression,
                     operandInput: c.lhat?.operandInput,
@@ -1035,7 +1037,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         data-vscode-context={statements.context(undefined, data, data.annotationList ? annotationOwner : undefined)}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel} onAuxClick={onAuxClick}>
-        <svg className="annotation-link" viewBox="0 0 24 2" aria-hidden="true"><path d="M 0 1 H 24" /></svg>
+        <svg className="annotation-link" style={{ width: data.annotationLinkWidth }} viewBox="0 0 24 2" preserveAspectRatio="none" aria-hidden="true"><path d="M 0 1 H 24" /></svg>
         <AnnotationList owner={data.annotationList} collapsed={data.collapsed} foldButton={foldButton} />
     </div>;
     if (data.commentOwner !== undefined) return <div className="box comment-box"
@@ -1043,7 +1045,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         data-vscode-context={statements.context(undefined, data, data.annotationList ? annotationOwner : undefined)}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove}
         onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} onAuxClick={onAuxClick}
-    ><CommentLink points={data.commentLink} />{textField && !data.collapsed ? <InterpolationInput field={textField} /> : <span className="comment-text">{data.label}</span>}{foldButton}</div>;
+    ><CommentLink points={data.commentLink} />{textField && !data.collapsed ? <InterpolationInput field={textField} /> : <span className="comment-text">{data.label}</span>}{foldButton}<CommentButton start={data.start} end={data.sourceEnd} remove /></div>;
 
     // Match arms share their FOR's box. The invisible grouping still owns
     // the branch junction, unlike a declaration row with no handles at all.
@@ -1100,6 +1102,8 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                         top: "calc(100% + 4px * var(--lhat-scale))" } : undefined} />}
             {!data.layoutOnly && !data.isStart && !data.isReturn && !data.isAdd &&
                 <AddAnnotation start={data.start} end={data.sourceEnd} kind={data.drillTarget?.kind} />}
+            {!data.layoutOnly && !data.isStart && !data.isAdd && !data.decoration &&
+                <CommentButton start={data.start} end={data.sourceEnd} />}
             {!data.layoutOnly && <div
                 className={[...classes, data.inline ? "inline-box" : "", data.operator ? "operator-box" : "", data.decoration ? "decoration" : ""].join(" ")}
                 data-source-start={data.start} data-source-end={data.sourceEnd}

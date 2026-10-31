@@ -1,4 +1,5 @@
 import { editTextField } from "./graphTextFields";
+import { editComment } from "./graphComments";
 import { editStructure } from "./graphStructure";
 import { deleteFromGraph } from "./graphDelete";
 import { replaceExpression } from "./graphExpressions";
@@ -11,7 +12,7 @@ import { insertStatementEdit, statementSites } from "./graphStatements";
 import { insertListEdit, replaceOperatorEdit } from "./graphLists";
 import { editInterpolation } from "./graphInterpolation";
 
-type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" | "editInterpolation" | "editAnnotation" | "editLiteral" | "replaceExpression" | "deleteElement" | "editStructure" | "editTextField" }>;
+type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" | "editInterpolation" | "editAnnotation" | "editLiteral" | "replaceExpression" | "deleteElement" | "editStructure" | "editTextField" | "editComment" }>;
 
 /** Every graph statement edit is validated against the displayed source and has one undo step. */
 export async function editStatementFromGraph(document: vscode.TextDocument, tree: AstReply,
@@ -26,6 +27,7 @@ export async function editStatementFromGraph(document: vscode.TextDocument, tree
         const change = message.type === "insertStatement" ? insertStatementEdit(tree, message.site, message.template)
              : message.type === "insertElement" ? insertListEdit(tree, message.site, message.template)
             : message.type === "editTextField" ? editTextField(tree, message.site, message.value)
+            : message.type === "editComment" ? editComment(tree, message.site, message.action)
             : message.type === "editStructure" ? editStructure(tree, message.site, message.action)
             : message.type === "deleteElement" ? deleteFromGraph(tree, message.site)
             : message.type === "replaceExpression" ? replaceExpression(tree, message.site, message.template)

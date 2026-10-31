@@ -122,6 +122,7 @@ export type FromWebview =
     | { type: "replaceOperator"; id: string; start: number; end: number; operator: string; version: number }
     | { type: "editAnnotation"; id: string; start: number; end: number; ownerStart: number; ownerEnd: number; ownerKind: string; value: string; add?: boolean; version: number }
     | { type: "editTextField"; id: string; site: TextSite; value: string; version: number }
+    | { type: "editComment"; id: string; site: SourceSpan; action: "add" | "remove"; version: number }
     | { type: "editStructure"; id: string; site: StructureSite; action: string; version: number }
     | { type: "deleteElement"; id: string; site: DeleteSite; version: number }
     | { type: "replaceExpression"; id: string; site: ExpressionSite; template: string; version: number }

@@ -9,10 +9,12 @@ import type { AstReply, FromWebview, ToWebview, SourceSpan } from "../../protoco
 import { statementTemplates, type StatementInsertion, type StatementSite, type StatementTemplate } from "../../graphStatements";
 import { isListInsertion, listTemplates, groupedOperatorSites, type InsertionSite, type OperatorSite } from "../../graphLists";
 import type { InterpolationSite } from "../../graphInterpolation";
+import { commentTargets, type CommentTarget } from "../../graphComments";
 
 type Host = { tree?: AstReply; uri: string; version?: number; post: (message: FromWebview) => void };
-type FoldContext = { foldable: boolean; foldKey?: string };
+type FoldContext = { foldable: boolean; foldKey?: string; start?: number; sourceEnd?: number };
 type Picker = { id: string; site?: InsertionSite; operator?: OperatorSite; anchor: HTMLElement; version: number;
+    point?: { x: number; y: number };
     structure?: StructureSite; interpolation?: InterpolationSite; expression?: ExpressionSite;
     title?: string; apply?: (template: string) => Promise<string | undefined>;
     choices: StatementTemplate[]; input?: StatementTemplate; saving?: boolean; error?: string };
@@ -26,6 +28,8 @@ const Statements = createContext({
     structure: (_site: StructureSite, _anchor: HTMLElement) => {},
     deletions: [] as DeleteSite[],
     remove: (_site: DeleteSite) => {},
+    comments: [] as CommentTarget[],
+    comment: (_site: SourceSpan, _action: "add" | "remove") => {},
     expressions: [] as ExpressionSite[],
     expression: (_site: ExpressionSite, _anchor: HTMLElement) => {},
     interpolation: (_site: InterpolationSite, _anchor: HTMLElement) => {},
@@ -37,6 +41,7 @@ export function StatementProvider({ value, children }: { value: Host; children: 
     const structures = useMemo(() => value.tree ? structureSites(value.tree).filter(site => site.kind.startsWith("type-") || structureTemplates(value.tree!, site).length) : [], [value.tree]);
     const deletions = useMemo(() => value.tree ? deleteSites(value.tree) : [], [value.tree]);
     const expressions = useMemo(() => value.tree ? expressionSites(value.tree) : [], [value.tree]);
+    const comments = useMemo(() => value.tree ? commentTargets(value.tree) : [], [value.tree]);
     const [picker, setPicker] = useState<Picker>();
     const active = useRef(picker); active.current = picker;
     const host = useRef(value); host.current = value;
@@ -118,15 +123,61 @@ export function StatementProvider({ value, children }: { value: Host; children: 
         const { version } = host.current;
         if (version !== undefined) setPicker({ id: `argument-${++sequence}`, title, choices, anchor, version, apply });
     };
-    return <Statements.Provider value={{ structures, structure, deletions, remove, version: value.version, open, templates, operator, interpolation, expression, expressions,
+    const comment = (site: SourceSpan, action: "add" | "remove") => {
+        const { version } = host.current;
+        if (version !== undefined) host.current.post({ type: "editComment", id: `comment-${++sequence}`, site, action, version });
+    };
+    useEffect(() => {
+        const contextMenu = (event: MouseEvent) => {
+            const target = event.target as HTMLElement;
+            if (event.defaultPrevented || target.closest('textarea, input, select, [contenteditable="true"], .statement-menu')) return;
+            event.preventDefault(); event.stopPropagation();
+            const anchor = target.closest<HTMLElement>('[data-vscode-context]');
+            if (!anchor || value.version === undefined) return;
+            const context = JSON.parse(anchor.dataset.vscodeContext ?? "{}");
+            const actions: { id: string; label: string; run: () => void }[] = [];
+            if (context.lhatCommentTarget) actions.push({ id: "comment-add", label: "Add comment", run: () => comment(context.lhatCommentTarget, "add") });
+            if (context.lhatCommentBlock) actions.push({ id: "comment-remove", label: "Delete comment", run: () => comment(context.lhatCommentBlock, "remove") });
+            if (context.lhatCanAddAnnotation) actions.push({ id: "annotation", label: "Add annotation", run: () => window.dispatchEvent(new MessageEvent("message", { data: {
+                type: "showAnnotations", ownerStart: context.lhatAnnotationStart, ownerEnd: context.lhatAnnotationEnd,
+                ownerKind: context.lhatAnnotationKind, version: value.version } })) });
+            if (context.lhatFoldable) actions.push({ id: "fold", label: "Toggle Fold/Unfold", run: () => window.dispatchEvent(new MessageEvent("message", { data: {
+                type: "toggleFold", key: context.lhatFoldKey, version: value.version } })) });
+            if (context.lhatStatement) actions.push({ id: "toggle", label: "Toggle statement enabled", run: () => value.post({ type: "toggleStatement",
+                id: `toggle-${++sequence}`, start: context.lhatStatementStart, end: context.lhatStatementEnd, version: value.version! }) });
+            if (actions.length) setPicker({ id: `context-${++sequence}`, title: "Node actions", anchor, version: value.version,
+                point: event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : undefined,
+                choices: actions.map(action => ({ id: action.id, label: action.label, text: "" })),
+                apply: async id => { actions.find(action => action.id === id)?.run(); return undefined; } });
+        };
+        document.addEventListener("contextmenu", contextMenu);
+        return () => document.removeEventListener("contextmenu", contextMenu);
+    }, [value, comments]);
+    return <Statements.Provider value={{ structures, structure, deletions, remove, comments, comment, version: value.version, open, templates, operator, interpolation, expression, expressions,
         context: (site, fold, annotation) => JSON.stringify({ webviewSection: "statement", lhatStatement: !!site && value.version !== undefined,
             lhatGraphUri: value.uri, lhatGraphVersion: value.version, lhatStatementStart: site?.start, lhatStatementEnd: site?.end,
             lhatFoldable: !!fold?.foldable && !!fold.foldKey && value.version !== undefined, lhatFoldKey: fold?.foldKey,
             lhatCanAddAnnotation: !!annotation?.canAdd && value.version !== undefined,
-            lhatAnnotationStart: annotation?.start, lhatAnnotationEnd: annotation?.end, lhatAnnotationKind: annotation?.kind }) }}>
+            lhatAnnotationStart: annotation?.start, lhatAnnotationEnd: annotation?.end, lhatAnnotationKind: annotation?.kind,
+            lhatCommentTarget: fold?.foldKey?.startsWith("comment:") ? undefined : comments.find(node => node.start === fold?.start && node.end === fold?.sourceEnd),
+            lhatCommentBlock: fold?.foldKey?.startsWith("comment:") ? { start: fold.start, end: fold.sourceEnd } : undefined }) }}>
         {children}
         {picker && createPortal(<TemplateMenu key={`${picker.id}:${picker.input?.id ?? ""}`} picker={picker} close={close} select={select} />, document.body)}
     </Statements.Provider>;
+}
+
+export function CommentButton({ start, end, remove = false }: { start?: number; end?: number; remove?: boolean }) {
+    const actions = useStatementActions();
+    const site = remove && start !== undefined && end !== undefined ? { start, end }
+        : actions.comments.find(node => node.start === start && node.end === end);
+    if (!site) return null;
+    const title = l10n.t(remove ? "Delete comment" : "Add comment");
+    return <button type="button" className={`${remove ? "comment-delete element-delete" : "add-comment statement-button"} nodrag nopan nokey`}
+        title={title} aria-label={title} disabled={actions.version === undefined}
+        onPointerDown={event => event.stopPropagation()} onPointerUp={event => event.stopPropagation()}
+        onClick={event => { event.stopPropagation(); actions.comment(site, remove ? "remove" : "add"); }}>
+        {remove ? "×" : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M 5 4 H 19 V 15 H 11 L 5 20 Z M 9 9 H 15 M 12 6 V 12" /></svg>}
+    </button>;
 }
 
 export function StatementButton({ site, append = false, floating = false, axis = "vertical", style }: {
@@ -176,7 +227,7 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
         : ["stringEscapes", "interpolationEscapes"].includes(picker.input?.input?.kind ?? "")
         ? { title: l10n.t("Edit string escapes"), placeholder: l10n.t("Enter string content with escapes"), label: "Use string content" }
         : { title: l10n.t("Rename type member"), placeholder: l10n.t("Enter member name"), label: "Use member name" };
-    const title = picker.input ? inputUi.title : picker.title ?? (picker.structure ? l10n.t("Edit structure") : picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
+    const title = picker.input ? inputUi.title : picker.title ? l10n.t(picker.title) : (picker.structure ? l10n.t("Edit structure") : picker.expression ? l10n.t("Change expression") : picker.interpolation ? l10n.t("Add interpolation part") : picker.operator ? l10n.t("Choose an operator") : picker.site && isListInsertion(picker.site)
         ? l10n.t("Choose an element template") : l10n.t("Choose a statement template"));
     const inputValue = ["stringEscapes", "interpolationEscapes"].includes(picker.input?.input?.kind ?? "") ? query : query.trim();
     const choices = picker.input ? validStructureInput(picker.input.input!, inputValue)
@@ -190,7 +241,7 @@ function TemplateMenu({ picker, close, select }: { picker: Picker; close: (focus
     const selected = Math.min(index, Math.max(0, filtered.length - 1));
     useLayoutEffect(() => {
         const place = () => {
-            const anchor = picker.anchor.getBoundingClientRect(), bounds = menu.current!.getBoundingClientRect();
+            const anchor = picker.point ? new DOMRect(picker.point.x, picker.point.y, 0, 0) : picker.anchor.getBoundingClientRect(), bounds = menu.current!.getBoundingClientRect();
             setPosition({ left: Math.max(8, Math.min(anchor.left, window.innerWidth - bounds.width - 8)),
                 top: Math.max(8, Math.min(anchor.bottom + bounds.height + 5 <= window.innerHeight - 8
                     ? anchor.bottom + 5 : anchor.top - bounds.height - 5, window.innerHeight - bounds.height - 8)) });

@@ -3,6 +3,7 @@ import { annotationOwners, annotationOwnerKey, annotationArguments } from "../gr
 import type { AstNode, AstReply } from "../protocol";
 import type { ElkNode, MapOptions } from "./map";
 import { labelColumns } from "./labels";
+import { commentBlocks } from "../graphComments";
 
 /** Display comments after the normal layout, keeping source text and spans intact.
  * Keep existing endpoint IDs and reserve space rather than overlaying code.
@@ -52,13 +53,10 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
                     foldable: true, foldKey, collapsed, commentOwner: `${node.kind} (${node.line}:${node.column})` },
             });
         }
-        for (const comment of node.comments ?? []) {
+        for (const comment of commentBlocks(reply.source, node)) {
             // Delimiters and surrounding whitespace are hidden only in the view.
             // Source edits continue to use the untouched reply.source and span.
-            const raw = reply.source.slice(comment.start, comment.end);
-            const text = (comment.block && raw.startsWith("#[")
-                ? raw.slice(2, raw.endsWith("]#") ? -2 : undefined)
-                : raw.startsWith("#") ? raw.slice(1) : raw).trim();
+            const text = comment.text;
             const lines: string[] = [];
             for (const line of text.replace(/\r\n?/g, "\n").replace(/\t/g, "    ").split("\n")) {
                 let part = "";
@@ -125,9 +123,20 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
             const band = commentBand(comments);
             const width = Math.max(child.width ?? 0, ...comments.map(comment => comment.width!)) + 2 * linkGutter(comments);
             const side = sideNotes.get(child), sideWidth = side ? side.width! + px(24) : 0;
-            return { child, old, comments, side, sideWidth, band, contentWidth: width, width: width + sideWidth,
-                height: Math.max(child.height ?? 0, side?.height ?? 0) + band, x: old.x, y: old.y };
+            const sideY = child.lhat?.definitionRole === "row"
+                ? child.children?.find(box => box.lhat?.definitionRole === "declaration")?.y ?? 0 : 0;
+            return { child, old, comments, side, sideWidth, sideY, band, contentWidth: width, width: width + sideWidth,
+                height: Math.max(child.height ?? 0, side ? side.height! + sideY : 0) + band, x: old.x, y: old.y };
         });
+        if (parent.lhat?.definitionRole === "row" && !parent.lhat.stackedDefinition) {
+            // Keep both ends of a definition aligned when either side gains comments.
+            const pair = entries.filter(entry => ["declaration", "value"].includes(entry.child.lhat?.definitionRole ?? ""));
+            const band = Math.max(0, ...pair.map(entry => entry.band));
+            for (const entry of pair) {
+                entry.height += band - entry.band;
+                entry.band = band;
+            }
+        }
         // Reserve a shared left margin so one sidebar does not move its
         // statement off the execution column used by its siblings.
         const inset = Math.max(0, ...entries.map(entry => entry.sideWidth - entry.old.x));
@@ -146,19 +155,23 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
         }
         let growX = 0, growY = 0;
         for (const entry of entries) {
-            const { child, old, comments, side, sideWidth, band, contentWidth, width, height, x, y } = entry;
-            child.x = x + sideWidth + (contentWidth - (child.width ?? 0)) / 2;
+            const { child, old, comments, side, sideWidth, sideY, band, contentWidth, width, height, x, y } = entry;
+            child.x = x + sideWidth + (child.lhat?.definitionRole === "declaration"
+                ? linkGutter(comments) : (contentWidth - (child.width ?? 0)) / 2);
             child.y = y + band;
             if (side) {
                 side.x = child.x - sideWidth;
-                side.y = child.y;
-                side.lhat!.commentAnchor = { id: child.id, dx: -sideWidth, dy: 0 };
+                side.y = child.y + sideY;
+                side.lhat!.commentAnchor = { id: child.id, dx: -sideWidth, dy: sideY };
+                const declaration = child.lhat?.definitionRole === "row"
+                    ? child.children?.find(box => box.lhat?.definitionRole === "declaration") : undefined;
+                side.lhat!.annotationLinkWidth = px(24) + (declaration?.x ?? 0);
             }
             let top = y;
             for (const comment of comments) {
                 comment.x = x + sideWidth + (contentWidth - comment.width!) / 2;
                 comment.y = top;
-                comment.lhat!.commentAnchor = { id: child.id, dy: top - child.y };
+                comment.lhat!.commentAnchor = { id: child.id, dx: comment.x - child.x, dy: top - child.y };
                 top += comment.height! + gap;
             }
             linkComments(comments, child);

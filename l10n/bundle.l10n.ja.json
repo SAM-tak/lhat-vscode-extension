@@ -490,5 +490,10 @@
     "Edit string escapes": "文字列のエスケープ表記を編集",
     "Enter string content with escapes": "エスケープ表記で文字列の内容を入力",
     "Use string content": "この文字列を使う",
-    "Use a rest-of-line string": "行末までの文字列に変更"
+    "Use a rest-of-line string": "行末までの文字列に変更",
+    "Add comment": "コメントを追加",
+    "Delete comment": "コメントを削除",
+    "Node actions": "ノードの操作",
+    "Toggle Fold/Unfold": "折りたたみ・展開を切り替え",
+    "Toggle statement enabled": "文の有効・無効を切り替え"
 }

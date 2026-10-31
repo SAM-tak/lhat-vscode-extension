@@ -103,9 +103,9 @@ function engine() {
 const result = id => ({ graph: { id }, elapsed: 20 });
 
 test('comment links bypass other comments and root comments connect to the scope entry', () => {
-    const source = '# first\n# second\nx';
-    const ast = { kind: 'ident', start: source.length - 1, end: source.length, line: 3, column: 1,
-        comments: [{ start: 0, end: 7, block: false }, { start: 8, end: 16, block: false }] };
+    const source = '# first\n\n# second\nx';
+    const ast = { kind: 'ident', start: source.length - 1, end: source.length, line: 4, column: 1,
+        comments: [{ start: 0, end: 7, block: false }, { start: 9, end: 17, block: false }] };
     const owner = { id: 'owner', x: 10, y: 10, width: 80, height: 30, lhat: { ...ast } };
     const graph = placeComments({ id: 'view', width: 100, height: 50, children: [owner] }, { source, root: ast });
     const comments = graph.children.filter(n => n.lhat?.kind === 'comment');

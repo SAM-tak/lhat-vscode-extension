@@ -42,7 +42,7 @@ const html = (reply, acknowledgeEdits = true) => `<!doctype html><meta charset="
 --vscode-input-foreground:#ddd;--vscode-focusBorder:#58a;--vscode-descriptionForeground:#999;
 }</style><link rel="stylesheet" href="/graph.css"><link rel="stylesheet" href="/bundle.css"><div id="root" data-layout-worker="/layout-worker.js"></div><script nonce="test">
 window.exports=[];window.edits=[];window.acquireVsCodeApi=()=>({getState(){},setState(){},postMessage(m){
-if(m.type==='chooseType'||m.type==='applyType'||m.type==='removeType'||m.type==='rename'||m.type==='insertElement'||m.type==='replaceOperator'||m.type==='editTextField'||m.type==='insertStatement'||m.type==='editStructure'||m.type==='deleteElement'||m.type==='replaceExpression'||m.type==='editLiteral'||m.type==='editInterpolation'||m.type==='editAnnotation'){window.edits.push(m);${acknowledgeEdits ? "window.postMessage({type:'statementResult',id:m.id},'*');" : ''}}
+if(m.type==='chooseType'||m.type==='applyType'||m.type==='removeType'||m.type==='rename'||m.type==='insertElement'||m.type==='replaceOperator'||m.type==='editTextField'||m.type==='editComment'||m.type==='toggleStatement'||m.type==='insertStatement'||m.type==='editStructure'||m.type==='deleteElement'||m.type==='replaceExpression'||m.type==='editLiteral'||m.type==='editInterpolation'||m.type==='editAnnotation'){window.edits.push(m);${acknowledgeEdits ? "window.postMessage({type:'statementResult',id:m.id},'*');" : ''}}
 if(m.type==='saveSvg'){window.exports.push(m);window.postMessage({type:'svgResult',id:m.id},'*');}
 if(m.type==='ready'){window.postMessage({type:'localization',language:'ja',bundle:${JSON.stringify(ja)}},'*');window.postMessage({type:'tree',reply:${JSON.stringify(reply)},uri:'file:///svg-example.lh',version:1},'*');}
 }});</script><script nonce="test" src="/bundle.js"></script>`;
@@ -2125,6 +2125,98 @@ test('empty document UI creates new statement families with real server ASTs', {
     });
 });
 
+
+test('comment buttons and translated custom context menus add and remove comments through live source edits', { timeout: 60000 }, async () => {
+    const { withLhatServer } = require('./lhat-server.cjs');
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'module^demo\nlet^Player=def^{self^{\n\t@export speed=400,\n\tother=2}}');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const { evaluate, until, errors } = client;
+            const ui = await graphUi(host, client);
+            await graphToolbar(client, 'Unfold All');
+            const speed = () => host.tree.source.indexOf('speed');
+            const node = () => `.box[data-source-start="${speed()}"]:not(.annotation-box)`;
+            const clickAndApply = async selector => {
+                await until(`document.querySelector(${JSON.stringify(selector)}) && ${graphReady}`);
+                const point = await evaluate(`(()=>{const b=document.querySelector(${JSON.stringify(selector)}),r=b.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,hit:b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))}})()`);
+                assert(point.hit, `Comment control must remain clickable: ${selector}`);
+                await client.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+                await client.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+                await ui.accept();
+            };
+            await clickAndApply(`.react-flow__node:has(>${node()}) > .add-comment`);
+            assert(host.tree.source.includes('\t# comment\n\t@export speed=400'));
+            await ui.input('.comment-box:not(.annotation-box) textarea', 'first line\nsecond line');
+            await clickAndApply('.comment-delete');
+            assert(!host.tree.source.includes('#'));
+            assert(host.tree.source.includes('@export speed=400'));
+            const menu = async selector => {
+                const prevented = await evaluate(`(()=>{const e=new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:180,clientY:150});document.querySelector(${JSON.stringify(selector)}).dispatchEvent(e);return e.defaultPrevented})()`);
+                assert(prevented);
+                await until('document.querySelector(".statement-menu [role=option]")');
+                assert.equal(await evaluate('document.querySelector(".statement-menu .type-menu-header span").textContent'), 'ノードの操作');
+                const labels = await evaluate('[...document.querySelectorAll(".statement-menu [role=option]")].map(e=>e.textContent)');
+                assert(!labels.some(label => /Cut|Copy|Paste/.test(label)));
+                return labels;
+            };
+            const labels = await menu(node());
+            assert(labels.includes('コメントを追加'));
+            await evaluate('[...document.querySelectorAll(".statement-menu [role=option]")].find(e=>e.textContent==="コメントを追加").click()');
+            await ui.accept();
+            assert(host.tree.source.includes('# comment'));
+            await menu('.comment-box:not(.annotation-box)');
+            await evaluate('[...document.querySelectorAll(".statement-menu [role=option]")].find(e=>e.textContent==="コメントを削除").click()');
+            await ui.accept();
+            assert(!host.tree.source.includes('#'));
+            assert.equal(await evaluate('document.querySelectorAll(".comment-box:not(.annotation-box)").length'), 0);
+            assert.deepEqual(errors, []);
+        });
+    });
+});
+
+test('consecutive comment blocks attach to annotated fields and edit together through the live source', { timeout: 60000 }, async () => {
+    const { withLhatServer } = require('./lhat-server.cjs');
+    const { load } = require('./graph-browser-host.cjs');
+    await withLhatServer(async (parse, server) => {
+        let tree = await parse('let^ Player = def^{ self^{\n\t# older block\n\t# older continuation\n\n\t# How fast the player will move (pixels/sec).\n\t# Main description\n\t@export speed = 400, # inline note\n\t# Size of the game window.\n\t# table, so what a field holds is the box\n\t# the type -- get() reads it back out.\n\tabstract^screenSize : i32^,\n}}');
+        const speed = () => tree.source.indexOf('speed');
+        const hover = await server.request('textDocument/hover', { textDocument: { uri: server.uri }, position: { line: 6, character: 10 } });
+        assert.equal(hover.contents.kind, 'markdown');
+        assert(hover.contents.value.endsWith('How fast the player will move (pixels/sec).\nMain description'));
+        assert(!hover.contents.value.includes('older block'));
+        assert(!hover.contents.value.includes('inline note'));
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree) } }, async ({ evaluate, until, call, errors }) => {
+            await graphToolbar({ evaluate, until }, 'Unfold All');
+            const selector = `.comment-box[data-source-start="${tree.source.indexOf('# Size')}"] textarea`;
+            await until(`document.querySelector(${JSON.stringify(selector)}) && !document.querySelector('.svg-export>button').disabled`);
+            assert.equal(await evaluate(`document.querySelectorAll('.comment-box:not(.annotation-box)').length`), 4);
+            assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).value`), 'Size of the game window.\ntable, so what a field holds is the box\nthe type -- get() reads it back out.');
+            const geometry = await evaluate(`(()=>{const annotation=document.querySelector('.annotation-box'),a=annotation.getBoundingClientRect(),d=document.querySelector('.box[data-source-start="${speed()}"]:not(.annotation-box)').getBoundingClientRect(),p=annotation.querySelector('.annotation-link path'),end=p.getPointAtLength(p.getTotalLength()),point=new DOMPoint(end.x,end.y).matrixTransform(p.getScreenCTM());return {annotationTop:a.top,declarationTop:d.top,linkEnd:point.x,declarationLeft:d.left,gap:d.left-a.right}})()`);
+            assert(Math.abs(geometry.annotationTop - geometry.declarationTop) < 1, JSON.stringify(geometry));
+            assert(Math.abs(geometry.linkEnd - geometry.declarationLeft) <= 1, JSON.stringify(geometry));
+            assert(geometry.gap < 60, 'long comments must not centre the declaration far from its annotation');
+            const definition = await evaluate(`(()=>{const d=document.querySelector('.box[data-source-start="${speed()}"]:not(.annotation-box)').parentElement.querySelector('[data-handleid="definition-in"]').getBoundingClientRect(),v=document.querySelector('.box[data-source-start="${tree.source.indexOf('400')}"]').parentElement.querySelector('[data-handleid="definition-out"]').getBoundingClientRect();return {declarationY:d.top+d.height/2,valueY:v.top+v.height/2}})()`);
+            assert(Math.abs(definition.declarationY - definition.valueY) <= 1, JSON.stringify(definition));
+            const links = await evaluate(`(()=>{const d=document.querySelector('.box[data-source-start="${speed()}"]:not(.annotation-box)').getBoundingClientRect();return [...document.querySelectorAll('.comment-box:not(.annotation-box)')].filter(b=>b.querySelector('textarea')?.value.includes('How fast')).map(b=>{const p=b.querySelector('.comment-link path'),end=p.getPointAtLength(p.getTotalLength()),point=new DOMPoint(end.x,end.y).matrixTransform(p.getScreenCTM());return {x:point.x,y:point.y,left:d.left,right:d.right,top:d.top}})})()`);
+            assert.equal(links.length, 1);
+            assert(links[0].x >= links[0].left && links[0].x <= links[0].right && Math.abs(links[0].y - links[0].top) <= 1, JSON.stringify(links));
+            await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus();document.querySelector(${JSON.stringify(selector)}).select()`);
+            await call('Input.insertText', { text: 'Changed size\nsecond line\nthird line' });
+            await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+            await until('window.edits.length===1');
+            const message = await evaluate('window.edits[0]');
+            const edit = load('graphTextFields.ts').editTextField(tree, message.site, message.value);
+            assert(edit);
+            tree = await parse(tree.source.slice(0, edit.start) + edit.text + tree.source.slice(edit.end));
+            assert(tree.source.includes('\t# Changed size\n\t# second line\n\t# third line\n\tabstract^screenSize'));
+            await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(tree)},uri:'file:///svg-example.lh',version:2},'*')`);
+            await until(`document.querySelector('#app')?.dataset.graphVersion==='2' && document.querySelector(${JSON.stringify(selector)})?.value==='Changed size\\nsecond line\\nthird line' && !document.querySelector('.svg-export>button').disabled`);
+            assert.equal(await evaluate('document.querySelectorAll(".comment-box:not(.annotation-box)").length'), 4);
+            assert.deepEqual(errors, []);
+        });
+    });
+});
 
 test('inline module and comment fields write source then survive real AST refresh', { timeout: 60000 }, async () => {
     const { withLhatServer } = require('./lhat-server.cjs');
@@ -5383,7 +5475,7 @@ test('postfix nil checks are created, displayed and edited through the live sour
     });
 });
 
-test('native statement context disables and restores a UI-created enum through the real server', { timeout: 60000 }, async () => {
+test('custom statement context disables and restores a UI-created enum through the real server', { timeout: 60000 }, async () => {
     const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
         const host = await graphHost(parse, server);

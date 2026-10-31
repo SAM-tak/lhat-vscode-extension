@@ -4,6 +4,7 @@ import type { SourceEdit } from "./graphReorder";
 import { literalOf, quoteString } from "./webview/literals";
 
 import { validMemberName, validNamePath } from "./graphNames";
+import { commentBlocks } from "./graphComments";
 
 export interface TextSite extends SourceSpan {
     field: "comment" | "module" | "import" | "require" | "name";
@@ -14,11 +15,9 @@ export function textFields(tree: AstReply): TextField[] {
     const result: TextField[] = [];
     const visit = (node: AstNode) => {
         if (node.kind === "disabled") return;
-        for (const comment of node.comments ?? []) {
-            const raw = tree.source.slice(comment.start, comment.end);
-            if (raw.startsWith("#[~")) continue;
+        for (const comment of commentBlocks(tree.source, node)) {
             result.push({ site: { start: comment.start, end: comment.end, field: "comment" },
-                value: (comment.block ? raw.slice(2, -2) : raw.slice(1)).trim() });
+                value: comment.text });
         }
         if (node.kind === "name") {
             const name = syntaxTokens(tree.source, node.start, node.end)[1];
@@ -56,7 +55,9 @@ export function editTextField(tree: AstReply, site: TextSite, value: string): So
             if (depth !== 0 || value.trimStart().startsWith("~")) return undefined;
             return { start: current.start, end: current.end, text: `#[ ${value} ]#` };
         }
-        return { start: current.start, end: current.end, text: value.split(/\r\n?|\n/).map(line => `# ${line}`).join(newline) };
+        const prefix = tree.source.slice(tree.source.lastIndexOf("\n", current.start - 1) + 1, current.start);
+        const indent = /^[\t ]*$/.test(prefix) ? prefix : "";
+        return { start: current.start, end: current.end, text: value.split(/\r\n?|\n/).map(line => `# ${line}`).join(newline + indent) };
     }
     if (site.field === "name") return validMemberName(value) ? { ...current.part!, text: value } : undefined;
     if (site.field !== "require" && !validNamePath(value)) return undefined;
