@@ -13,6 +13,26 @@ function load(file) {
 const { changedHandles } = load('handleUpdates.ts');
 const { LayoutClient } = load('layoutClient.ts');
 const { placeComments } = load('../comments.ts');
+const { viewIdentity } = load('viewIdentity.ts');
+
+test('view identities preserve changed ancestors and unchanged siblings across renames, insertions and deletion', () => {
+    const tree = (source, names) => ({ source, root: { kind: 'block', start: 0, end: source.length, line: 1, column: 1,
+        fields: { items: names.map(name => {
+            const start = source.indexOf(name);
+            return { kind: 'define', start, end: start + name.length, line: 1, column: 1 };
+        }) } } });
+    const old = tree('first second third', ['first', 'second', 'third']);
+    const renamed = tree('longer second third', ['longer', 'second', 'third']);
+    const state = { 'define:0:5': false, 'annotations:define:6:12': false, 'binding-pair:13:18': { dx: -50, dy: 0 } };
+    assert.deepEqual(viewIdentity(old, renamed).keys(state), {
+        'define:0:6': false, 'annotations:define:7:13': false, 'binding-pair:14:19': { dx: -50, dy: 0 },
+    });
+    const inserted = tree('new first second third', ['new', 'first', 'second', 'third']);
+    assert.deepEqual(viewIdentity(old, inserted).target({ kind: 'define', start: 6, end: 12, role: 'condition' }),
+        { kind: 'define', start: 10, end: 16, role: 'condition' });
+    const deleted = tree('first third', ['first', 'third']);
+    assert.deepEqual(viewIdentity(old, deleted).keys(state), { 'define:0:5': false, 'binding-pair:6:11': { dx: -50, dy: 0 } });
+});
 
 test('comments occupy independent boxes above their owners without overlapping adjacent code', () => {
     const ast = { kind: 'name', start: 10, end: 11, line: 2, column: 1,

@@ -2126,6 +2126,51 @@ test('empty document UI creates new statement families with real server ASTs', {
 });
 
 
+test('renaming inside an unfolded or drilled function preserves mixed folds and vertical scroll', { timeout: 90000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const source = `let^outer=p^{\nlet^value=1\nlet^nested={1,2,3}\n${Array.from({length:18},(_,i)=>`let^entry${i}=${i}`).join('\n')}\nprint(entry4,entry5)\n}\nlet^other=p^{print(0)}`;
+        const host = await graphHost(parse, server, source);
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const ui = await graphUi(host, client), { evaluate, until, call, errors } = client;
+            const outer = () => host.tree.root.fields.items[0].fields.values[0];
+            const nested = () => outer().fields.body.fields.items[1].fields.values[0];
+            const box = node => `.box[data-source-start="${node.start}"][data-source-end="${node.end}"]:not(.annotation-box)`;
+            const fold = async node => {
+                await until(`document.querySelector(${JSON.stringify(box(node))})?.querySelector('.foldbtn') && ${graphReady}`);
+                await evaluate(`document.querySelector(${JSON.stringify(box(node))}).querySelector('.foldbtn').click()`);
+                await until(graphReady);
+            };
+            const scroll = async () => {
+                await call('Input.dispatchMouseEvent', { type:'mouseWheel', x:700, y:350, deltaY:160, deltaX:0 });
+                await evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))');
+            };
+            const state = () => evaluate(`(()=>{const m=new DOMMatrix(getComputedStyle(document.querySelector('.react-flow__viewport')).transform);return {y:m.f,nested:document.querySelector(${JSON.stringify(box(nested()))})?.classList.contains('folded'),outer:document.querySelector(${JSON.stringify(box(outer()))})?.classList.contains('folded'),trail:document.querySelectorAll('#trail button').length}})()`);
+            const rename = async (index, name) => {
+                const target = outer().fields.body.fields.items[index + 2].fields.targets[0];
+                await ui.input(`.name-input[data-reference-start="${target.start}"]`, name);
+            };
+            await until(graphReady);
+            await fold(outer());
+            await scroll();
+            const before = await state();
+            assert.equal(before.outer, false); assert.equal(before.nested, true); assert(before.y < 8);
+            await rename(4, 'longerEntryName');
+            assert.deepEqual(await state(), before);
+            assert(host.tree.source.includes('print(longerEntryName,entry5)'));
+            await fold(outer());
+            await drillGraphNode(client, outer());
+            await scroll();
+            const drilled = await state();
+            assert(drilled.trail > 0); assert(drilled.y < 8);
+            await rename(5, 'anotherLongName');
+            assert.deepEqual(await state(), drilled);
+            assert(host.tree.source.includes('print(longerEntryName,anotherLongName)'));
+            assert.deepEqual(errors, []);
+        });
+    });
+});
+
 test('comment buttons and translated custom context menus add and remove comments through live source edits', { timeout: 60000 }, async () => {
     const { withLhatServer } = require('./lhat-server.cjs');
     const { graphHost, graphUi } = require('./graph-browser-host.cjs');

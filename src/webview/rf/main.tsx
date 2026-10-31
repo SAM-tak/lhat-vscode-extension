@@ -1,4 +1,5 @@
 import { textFields } from "../../graphTextFields";
+import { viewIdentity } from "./viewIdentity";
 // L^ (lhat) -- the graph webview on React Flow (06 の 8.4, the V14 spike).
 //
 // What this exists to prove or disprove:
@@ -1394,9 +1395,10 @@ function App() {
     const [folds, setFolds] = useState<Record<string, boolean>>({});
     const [collapseAll, setCollapseAll] = useState(false);
     const [annotationBoxes, setAnnotationBoxes] = useState<Record<string, boolean>>({});
-    useEffect(() => { setAnnotationBoxes({}); }, [sourceKey]);
     const [trail, setTrail] = useState<DrillTarget[]>([]);
     const [slides, setSlides] = useState<Slides>({});
+    const currentDocument = useRef({ reply, uri });
+    currentDocument.current = { reply, uri };
     const slidesRef = useRef(slides);
     slidesRef.current = slides;
     const [laid, setLaid] = useState<ElkNode>();
@@ -1449,6 +1451,24 @@ function App() {
                     setVocabulary(graphVocabulary());
                     break;
                 case "tree":
+                    if (currentDocument.current.reply && currentDocument.current.uri === message.uri) {
+                        const identities = viewIdentity(currentDocument.current.reply, message.reply);
+                        setFolds(values => identities.keys(values));
+                        setSlides(values => identities.keys(values));
+                        setAnnotationBoxes(values => identities.keys(values));
+                        setTrail(values => {
+                            const next: DrillTarget[] = [];
+                            for (const target of values) {
+                                const updated = identities.target(target);
+                                if (!updated) break;
+                                next.push(updated);
+                            }
+                            return next;
+                        });
+                    } else {
+                        setFolds({}); setSlides({}); setAnnotationBoxes({}); setTrail([]);
+                    }
+                    currentDocument.current = { reply: message.reply, uri: message.uri };
                     setReply(message.reply);
                     setUri(message.uri);
                     setVersion(message.version);
@@ -1984,7 +2004,7 @@ function App() {
     // A render behind the pane, panZoom is already there and both effects run
     // on the map's own first pass. Keyed to flowKey so a remount of the pane
     // (see the ReactFlow key below) puts the map a render behind again.
-    const flowKey = JSON.stringify(trail);
+    const flowKey = `${uri}\0${trail.length}`;
     const [readyKey, setReadyKey] = useState<string>();
     useEffect(() => {
         setReadyKey(flowKey);
