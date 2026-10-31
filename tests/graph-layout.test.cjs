@@ -14,6 +14,34 @@ const { changedHandles } = load('handleUpdates.ts');
 const { LayoutClient } = load('layoutClient.ts');
 const { placeComments } = load('../comments.ts');
 const { viewIdentity } = load('viewIdentity.ts');
+const { leftAlignColumns } = load('../alignment.ts');
+
+test('left columns share inset execution ports, retain sidebar space and remain stable on a second pass', () => {
+    const make = (id, width, x, extra = {}) => ({ id, x, y: 0, width, height: 40, lhat: { kind: 'module', start: 0, end: 1, ...extra } });
+    const start = make('start', 24, 150, { synthetic: 'start' });
+    const short = make('short', 100, 100), long = make('long', 250, 20);
+    const sidebar = make('note', 120, 0, { noExecutionHandles: true, commentAnchor: { id: 'short', dx: -144, dy: 0 } });
+    const graph = { id: 'root', width: 400, layoutOptions: { 'elk.direction': 'DOWN', 'elk.padding': '[left=10,right=10]' },
+        children: [start, sidebar, short, long], edges: [{ id: 'flow', sources: ['start'], targets: ['short'], drawn: true }] };
+    leftAlignColumns(graph);
+    assert.equal(short.x, long.x);
+    assert.equal(short.lhat.executionHandleX, 24);
+    assert.equal(start.x + start.lhat.executionHandleX, short.x + 24);
+    assert.equal(sidebar.x, 10);
+    const before = JSON.stringify(graph);
+    leftAlignColumns(graph);
+    assert.equal(JSON.stringify(graph), before);
+    const members = { id: 'self', width: 400, layoutOptions: { 'elk.direction': 'DOWN', 'elk.padding': '[left=10,right=10]' },
+        children: [make('a', 100, 200, { noExecutionHandles:true }), make('b', 250, 50, { noExecutionHandles:true })] };
+    leftAlignColumns(members);
+    assert(members.children.every(child => child.x === 10));
+    const unit = { id: 'unit', layoutOptions: { 'elk.direction':'DOWN' }, children: [
+        make('unit-annotations', 120, 0, { noExecutionHandles:true, annotationList:{} }), make('statement',100,200),
+    ] };
+    leftAlignColumns(unit);
+    assert.equal(unit.children[0].x, 0);
+    assert.equal(unit.children[1].x, 144, 'unit annotations retain a separate left column');
+});
 
 test('view identities preserve changed ancestors and unchanged siblings across renames, insertions and deletion', () => {
     const tree = (source, names) => ({ source, root: { kind: 'block', start: 0, end: source.length, line: 1, column: 1,
@@ -45,7 +73,7 @@ test('comments occupy independent boxes above their owners without overlapping a
     const comment = graph.children.find(child => child.lhat?.kind === 'comment');
     assert.equal(comment.labels[0].text, 'comment');
     assert.equal(comment.lhat.commentOwner, 'name (2:1)');
-    assert.equal(comment.x + comment.width / 2, owner.x + owner.width / 2);
+    assert.equal(comment.x, owner.x);
     assert.ok(comment.y + comment.height < owner.y - 18.7, 'the insertion button fits below the comment');
     assert.ok(next.y >= owner.y + owner.height + 20);
     assert.ok(right.x >= comment.x + comment.width + 20);

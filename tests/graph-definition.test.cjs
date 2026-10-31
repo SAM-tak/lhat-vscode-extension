@@ -318,7 +318,7 @@ test('branch-free enclosing expressions expose nested member definitions', async
     assert.equal(rows(graph)[1].children[1].lhat.kind, 'table');
 });
 
-test('viewport centring protects declaration positions without preserving empty layout space', () => {
+test('viewport starts at the declaration reading edge at every window width', () => {
     const row = {
         id: 'definition', x: 666, width: 500,
         lhat: { definitionRole: 'row' },
@@ -328,10 +328,10 @@ test('viewport centring protects declaration positions without preserving empty 
         { id: 'wide-call', x: 10, width: 1546 }, row,
     ] };
     const x = graphViewportX(graph, 1020);
-    assert.equal(x + graph.width / 2, 510, 'wide siblings must not move the document axis right');
+    assert.equal(row.x + x, 8, 'the declaration starts at the reading margin');
     assert(row.x + x >= 8 && row.x + row.width + x <= 1012, 'the fitting definition is fully visible');
-    assert.equal(graphViewportX({ ...graph, children: [] }, 1020), x, 'adding a visible declaration does not shift the graph');
-    assert.equal(graphViewportX(graph, 2000), (2000 - graph.width) / 2, 'a fitting graph remains centred');
+    assert.equal(graphViewportX({ ...graph, children: [] }, 1020), 8, 'an empty graph uses the reading margin');
+    assert.equal(graphViewportX(graph, 2000), x, 'a wider viewport retains the reading edge');
 
     const nearLeft = { ...row, x: 100, children: [{ ...row.children[0], x: 20 }] };
     assert.equal(graphViewportX({ ...graph, children: [row, nearLeft] }, 450), 8 - 120,
@@ -367,11 +367,11 @@ test('viewport ignores independently scrolling boxes but includes fixed boxes in
     const wrapped = { id: 'wrapper', x: 110, lhat: { layoutOnly: true }, children: [{ ...leaf, x: 10 }] };
     const wide = { id: 'wide', x: 0, width: 1900, lhat: { kind: 'if-stmt' }, children: [leaf] };
     const graph = { id: 'root', width: 2000, children: [wrapped, wide] };
-    assert.equal(graphViewportX(graph, 950), 8 - 120, 'wide sibling and its descendants do not anchor the viewport');
-    assert.equal(graphViewportX({ ...graph, children: [wrapped] }, 950), graphViewportX(graph, 950));
+    assert.equal(graphViewportX(graph, 950), 8, 'a wide sibling also starts at the reading margin');
+    assert.equal(graphViewportX({ ...graph, children: [wrapped] }, 950), 8 - 120);
     const right = { ...leaf, x: 900 };
-    assert.equal(graphViewportX({ id: 'root', width: 1200, children: [right] }, 950), 950 - 8 - 1140,
-        'a fixed box near the right edge also limits the viewport');
+    assert.equal(graphViewportX({ id: 'root', width: 1200, children: [right] }, 950), 8 - 900,
+        'old empty layout space before a fixed box does not enter the viewport');
     const column = { id: 'column', x: 20, lhat: { layoutOnly: true, definitionRole: 'declaration' }, children: [{ ...leaf, x: 5 }] };
     assert.equal(graphViewportX({ id: 'row', x: 800, width: 1200, lhat: { definitionRole: 'row' }, children: [column] }, 450), 8 - 25,
         'drilled multi-output bindings use the visible card rather than the former parent position');

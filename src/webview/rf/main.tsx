@@ -1,5 +1,6 @@
 import { textFields } from "../../graphTextFields";
 import { viewIdentity } from "./viewIdentity";
+import { EXECUTION_INSET } from "../alignment";
 // L^ (lhat) -- the graph webview on React Flow (06 の 8.4, the V14 spike).
 //
 // What this exists to prove or disprove:
@@ -302,13 +303,8 @@ function toFlow(
         const source = endpoints.get(link.source);
         return source ? [executionEnd(source, "Exit").id] : [];
     }));
-    // 8.6: wide split rows keep their declaration column in view. Other
-    // views are centred. Anything longer than the view cannot be centred -- its
-    // start would fall off the left, which is the wrong end to lose -- so it
-    // hangs from the base left edge instead: shifted right, display-only,
-    // until its left edge sits where the view's left margin is. Computed
-    // before the slide is added. Only the top-level box is aligned: shifting
-    // children as well would move them outside the bounds ELK gave the parent.
+    // The shared reading column stays fixed. Overflow scrolls from its own
+    // initial position instead of relocating individual statements.
     const usable = viewWidth - 16;
     const baseAbs = 8 - graphViewportX(laid, viewWidth);
 
@@ -377,18 +373,6 @@ function toFlow(
                 if (horizontal) y = aligned;
                 else x = aligned;
             }
-            let baseShift = 0;
-            if (topLevel && (c.lhat?.callTree || c.lhat?.expressionTree) && !detachedValue && usable > 0 && groupWidth <= usable) {
-                // Centre the complete statement and its attached annotation box.
-                baseShift = baseAbs + (usable - groupWidth) / 2 - parentX - x - left;
-                x += baseShift;
-            } else if (topLevel && (!layoutOnly || c.lhat?.callTree || c.lhat?.expressionTree) && !detachedValue && usable > 0 &&
-                (groupWidth > usable || parentX + x + right > baseAbs + usable)) {
-                // Use the placed right edge, not width alone: an expression
-                // can fit the viewport but overflow from the execution column.
-                baseShift = baseAbs - parentX - x - left;
-                x += baseShift;
-            }
             // A wide definition's invisible row and declaration stay fixed;
             // only its lowered value owns the offset. Other wide top-level
             // containers still move as a whole. Deeper boxes never acquire
@@ -403,7 +387,7 @@ function toFlow(
             // Saved offsets from a different layout are clamped as before.
             // A detached value starts beside the declaration as before; its
             // rightward stop keeps that initial gap for the definition line.
-            const max = detachedValue ? 0 : baseAbs - parentX - x - left;
+            const max = 0;
             const min = Math.min(max, baseAbs + usable - parentX - x - right);
             const ownDx = key !== undefined
                 ? slidePosition(slides[key], { min, max }) : 0;
@@ -506,11 +490,7 @@ function toFlow(
                     foldable: c.lhat?.foldable === true,
                     foldKey: c.lhat?.foldKey,
                     foldedSummary: c.lhat?.foldedSummary,
-                    // Counter the base-left landing and horizontal slide,
-                    // clamping to the frame if it moves past the line's axis.
-                    flowHandleX: c.lhat?.executionHandleX !== undefined ? c.lhat.executionHandleX : baseShift !== 0 || ownDx !== 0
-                        ? Math.min(Math.max(w / 2 - baseShift - ownDx, 6), w - 6)
-                        : undefined,
+                    flowHandleX: c.lhat?.executionHandleX ?? (isStart || isAdd || isReturn ? w / 2 : Math.min(EXECUTION_INSET, w - 6)),
                     onSlide,
                     onSpring,
                     onDocumentStart,
@@ -643,7 +623,7 @@ function toFlow(
     };
 
     walk(laid, undefined, 1, { slideDx: 0 }, 0);
-    // Comment siblings follow the owner's display-only centring and slide.
+    // Comment siblings follow the owner's position and horizontal slide.
     const rendered = new Map(nodes.map(node => [node.id, node]));
     for (const node of nodes) {
         const anchor = endpoints.get(node.id)?.lhat?.commentAnchor;
@@ -1191,8 +1171,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                     end={data.literal ? data.drillTarget?.end ?? data.sourceEnd : data.sourceEnd} />}
             </div>}
             {data.interpolationFormat && <div className="interpolation-format-header"><InterpolationInput field={data.interpolationFormat} /></div>}
-            {/* Execution ports counter the box's horizontal slide, keeping
-                the outer execution chain on the document's axis. */}
+            {/* Execution ports keep their left inset while the box scrolls. */}
             {(!data.isAdd || data.executionAppend) && !data.isCondition && !data.noExecutionHandles && data.definitionRole !== "value" &&
                 data.definitionBranchOffset === undefined && (
                 <>
@@ -1453,9 +1432,12 @@ function App() {
                 case "tree":
                     if (currentDocument.current.reply && currentDocument.current.uri === message.uri) {
                         const identities = viewIdentity(currentDocument.current.reply, message.reply);
+                        const occupied = new Set(annotationOwners(currentDocument.current.reply)
+                            .filter(owner => owner.annotations.length).map(annotationOwnerKey));
                         setFolds(values => identities.keys(values));
                         setSlides(values => identities.keys(values));
-                        setAnnotationBoxes(values => identities.keys(values));
+                        setAnnotationBoxes(values => identities.keys(Object.fromEntries(Object.entries(values)
+                            .filter(([key]) => !occupied.has(key)))));
                         setTrail(values => {
                             const next: DrillTarget[] = [];
                             for (const target of values) {
@@ -1554,14 +1536,8 @@ function App() {
     const folded = useMemo(
         () => (laid === undefined ? 0 : countFolded(laid)), [laid]);
 
-    // 8.6: there is no fitView in a document, and no free horizontal
-    // position either. The view's x always holds the document's axis -- the
-    // vertical centre line the execution line runs down -- at the middle of
-    // the screen, re-derived from every layout, so a re-layout at another
-    // type size cannot drift the picture sideways. Split declarations limit
-    // this centring only if their actual left edge would leave the view.
-    // Negative x is valid: a wide box hangs from the base left edge (toFlow)
-    // while narrow statements retain their central position.
+    // Keep the document's reading edge at the left margin. Individual wide
+    // values retain their own horizontal slide; relayout preserves document y.
     //
     // y is the one axis the reader owns. It resets to the top only when the
     // view is a different thing to look at (another definition, Fold/Unfold

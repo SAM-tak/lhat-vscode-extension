@@ -17,6 +17,9 @@ mapping._compile(buildSync({
     entryPoints: [mappingPath], bundle: true, platform: 'node', format: 'cjs', write: false,
 }).outputFiles[0].text, mapping.id);
 const { toElk, graphViewportX, stackWideDefinitions } = mapping.exports;
+const alignmentPath = path.resolve(__dirname, '../src/webview/alignment.ts'), alignment = new Module(alignmentPath);
+alignment._compile(buildSync({ entryPoints: [alignmentPath], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text, alignmentPath);
+const { leftAlignColumns } = alignment.exports;
 const gesturePath = path.resolve(__dirname, '../src/webview/rf/gesture.ts');
 const gesture = new Module(gesturePath);
 gesture._compile(buildSync({
@@ -34,7 +37,7 @@ const last = renderer.indexOf('/**\n * 8.6: inertia.');
 assert(first >= 0 && last > first);
 const toFlow = vm.runInNewContext(`const MarkerType={ArrowClosed:'arrowclosed'};
     ${transformSync(renderer.slice(first, last), { loader: 'tsx' }).code}; toFlow`,
-    { graphViewportX, ownsHorizontalSlide });
+    { graphViewportX, ownsHorizontalSlide, EXECUTION_INSET: 24 });
 const noop = () => {};
 const flatten = n => [n, ...(n.children ?? []).flatMap(flatten)];
 const starts = graph => flatten(graph).filter(n => n.lhat?.synthetic === 'start');
@@ -496,14 +499,15 @@ test('drilled catch scopes and immediate callable bodies keep their own start wi
 });
 
 test('wide call trees scroll as one group while execution and routed definitions retain their actual endpoints', async () => {
-    const graph = stackWideDefinitions(await new ELK().layout(toElk(branchedCalls(), { width: 320 })), 304);
+    const graph = leftAlignColumns(stackWideDefinitions(leftAlignColumns(await new ELK().layout(toElk(branchedCalls(), { width: 320 }))), 304));
     const paint = slides => toFlow(graph, slides, 320, undefined, noop, noop, noop, noop, { current: null }, noop);
     const flow = paint({}), owner = flow.nodes.find(n => n.data.slideOwner && n.data.layoutOnly);
     assert(owner && owner.data.slideKey, 'the invisible call-tree extent owns horizontal movement');
     const absolute = node => { let x = node.position.x; while (node.parentId) { node = flow.nodes.find(n => n.id === node.parentId); x += node.position.x; } return x; };
     const executionCards = flow.nodes.filter(node => node.data.isCall && !node.data.noExecutionHandles);
-    assert.equal(absolute(executionCards[1]) + executionCards[1].width / 2 + graphViewportX(graph, 320), 160,
-        'the following fitting statement is independently centred');
+    assert.equal(absolute(executionCards[1]) + executionCards[1].data.flowHandleX,
+        absolute(executionCards[0]) + executionCards[0].data.flowHandleX,
+        'wide and fitting calls retain one shared execution column');
     assert.equal(flow.definitions.length, 5);
     for (const edge of flow.definitions) {
         assert.equal(edge.type, 'call-definition');
@@ -588,15 +592,15 @@ test('top-level annotation sidebars participate in viewport landing, centring an
         }
         if (callTree) {
             const width = 1800, flow = paint(width), sidebar = flow.nodes.find(n => n.id === note.id);
-            assert.equal(sidebar.position.x + graphViewportX(graph, width) + (1200 + 204) / 2, width / 2);
+            assert.equal(sidebar.position.x + graphViewportX(graph, width), 8);
         }
     }
 });
 
-test('fitting expressions are centred as a whole; oversized expressions start left and scroll', () => {
+test('fitting and oversized expressions share the left column and overflow scrolls from there', () => {
     const card = { id: 'card', x: 0, y: 0, width: 120, height: 100,
         lhat: { kind: 'call', start: 0, end: 10, invocation: true } };
-    const tree = { id: 'tree', x: 300, y: 0, width: 500, height: 100,
+    const tree = { id: 'tree', x: 0, y: 0, width: 500, height: 100,
         lhat: { kind: 'call-tree', start: 0, end: 10, callTree: true, layoutOnly: true },
         children: [{ id: 'column', x: 0, y: 0, width: 120, height: 100, children: [card] }] };
     const anchor = { id: 'anchor', x: 0, y: 150, width: 120, height: 40,
@@ -605,9 +609,9 @@ test('fitting expressions are centred as a whole; oversized expressions start le
     const paint = (slides = {}, width = 600) => toFlow(graph, slides, width, undefined, noop, noop, noop, noop, { current: null }, noop);
     const flow = paint(), owner = flow.nodes.find(n => n.id === 'tree');
     assert(owner.width < 600 - 16);
-    assert.equal(owner.position.x + graphViewportX(graph, 600), 50);
+    assert.equal(owner.position.x + graphViewportX(graph, 600), 8);
     assert(owner.position.x + owner.width + graphViewportX(graph, 600) <= 592);
-    assert(!owner.data.slideOwner, 'centring exposes the entire fitting-width expression');
+    assert(!owner.data.slideOwner, 'a fitting expression is readable without sliding');
     assert(owner.data.scrollSurface, 'a call tree has a pointer surface in its empty spaces');
     const narrow = paint({}, 400), narrowOwner = narrow.nodes.find(n => n.id === 'tree');
     assert.equal(narrowOwner.position.x + graphViewportX(graph, 400), 8);
@@ -620,8 +624,8 @@ test('fitting expressions are centred as a whole; oversized expressions start le
     assert.equal(movedOwner.position.x + movedOwner.width + graphViewportX(graph, 400), 392);
     assert.deepEqual(moved.nodes.find(n => n.id === 'anchor').position, flow.nodes.find(n => n.id === 'anchor').position);
     assert(!paint({}, 1600).nodes.find(n => n.id === 'tree').data.slideOwner, 'a wider viewport removes unnecessary sliding');
-    assert.equal(paint({}, 1600).nodes.find(n => n.id === 'tree').position.x + graphViewportX(graph, 1600), 550,
-        'non-overflowing expressions also centre their complete bounds');
+    assert.equal(paint({}, 1600).nodes.find(n => n.id === 'tree').position.x + graphViewportX(graph, 1600), 8,
+        'a wider window retains the same reading column');
 });
 
 const labelsOfEdges = flow => {

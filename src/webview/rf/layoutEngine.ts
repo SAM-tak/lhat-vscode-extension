@@ -2,6 +2,7 @@ import ELK, { type ElkNode as LayoutGraph } from "elkjs/lib/elk-api.js";
 import { toElk, stackWideDefinitions, type ElkNode } from "../map";
 import type { LayoutEngine } from "./layoutClient";
 import { placeComments } from "../comments";
+import { leftAlignColumns } from "../alignment";
 
 /** VS Code webviews require blob/data workers; the bundle contains every import. */
 export async function createLayoutEngine(url: string): Promise<LayoutEngine> {
@@ -27,7 +28,8 @@ export async function createLayoutEngine(url: string): Promise<LayoutEngine> {
                 rejectCurrent = reject;
                 elk.layout(mapped as LayoutGraph).then(graph => resolve(graph as ElkNode), reject);
             }).finally(() => { rejectCurrent = undefined; });
-            const graph = placeComments(stackWideDefinitions(laid, options.width ?? Infinity), reply, options);
+            const graph = leftAlignColumns(placeComments(stackWideDefinitions(leftAlignColumns(laid, options.scale),
+                options.width ?? Infinity), reply, options), options.scale);
             return { graph, elapsed: performance.now() - started };
         },
         dispose() {

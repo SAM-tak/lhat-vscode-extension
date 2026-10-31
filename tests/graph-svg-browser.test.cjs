@@ -413,10 +413,13 @@ test('until conditions sit on the exit lane with and without first clauses', { t
             const result = await evaluate(`(()=>{
                 const gate=document.querySelector('.react-flow__node[data-id^="loop-test-"]');
                 const edge=[...document.querySelectorAll('.react-flow__edge-execution-bypass')].find(edge=>edge.getAttribute('data-id').includes(gate.getAttribute('data-id')));
-                const line=edge.querySelector('.react-flow__edge-path').getBoundingClientRect();
+                const path=edge.querySelector('.react-flow__edge-path'),line=path.getBoundingClientRect();
                 const condition=document.querySelector('.react-flow__node[data-id^="condition-"]').getBoundingClientRect();
                 const main=document.querySelector('.react-flow__node[data-id^="loop-main-"]').getBoundingClientRect();
-                return {axis:condition.left+condition.width/2,lane:line.left,
+                const matrix=path.getScreenCTM(),point=t=>{const p=path.getPointAtLength(t);return new DOMPoint(p.x,p.y).matrixTransform(matrix)};
+                let lane,nearest=Infinity;
+                for(let t=1;t<path.getTotalLength();t++){const a=point(t-1),b=point(t),distance=Math.abs(b.y-(condition.top+condition.height/2));if(Math.abs(a.x-b.x)<0.01 && Math.abs(a.y-b.y)>0.1 && distance<nearest){nearest=distance;lane=b.x;}}
+                return {axis:condition.left+condition.width/2,lane,
                     onVertical:line.top<condition.top && line.bottom>condition.bottom,
                     separate:condition.right<=main.left};
             })()`);
@@ -639,7 +642,7 @@ test('AST comments render above their owner as separate multiline boxes', { time
         assert.equal(result.comments[1].text, '日本語のコメント\nsecond line');
         for (const comment of result.comments) {
             assert(comment.title.startsWith('func '));
-            assert(Math.abs(comment.x + comment.w / 2 - result.owner.x - result.owner.w / 2) < 1);
+            assert(Math.abs(comment.x - result.owner.x) < 1);
             assert(comment.y + comment.h < result.owner.y);
             assert.equal(comment.handles, 0);
             assert.equal(comment.overflow, false);
@@ -865,7 +868,7 @@ test('call depth columns, right-aligned inputs and bent definition lines survive
             }
             return {horizontal,collisions};
         })()`);
-        assert(routing.horizontal > 0, 'independently centred statements require horizontal execution segments');
+        assert.equal(routing.horizontal, 0, 'left-aligned statements share a straight execution column');
         assert.equal(routing.collisions, 0, 'horizontal execution segments clear the complete call subtree');
         await call('Emulation.setDeviceMetricsOverride', {width:320,height:700,deviceScaleFactor:1,mobile:false});
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -974,7 +977,7 @@ test('left and right arrows share Shift-wheel scrolling of the hovered owner, no
     });
 });
 
-test('a fitting expression is centred as a whole and scrolls from a left-aligned frame in a narrower viewport', { timeout: 60000 }, async () => {
+test('fitting and oversized expressions retain one left margin while overflow scrolls', { timeout: 60000 }, async () => {
     const reply = precededCalls();
     await browser({ ...routes, '/': { type: 'text/html', body: html(reply) } }, async ({ evaluate, until, call, errors }) => {
         await until(`document.querySelectorAll('.call-tree-surface').length===3 && !document.querySelector('.svg-export>button').disabled`);
@@ -988,7 +991,7 @@ test('a fitting expression is centred as a whole and scrolls from a left-aligned
         await until(`!document.querySelector('.svg-export>button').disabled`);
         const fitting = await geometry(), frame = fitting.frames[1];
         assert(frame.w < width - 16, 'the expression itself is narrower than the viewport');
-        assert(Math.abs(frame.x - (width - frame.w) / 2) < 1, 'the complete expression has equal left and right margins');
+        assert(Math.abs(frame.x - 8) < 1, 'the expression starts at the reading margin');
         assert(frame.x + frame.w <= width - 8, 'the whole expression is visible without a gesture');
         await call('Emulation.setDeviceMetricsOverride', { width: Math.floor(frame.w - 100), height: 1600, deviceScaleFactor: 1, mobile: false });
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -2125,6 +2128,45 @@ test('empty document UI creates new statement families with real server ASTs', {
     });
 });
 
+
+test('statements and vertical member lists share left reading columns and inset execution handles', { timeout: 60000 }, async () => {
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse('module^demo\nlet^short=1\nlet^muchLongerVariableName=2\nprint(short)\nprint(muchLongerVariableName)\nlet^Data=def^{self^{first=1,secondLongName=2},method=p^{print(1)}}\nlet^items={"'+ 'a'.repeat(40)+'","'+'b'.repeat(40)+'","'+'c'.repeat(40)+'"}');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree) } }, async client => {
+            const { evaluate, until, call, errors } = client;
+            await graphToolbar(client, 'Unfold All');
+            const geometry = async () => evaluate(`(()=>{const spans=${JSON.stringify(tree.root.fields.items.slice(0,5).map(n=>[n.start,n.end]))};return spans.map(([start,end])=>{const e=document.querySelector('.box[data-source-start="'+start+'"][data-source-end="'+end+'"]'),r=e.getBoundingClientRect(),h=e.parentElement.querySelector('[data-handleid="flow-in"]'),p=h.getBoundingClientRect();return {left:r.left,axis:p.left+p.width/2,inset:p.left+p.width/2-r.left}})})()`);
+            const initial = await geometry();
+            for (const row of initial) {
+                assert(Math.abs(row.left - initial[0].left) < 1, JSON.stringify(initial));
+                assert(Math.abs(row.inset - 24) <= 1, JSON.stringify(initial));
+            }
+            assert(initial[0].left >= 8 && initial[0].left < 32, JSON.stringify(initial));
+            const definition = tree.root.fields.items[5].fields.values[0];
+            const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
+            const self = flat(definition).find(n => n.kind === 'self-table');
+            const elements = await evaluate(`(()=>{const spans=${JSON.stringify(self.fields.items.map(n=>[n.start,n.end]))};return spans.map(([start,end])=>document.querySelector('.box[data-source-start="'+start+'"][data-source-end="'+end+'"]').getBoundingClientRect().left)})()`);
+            assert(Math.max(...elements) - Math.min(...elements) < 1, JSON.stringify(elements));
+            const method = flat(definition).find(n => n.kind === 'table-entry' && tree.source.slice(n.fields?.key?.start, n.fields?.key?.end) === 'method');
+            const members = await evaluate(`(()=>{const spans=${JSON.stringify([self,method].map(n=>[n.start,n.end]))};return spans.map(([start,end])=>document.querySelector('.box[data-source-start="'+start+'"][data-source-end="'+end+'"]').getBoundingClientRect().left)})()`);
+            assert(Math.max(...members) - Math.min(...members) < 1, JSON.stringify(members));
+            const strings = flat(tree.root.fields.items[6]).filter(n => n.kind === 'string');
+            const wrapped = await evaluate(`(()=>{const starts=${JSON.stringify(strings.map(n=>n.start))};return starts.map(start=>{const r=document.querySelector('.literal-string[data-source-start="'+start+'"]').getBoundingClientRect();return {left:r.left,top:r.top}})})()`);
+            assert(wrapped.at(-1).top > wrapped[0].top, JSON.stringify(wrapped));
+            assert(Math.abs(wrapped.at(-1).left-wrapped[0].left) < 1, JSON.stringify(wrapped));
+            await evaluate(`[...document.querySelectorAll('#bar button')].find(b=>b.title.startsWith('Larger text')).click()`);
+            await until(graphReady);
+            const enlarged = await geometry();
+            for (const row of enlarged) assert(Math.abs(row.inset - 26) <= 1, JSON.stringify(enlarged));
+            if (process.env.LHAT_TEST_SEMANTIC_ARTIFACTS) {
+                fs.mkdirSync(process.env.LHAT_TEST_SEMANTIC_ARTIFACTS, { recursive:true });
+                const screenshot = await call('Page.captureScreenshot', { format:'png' });
+                fs.writeFileSync(path.join(process.env.LHAT_TEST_SEMANTIC_ARTIFACTS, 'left-columns.png'), Buffer.from(screenshot.data,'base64'));
+            }
+            assert.deepEqual(errors, []);
+        });
+    });
+});
 
 test('renaming inside an unfolded or drilled function preserves mixed folds and vertical scroll', { timeout: 90000 }, async () => {
     const { graphHost, graphUi } = require('./graph-browser-host.cjs');

@@ -406,46 +406,21 @@ export interface MapOptions {
     width?: number;
 }
 
-/** Centre the view within the bounds of boxes that cannot scroll independently. */
-export function graphViewportX(laid: ElkNode, width: number): number {
-    const centered = (width - (laid.width ?? 0)) / 2;
-    const usable = width - 16;
-    let left = Number.POSITIVE_INFINITY, right = Number.NEGATIVE_INFINITY;
-    const include = (node: ElkNode, x: number): void => {
+/** Keep the reading edge at the left viewport margin, including annotation sidebars. */
+export function graphViewportX(laid: ElkNode, _width: number): number {
+    const left = (node: ElkNode, x: number): number => {
+        let children = node.children ?? [];
         if (node.lhat?.definitionRole === "row") {
-            // Overflowing values get their own scroller. The binding stays
-            // fixed, including unboxed columns of multiple output bindings.
-            for (const child of node.children ?? []) {
-                if (child.lhat?.definitionRole === "declaration" || child.lhat?.annotationList) include(child, x + (child.x ?? 0));
-            }
-        } else if (node.lhat?.expressionTree) {
-            const row = node.children?.[0];
-            if (row) include(row, x + (row.x ?? 0));
+            children = children.filter(child => child.lhat?.definitionRole === "declaration" || child.lhat?.annotationList);
         } else if (node.lhat?.callTree) {
-            // Its leading card is the execution/binding anchor. Deeper
-            // argument columns may scroll offscreen without shifting it.
-            const column = node.children?.[0], card = column?.children?.[0];
-            if (column && card) include(card, x + (column.x ?? 0) + (card.x ?? 0));
-        } else if (node.lhat === undefined || node.lhat.layoutOnly) {
-            for (const child of node.children ?? []) include(child, x + (child.x ?? 0));
-        } else if (node.lhat.annotationList) {
-            // Keep the sidebar's reading edge even in a very narrow viewport.
-            left = Math.min(left, x);
-            right = Math.max(right, x + Math.min(node.width ?? 0, Math.max(0, usable)));
-        } else if ((node.width ?? 0) <= usable) {
-            left = Math.min(left, x);
-            right = Math.max(right, x + (node.width ?? 0));
-        }
-        // Oversized visible boxes land at the margin and scroll separately.
-        // Their original ELK bounds must not push the fixed column right.
+            const column = children[0], card = column?.children?.[0];
+            return card ? left(card, x + (column.x ?? 0) + (card.x ?? 0)) : x;
+        } else if (node.lhat && !node.lhat.layoutOnly && !node.lhat.expressionTree) return x;
+        return Math.min(...children.map(child => left(child, x + (child.x ?? 0))));
     };
-    if (laid.lhat?.definitionRole === "row") include(laid, 0);
-    else for (const child of laid.children ?? []) include(child, child.x ?? 0);
-    if (!Number.isFinite(left)) return centered;
-    const min = 8 - left, max = width - 8 - right;
-    // Preserve centring whenever every fixed box fits. If their combined
-    // span exceeds the view, retain the reading edge rather than empty space.
-    return Math.max(min, Math.min(centered, max));
+    const edge = laid.lhat?.definitionRole === "row" ? left(laid, 0)
+        : Math.min(...(laid.children ?? []).map(child => left(child, child.x ?? 0)));
+    return Number.isFinite(edge) ? 8 - edge : 8;
 }
 
 /**

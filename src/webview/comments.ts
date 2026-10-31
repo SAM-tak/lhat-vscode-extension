@@ -156,8 +156,7 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
         let growX = 0, growY = 0;
         for (const entry of entries) {
             const { child, old, comments, side, sideWidth, sideY, band, contentWidth, width, height, x, y } = entry;
-            child.x = x + sideWidth + (child.lhat?.definitionRole === "declaration"
-                ? linkGutter(comments) : (contentWidth - (child.width ?? 0)) / 2);
+            child.x = x + sideWidth + linkGutter(comments);
             child.y = y + band;
             if (side) {
                 side.x = child.x - sideWidth;
@@ -169,7 +168,7 @@ export function placeComments(graph: ElkNode, reply: AstReply, options: MapOptio
             }
             let top = y;
             for (const comment of comments) {
-                comment.x = x + sideWidth + (contentWidth - comment.width!) / 2;
+                comment.x = x + sideWidth + linkGutter(comments);
                 comment.y = top;
                 comment.lhat!.commentAnchor = { id: child.id, dx: comment.x - child.x, dy: top - child.y };
                 top += comment.height! + gap;
