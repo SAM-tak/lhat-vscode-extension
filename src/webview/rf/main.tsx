@@ -1,5 +1,6 @@
 import { textFields } from "../../graphTextFields";
 import { viewIdentity } from "./viewIdentity";
+import { ClipboardProvider, ClipboardMode } from "./Clipboard";
 import { EXECUTION_INSET } from "../alignment";
 // L^ (lhat) -- the graph webview on React Flow (06 の 8.4, the V14 spike).
 //
@@ -1066,6 +1067,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
             </div>}
             {data.scrollSurface && <div className="call-tree-surface"
                 data-source-start={data.start} data-source-end={data.sourceEnd}
+                data-source-kind={data.drillTarget?.kind}
                 data-vscode-context={statements.context(data.statement, data, annotationOwner)}
                 onPointerDown={onPointerDown} onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp} onPointerCancel={onPointerCancel}
@@ -1088,6 +1090,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
             {!data.layoutOnly && <div
                 className={[...classes, data.inline ? "inline-box" : "", data.operator ? "operator-box" : "", data.decoration ? "decoration" : ""].join(" ")}
                 data-source-start={data.start} data-source-end={data.sourceEnd}
+                data-source-kind={data.drillTarget?.kind}
                 data-vscode-context={statements.context(data.statement, data, annotationOwner)}
                 data-reference-start={leafSymbol?.start} data-reference-end={leafSymbol?.end}
                 data-reorder-list={data.reorder?.list}
@@ -2041,6 +2044,7 @@ function App() {
             post: message => vscode.postMessage(message) }}>
         <LiteralEditProvider sourceKey={sourceKey} version={version} post={message => vscode.postMessage(message)}>
         <TypeProvider value={{ version: laidSourceKey === sourceKey ? version : undefined, post }}>
+        <ClipboardProvider version={laidSourceKey === sourceKey ? version : undefined} post={post}>
         <StatementProvider value={{ tree: reply, uri, version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <InterpolationProvider value={{ sourceKey, fields: sourceTextFields, version: laidSourceKey === sourceKey ? version : undefined, post }}>
         <AnnotationProvider value={{ tree: reply, version: laidSourceKey === sourceKey ? version : undefined, post,
@@ -2077,6 +2081,7 @@ function App() {
                         place.current = true;
                     }}
                 >{folded > 0 ? "Unfold All" : "Fold All"}</button>
+                <ClipboardMode />
                 <button
                     type="button"
                     title="Smaller text"
@@ -2206,6 +2211,7 @@ function App() {
         </AnnotationProvider>
         </InterpolationProvider>
         </StatementProvider>
+        </ClipboardProvider>
         </TypeProvider>
         </LiteralEditProvider>
         </RenameProvider>

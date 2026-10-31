@@ -259,7 +259,7 @@ export function insertListEdit(tree: AstReply, site: ListInsertion, template: st
     return { start: end, end, text: `, ${choice.text}` };
 }
 
-function insertAt(source: string, list: CommaList, index: number, text: string): SourceEdit {
+export function insertAt(source: string, list: CommaList, index: number, text: string): SourceEdit {
     if (index === 0) return { start: list.start, end: list.start, text: ` ${text}${list.items.length ? "," : " "}` };
     const tokens = syntaxTokens(source, list.start, list.end);
     const next = list.items[index];

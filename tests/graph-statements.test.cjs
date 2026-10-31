@@ -131,6 +131,8 @@ function host(options = {}) {
     const document = { uri: { toString: () => 'file:statements' }, version: 1, getText: () => source, positionAt: character => ({ line: 0, character }) };
     const edits = [], requests = [];
     const mock = { l10n: { t: s => s }, Position: class { constructor(line, character) { Object.assign(this, { line, character }); } },
+        env: { clipboard: { readText: async () => { options.clipboard?.(document); return 'next()'; },
+            writeText: async text => { options.clipboard?.(document); options.copied = text; } } },
         Range: class { constructor(start, end) { Object.assign(this, { start, end }); } },
         WorkspaceEdit: class { changes = []; replace(uri, range, text) { this.changes.push({ uri, range, text }); } },
         workspace: { applyEdit: async edit => { edits.push(edit); return !options.refuse; } },
@@ -144,6 +146,30 @@ function host(options = {}) {
     return { document, edits, requests, tree, mock, client,
         run: message => editStatementFromGraph(document, tree, { id: 'test', version: 1, ...message }, client, () => !options.closed) };
 }
+
+test('clipboard copy leaves the document untouched and asynchronous cut or paste rejects stale sources', async () => {
+    const options = {}, f = host(options), target = { category: 'node', start: 0, end: 6 };
+    await f.run({ type: 'clipboard', action: 'copy', target, insert: false });
+    assert.equal(options.copied, 'work()'); assert.equal(f.edits.length, 0);
+    await f.run({ type: 'clipboard', action: 'paste', target, insert: true });
+    assert.equal(f.edits.length, 1);
+    for (const action of ['copy', 'cut', 'paste']) {
+        const stale = host({ clipboard: document => document.version++ });
+        await assert.rejects(stale.run({ type: 'clipboard', action, target, insert: false }), /source changed/);
+        assert.equal(stale.edits.length, 0);
+    }
+});
+
+test('clipboard insertion preserves CRLF, Unicode and multiline string contents while reindenting code', () => {
+    const { pasteGraphFragment } = load('graphClipboard.ts');
+    const source = 'let^run=p^{\r\n\twork()\r\n}', at = source.indexOf('work()');
+    const statement = node('call-stmt', at, at + 6), body = node('block', source.indexOf('{'), source.length, { items: [statement] });
+    const tree = { source, root: node('block', 0, source.length, { items: [node('define', 0, source.length, { values: [node('func', source.indexOf('p^'), source.length, { body })] })] }) };
+    const fragment = { category: 'node', statement: true, indent: '    ', text: 'let^日本語="raw\n    literal"\n    print(日本語)' };
+    const change = pasteGraphFragment(tree, { category: 'node', ...statement }, fragment, true);
+    const result = apply(source, change);
+    assert(result.includes('\r\n\tlet^日本語="raw\n    literal"\r\n\tprint(日本語)\r\n'));
+});
 test('toggle uses the clicked statement range and the existing language-server operation', async () => {
     const f = host(); await f.run({ type: 'toggleStatement', start: 0, end: 6 });
     assert.equal(f.requests[0].method, 'lhat/toggleDisabledCode');

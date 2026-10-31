@@ -22,7 +22,7 @@ import { readAnnotationCatalog } from "./graphAnnotationCatalog";
 import { graphTreeForDocument } from "./graphSource";
 import { saveGraphSvg } from "./graphSvg";
 
-type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" | "editInterpolation" | "editAnnotation" | "editLiteral" | "replaceExpression" | "deleteElement" | "editStructure" | "editTextField" | "editComment" }>;
+type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" | "editInterpolation" | "editAnnotation" | "editLiteral" | "replaceExpression" | "deleteElement" | "editStructure" | "editTextField" | "editComment" | "clipboard" }>;
 
 export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider {
     public static readonly viewType = "lhat.graph";
@@ -212,7 +212,7 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
             editingStatement = true;
             void editStatementFromGraph(document, currentTree, message, this.client(), () => !disposed).then(() => {
                 post({ type: "statementResult", id: message.id });
-                void send();
+                if (message.type !== "clipboard" || message.action !== "copy") void send();
             }, (error: unknown) => {
                 post({ type: "statementResult", id: message.id, error: error instanceof Error ? error.message : String(error) });
             }).finally(() => { editingStatement = false; });
@@ -284,6 +284,7 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
                 case "replaceOperator":
                 case "editTextField":
                 case "editComment":
+                case "clipboard":
                 case "editStructure":
                 case "deleteElement":
                 case "replaceExpression":

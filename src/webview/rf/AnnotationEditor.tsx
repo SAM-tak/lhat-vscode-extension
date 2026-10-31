@@ -159,7 +159,7 @@ function AnnotationRow({ owner, site }: { owner: AnnotationOwner; site: Annotati
     const choice = actions.tree?.annotationChoices?.find(c => c.name === parsed.name);
     const presentation = annotationPresentation(site, choice, graphVocabulary());
     const addArgument = useArgumentMenu(site, presentation.text, choice);
-    return <div className="annotation-row" role="listitem" data-annotation-start={site.start}
+    return <div className="annotation-row" role="listitem" data-annotation-start={site.start} data-annotation-end={site.end}
         style={{ height: `calc(${presentation.height}px * var(--lhat-scale))` }}>
         <AnnotationPicker owner={owner} site={site} />
         {presentation.parameters.length > 0 && <span className="annotation-parameters">

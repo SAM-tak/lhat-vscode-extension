@@ -10,6 +10,7 @@ import { statementTemplates, type StatementInsertion, type StatementSite, type S
 import { isListInsertion, listTemplates, groupedOperatorSites, type InsertionSite, type OperatorSite } from "../../graphLists";
 import type { InterpolationSite } from "../../graphInterpolation";
 import { commentTargets, type CommentTarget } from "../../graphComments";
+import { clipboardTarget, useGraphClipboard } from "./Clipboard";
 
 type Host = { tree?: AstReply; uri: string; version?: number; post: (message: FromWebview) => void };
 type FoldContext = { foldable: boolean; foldKey?: string; start?: number; sourceEnd?: number };
@@ -38,6 +39,7 @@ let sequence = 0;
 export const useStatementActions = () => useContext(Statements);
 
 export function StatementProvider({ value, children }: { value: Host; children: React.ReactNode }) {
+    const clipboard = useGraphClipboard();
     const structures = useMemo(() => value.tree ? structureSites(value.tree).filter(site => site.kind.startsWith("type-") || structureTemplates(value.tree!, site).length) : [], [value.tree]);
     const deletions = useMemo(() => value.tree ? deleteSites(value.tree) : [], [value.tree]);
     const expressions = useMemo(() => value.tree ? expressionSites(value.tree) : [], [value.tree]);
@@ -136,6 +138,9 @@ export function StatementProvider({ value, children }: { value: Host; children: 
             if (!anchor || value.version === undefined) return;
             const context = JSON.parse(anchor.dataset.vscodeContext ?? "{}");
             const actions: { id: string; label: string; run: () => void }[] = [];
+            const clip = clipboardTarget(target);
+            if (clip && clipboard.available) for (const action of ["cut", "copy", "paste"] as const) actions.push({
+                id: action, label: { cut:"Cut", copy:"Copy", paste:"Paste" }[action], run: () => clipboard.act(action, clip) });
             if (context.lhatCommentTarget) actions.push({ id: "comment-add", label: "Add comment", run: () => comment(context.lhatCommentTarget, "add") });
             if (context.lhatCommentBlock) actions.push({ id: "comment-remove", label: "Delete comment", run: () => comment(context.lhatCommentBlock, "remove") });
             if (context.lhatCanAddAnnotation) actions.push({ id: "annotation", label: "Add annotation", run: () => window.dispatchEvent(new MessageEvent("message", { data: {
@@ -152,7 +157,7 @@ export function StatementProvider({ value, children }: { value: Host; children: 
         };
         document.addEventListener("contextmenu", contextMenu);
         return () => document.removeEventListener("contextmenu", contextMenu);
-    }, [value, comments]);
+    }, [value, comments, clipboard]);
     return <Statements.Provider value={{ structures, structure, deletions, remove, comments, comment, version: value.version, open, templates, operator, interpolation, expression, expressions,
         context: (site, fold, annotation) => JSON.stringify({ webviewSection: "statement", lhatStatement: !!site && value.version !== undefined,
             lhatGraphUri: value.uri, lhatGraphVersion: value.version, lhatStatementStart: site?.start, lhatStatementEnd: site?.end,

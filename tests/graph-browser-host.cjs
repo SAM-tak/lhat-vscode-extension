@@ -32,7 +32,9 @@ async function graphHost(parse, server, initial = '') {
             return [...entries];
         }
     }
+    let clipboard = '';
     const vscode = {
+        env: { clipboard: { readText: async () => clipboard, writeText: async text => { clipboard = text; } } },
         l10n: { t: text => text },
         Range: class { constructor(start, end) { Object.assign(this, { start, end }); } },
         Position: class { constructor(line, character) { Object.assign(this, { line, character }); } },
@@ -63,6 +65,7 @@ async function graphHost(parse, server, initial = '') {
     const statements = load('graphStatementEditor.ts', vscode), rename = load('graphRename.ts', vscode), types = load('graphTypeEditor.ts', vscode);
     let typeSelection;
     const host = {
+        get clipboard() { return clipboard; }, set clipboard(text) { clipboard = text; },
         get tree() { return tree; }, get version() { return version; },
         async typeOptions(message) {
             typeSelection = await types.typeOptionsFromGraph(document, tree, message,

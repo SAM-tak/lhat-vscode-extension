@@ -12,6 +12,81 @@ const api = load('graphStatements.ts'), expressions = load('graphExpressions.ts'
 const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
 const apply = (source, change) => source.slice(0, change.start) + change.text + source.slice(change.end);
 
+test('graph clipboard retains declaration notes, list separators and expression grouping', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { copyGraphFragment: copy, cutGraphFragment: cut, pasteGraphFragment: paste, externalGraphFragment: external } = load('graphClipboard.ts');
+    const target = (node, category = 'node') => ({ start: node.start, end: node.end, kind: node.kind, category });
+    const valid = async source => {
+        const tree = await parse(source);
+        assert(!flat(tree.root).some(n => n.kind === 'error'), source);
+        return tree;
+    };
+    let tree = await valid('module^demo\n# first\n# second\n@tag\nlet^speed=400 # trailing\nlet^other=2');
+    let [, speed, other] = tree.root.fields.items;
+    const fragment = copy(tree, target(speed));
+    assert.equal(fragment.text, '# first\n# second\n@tag\nlet^speed=400 # trailing');
+    assert.equal(apply(tree.source, cut(tree, target(speed))), 'module^demo\nlet^other=2');
+    let edited = await valid(apply(tree.source, paste(tree, target(other), fragment, true)));
+    assert.equal(edited.root.fields.items.length, 4);
+    assert.equal(edited.root.fields.items[3].comments.length, 3);
+    assert.equal(load('graphAnnotations.ts').annotationOwners(edited).at(-1).annotations.length, 1);
+    tree = await valid('let^Player=def^{self^{\n # note\n @export speed=400, # trailing\n other=2}}');
+    const fields = flat(tree.root).filter(n => n.kind === 'table-entry' && ['speed', 'other'].includes(tree.source.slice(n.fields.key?.start, n.fields.key?.end)));
+    const member = copy(tree, target(fields[0]));
+    assert.equal(member.text, '# note\n @export speed=400 # trailing');
+    edited = await valid(apply(tree.source, cut(tree, target(fields[0]))));
+    assert(!edited.source.includes('speed'));
+    assert(edited.source.includes('other=2'));
+    edited = await valid(apply(tree.source, paste(tree, target(fields[1]), member, true)));
+    assert.equal(flat(edited.root).filter(n => n.kind === 'table-entry' && edited.source.slice(n.fields.key?.start, n.fields.key?.end) === 'speed').length, 2);
+    edited = await valid(apply(tree.source, paste(tree, target(fields[0]), member, false)));
+    assert(edited.source.includes('400, # trailing'));
+    tree = await valid('let^a=1+2\nlet^b=3*4');
+    const [a, b] = tree.root.fields.items.map(n => n.fields.values[0]);
+    edited = await valid(apply(tree.source, paste(tree, target(b.fields.left), copy(tree, target(a)), false)));
+    assert.equal(edited.root.fields.items[1].fields.values[0].fields.left.kind, 'binary');
+    assert.equal(paste(tree, target(b.fields.left), external('7'), true), undefined);
+    edited = await valid(apply(tree.source, paste(tree, target(b), external('9'), true)));
+    assert.equal(edited.root.fields.items[1].fields.targets.length, 2);
+    assert.equal(edited.root.fields.items[1].fields.values.length, 2);
+    tree = await valid('let^run=f^{1}');
+    const returned = flat(tree.root).find(n => n.kind === 'return');
+    edited = await valid(apply(tree.source, paste(tree, target(returned.fields.value[0]), external('2'), true)));
+    assert.equal(flat(edited.root).find(n => n.kind === 'return').fields.value.length, 2);
+    tree = await valid('let^Player=def^{self^{\n speed=400 # trailing\n}}');
+    const last = flat(tree.root).find(n => n.kind === 'table-entry' && n.fields.key);
+    edited = await valid(apply(tree.source, paste(tree, target(last), member, true)));
+    assert.equal(flat(edited.root).filter(n => n.kind === 'table-entry' && n.fields.key).length, 2);
+    tree = await valid('let^a=(1)+2\nprint((1),2)');
+    assert.equal(copy(tree, target(tree.root.fields.items[0].fields.values[0])).text, '(1)+2');
+    await valid(apply(tree.source, cut(tree, target(tree.root.fields.items[0].fields.values[0]))));
+    const call = flat(tree.root).find(n => n.kind === 'call');
+    edited = await valid(apply(tree.source, paste(tree, target(call.fields.argument[0]), external('3'), true)));
+    assert.equal(flat(edited.root).find(n => n.kind === 'call').fields.argument.length, 3);
+}));
+
+test('graph clipboard edits individual annotations and comment blocks independently', { timeout: 30000 }, async () => withLhatServer(async parse => {
+    const { copyGraphFragment: copy, cutGraphFragment: cut, pasteGraphFragment: paste, externalGraphFragment: external } = load('graphClipboard.ts');
+    const { annotationOwners } = load('graphAnnotations.ts');
+    const { commentBlocks } = load('graphComments.ts');
+    const tree = await parse('# first\n# second\n@game\n@export_class\nlet^Player=1 # trailing\nlet^next=2');
+    const owner = annotationOwners(tree).find(o => o.annotations.length), annotation = { ...owner.annotations[0], category: 'annotation' };
+    const fragment = copy(tree, annotation);
+    assert.equal(fragment.text, '@game');
+    assert.equal(external('@game\n@export_class').category, 'annotation');
+    assert(!apply(tree.source, cut(tree, annotation)).includes('@game'));
+    assert(apply(tree.source, paste(tree, annotation, external('@node'), true)).includes('@node\n@game'));
+    assert(apply(tree.source, paste(tree, annotation, external('@node'), false)).includes('@node\n@export_class'));
+    const blocks = commentBlocks(tree.source, tree.root.fields.items[0]);
+    const leading = { ...blocks[0], category: 'comment' }, trailing = { ...blocks.at(-1), category: 'comment' };
+    assert.equal(copy(tree, leading).text, '# first\n# second');
+    assert(apply(tree.source, paste(tree, leading, external('# new'), true)).startsWith('# new\n# first\n# second'));
+    const appended = await parse(apply(tree.source, paste(tree, trailing, external('# new'), true)));
+    assert.deepEqual(commentBlocks(appended.source, appended.root.fields.items[0]).slice(-2).map(c => c.text), ['trailing', 'new']);
+    assert(!appended.root.fields.items[1].comments?.length);
+    assert.equal(paste(tree, leading, external('@game'), false), undefined);
+    assert(!apply(tree.source, cut(tree, leading)).includes('# first'));
+}));
+
 test('comment addition and block removal preserve annotated declarations and inline code', { timeout: 30000 }, async () => withLhatServer(async parse => {
     const { editComment, commentBlocks } = load('graphComments.ts');
     const { annotationOwners } = load('graphAnnotations.ts');

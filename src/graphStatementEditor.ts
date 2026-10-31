@@ -1,5 +1,6 @@
 import { editTextField } from "./graphTextFields";
 import { editComment } from "./graphComments";
+import { copyGraphFragment, cutGraphFragment, pasteGraphFragment, externalGraphFragment, type ClipboardFragment } from "./graphClipboard";
 import { editStructure } from "./graphStructure";
 import { deleteFromGraph } from "./graphDelete";
 import { replaceExpression } from "./graphExpressions";
@@ -12,7 +13,8 @@ import { insertStatementEdit, statementSites } from "./graphStatements";
 import { insertListEdit, replaceOperatorEdit } from "./graphLists";
 import { editInterpolation } from "./graphInterpolation";
 
-type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" | "editInterpolation" | "editAnnotation" | "editLiteral" | "replaceExpression" | "deleteElement" | "editStructure" | "editTextField" | "editComment" }>;
+type StatementRequest = Extract<FromWebview, { type: "insertStatement" | "toggleStatement" | "insertElement" | "replaceOperator" | "editInterpolation" | "editAnnotation" | "editLiteral" | "replaceExpression" | "deleteElement" | "editStructure" | "editTextField" | "editComment" | "clipboard" }>;
+let copied: ClipboardFragment | undefined;
 
 /** Every graph statement edit is validated against the displayed source and has one undo step. */
 export async function editStatementFromGraph(document: vscode.TextDocument, tree: AstReply,
@@ -22,6 +24,29 @@ export async function editStatementFromGraph(document: vscode.TextDocument, tree
         if (!unchanged()) throw new Error(vscode.l10n.t("The source changed. Try again in the updated graph."));
     };
     check();
+    if (message.type === "clipboard") {
+        let change;
+        if (message.action === "paste") {
+            const text = await vscode.env.clipboard.readText();
+            check();
+            change = pasteGraphFragment(tree, message.target, copied?.text === text ? copied : externalGraphFragment(text), message.insert);
+        } else {
+            const fragment = copyGraphFragment(tree, message.target);
+            if (!fragment) throw new Error(vscode.l10n.t("This edit is not available at this location."));
+            change = message.action === "cut" ? cutGraphFragment(tree, message.target) : undefined;
+            if (message.action === "cut" && !change) throw new Error(vscode.l10n.t("This edit is not available at this location."));
+            await vscode.env.clipboard.writeText(fragment.text);
+            copied = fragment;
+            check();
+            if (message.action === "copy") return;
+        }
+        if (!change) throw new Error(vscode.l10n.t("This edit is not available at this location."));
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(document.uri, new vscode.Range(document.positionAt(change.start), document.positionAt(change.end)), change.text);
+        check();
+        if (!await vscode.workspace.applyEdit(edit)) throw new Error(vscode.l10n.t("Could not apply the statement edit."));
+        return;
+    }
     const edit = new vscode.WorkspaceEdit();
     if (message.type !== "toggleStatement") {
         const change = message.type === "insertStatement" ? insertStatementEdit(tree, message.site, message.template)

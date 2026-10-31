@@ -1,4 +1,5 @@
 import type { TextSite } from "./graphTextFields";
+import type { ClipboardTarget } from "./graphClipboard";
 import type { StructureSite } from "./graphStructure";
 import type { DeleteSite } from "./graphDelete";
 import type { ExpressionSite } from "./graphExpressions";
@@ -123,6 +124,7 @@ export type FromWebview =
     | { type: "editAnnotation"; id: string; start: number; end: number; ownerStart: number; ownerEnd: number; ownerKind: string; value: string; add?: boolean; version: number }
     | { type: "editTextField"; id: string; site: TextSite; value: string; version: number }
     | { type: "editComment"; id: string; site: SourceSpan; action: "add" | "remove"; version: number }
+    | { type: "clipboard"; id: string; target: ClipboardTarget; action: "copy" | "cut" | "paste"; insert: boolean; version: number }
     | { type: "editStructure"; id: string; site: StructureSite; action: string; version: number }
     | { type: "deleteElement"; id: string; site: DeleteSite; version: number }
     | { type: "replaceExpression"; id: string; site: ExpressionSite; template: string; version: number }

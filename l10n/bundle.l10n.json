@@ -495,5 +495,11 @@
     "Delete comment": "Delete comment",
     "Node actions": "Node actions",
     "Toggle Fold/Unfold": "Toggle Fold/Unfold",
-    "Toggle statement enabled": "Toggle statement enabled"
+    "Toggle statement enabled": "Toggle statement enabled",
+    "Cut": "Cut",
+    "Copy": "Copy",
+    "Paste": "Paste",
+    "Insert toggles paste between insertion and replacement": "Insert toggles paste between insertion and replacement",
+    "Paste: Insert": "Paste: Insert",
+    "Paste: Replace": "Paste: Replace"
 }

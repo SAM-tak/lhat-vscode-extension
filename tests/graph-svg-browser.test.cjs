@@ -42,7 +42,7 @@ const html = (reply, acknowledgeEdits = true) => `<!doctype html><meta charset="
 --vscode-input-foreground:#ddd;--vscode-focusBorder:#58a;--vscode-descriptionForeground:#999;
 }</style><link rel="stylesheet" href="/graph.css"><link rel="stylesheet" href="/bundle.css"><div id="root" data-layout-worker="/layout-worker.js"></div><script nonce="test">
 window.exports=[];window.edits=[];window.acquireVsCodeApi=()=>({getState(){},setState(){},postMessage(m){
-if(m.type==='chooseType'||m.type==='applyType'||m.type==='removeType'||m.type==='rename'||m.type==='insertElement'||m.type==='replaceOperator'||m.type==='editTextField'||m.type==='editComment'||m.type==='toggleStatement'||m.type==='insertStatement'||m.type==='editStructure'||m.type==='deleteElement'||m.type==='replaceExpression'||m.type==='editLiteral'||m.type==='editInterpolation'||m.type==='editAnnotation'){window.edits.push(m);${acknowledgeEdits ? "window.postMessage({type:'statementResult',id:m.id},'*');" : ''}}
+if(m.type==='clipboard'||m.type==='chooseType'||m.type==='applyType'||m.type==='removeType'||m.type==='rename'||m.type==='insertElement'||m.type==='replaceOperator'||m.type==='editTextField'||m.type==='editComment'||m.type==='toggleStatement'||m.type==='insertStatement'||m.type==='editStructure'||m.type==='deleteElement'||m.type==='replaceExpression'||m.type==='editLiteral'||m.type==='editInterpolation'||m.type==='editAnnotation'){window.edits.push(m);${acknowledgeEdits ? "window.postMessage({type:'statementResult',id:m.id},'*');" : ''}}
 if(m.type==='saveSvg'){window.exports.push(m);window.postMessage({type:'svgResult',id:m.id},'*');}
 if(m.type==='ready'){window.postMessage({type:'localization',language:'ja',bundle:${JSON.stringify(ja)}},'*');window.postMessage({type:'tree',reply:${JSON.stringify(reply)},uri:'file:///svg-example.lh',version:1},'*');}
 }});</script><script nonce="test" src="/bundle.js"></script>`;
@@ -86,6 +86,62 @@ async function drillGraphNode({ evaluate, until, call }, node) {
     for (const type of ['mousePressed','mouseReleased']) await call('Input.dispatchMouseEvent', { type, ...point, button:'left', clickCount:1 });
     await until(`document.querySelector('#trail') && ${graphReady}`);
 }
+
+test('hover clipboard shortcuts toggle Insert mode and preserve decorated nodes through live edits', { timeout: 60000 }, async () => {
+    const { graphHost, graphUi } = require('./graph-browser-host.cjs');
+    await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
+        const host = await graphHost(parse, server, 'module^demo\n# speed note\n@export\nlet^speed=400\nlet^other=2');
+        await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
+            const { evaluate, until, call } = client, ui = await graphUi(host, client);
+            await graphToolbar(client, 'Unfold All');
+            const key = async (key, modifiers = 0) => {
+                for (const type of ['keyDown', 'keyUp']) await call('Input.dispatchKeyEvent', { type, key, modifiers,
+                    code: key === 'Insert' ? 'Insert' : 'Key' + key.toUpperCase(), windowsVirtualKeyCode: key === 'Insert' ? 45 : key.toUpperCase().charCodeAt(0) });
+            };
+            const hover = async selector => {
+                await until(`document.querySelector(${JSON.stringify(selector)}) && ${graphReady}`);
+                const point = await evaluate(`(()=>{document.activeElement?.blur();const r=document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();return {x:r.left+5,y:r.top+5}})()`);
+                await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+            };
+            const box = node => `.box:not(.comment-box)[data-source-start="${node.start}"][data-source-end="${node.end}"]`;
+            const original = host.tree.source, version = host.version;
+            await hover(box(host.tree.root.fields.items[1])); await key('c', 2); await ui.accept();
+            assert.equal(host.clipboard, '# speed note\n@export\nlet^speed=400');
+            assert.equal(host.tree.source, original); assert.equal(host.version, version);
+            assert.equal(await evaluate(`document.querySelector('.clipboard-mode').getAttribute('aria-pressed')`), 'true');
+            await hover(box(host.tree.root.fields.items[2])); await key('v', 2); await ui.accept();
+            assert.equal(host.tree.root.fields.items.length, 4);
+            assert(host.tree.source.indexOf('let^other') < host.tree.source.lastIndexOf('let^speed'));
+            await key('Insert');
+            await until(`document.querySelector('.clipboard-mode').getAttribute('aria-pressed')==='false'`);
+            host.clipboard = 'let^replacement=9';
+            await hover(box(host.tree.root.fields.items[2])); await key('v', 2); await ui.accept();
+            assert(!host.tree.source.includes('let^other'));
+            await hover(box(host.tree.root.fields.items[1])); await key('x', 2); await ui.accept();
+            assert.equal(host.tree.source.split('# speed note').length, 2);
+            assert.equal(host.tree.root.fields.items.length, 3);
+            await hover('.annotation-row'); await key('c', 2); await ui.accept();
+            assert.equal(host.clipboard, '@export');
+            await hover('.comment-box:not(.annotation-box)'); await key('c', 2); await ui.accept();
+            assert.equal(host.clipboard, '# speed note');
+            const selector = box(host.tree.root.fields.items[1]);
+            await evaluate(`document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:300,clientY:200}))`);
+            await until(`document.querySelector('.statement-menu [role=option]')`);
+            assert(await evaluate(`[...document.querySelectorAll('.statement-menu [role=option]')].some(n=>n.textContent.includes('切り取り'))`));
+            await evaluate(`[...document.querySelectorAll('.statement-menu [role=option]')].find(n=>n.textContent.includes('コピー')).click()`);
+            await ui.accept();
+            assert.equal(host.clipboard, 'let^replacement=9');
+            await hover('.literal-node'); await key('c', 2); await ui.accept();
+            assert.equal(host.clipboard, '9');
+            const count = await evaluate('window.edits.length');
+            await evaluate(`document.querySelector('.literal-input').focus()`);
+            await key('Insert'); await key('c', 2);
+            assert.equal(await evaluate('window.edits.length'), count);
+            assert.equal(await evaluate(`document.querySelector('.clipboard-mode').getAttribute('aria-pressed')`), 'false');
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
 
 test('malformed and missing values repair through the shared expression menu and remain editable', { timeout: 120000 }, async () => {
     const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
