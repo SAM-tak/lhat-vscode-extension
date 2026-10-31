@@ -202,6 +202,7 @@ test('native annotation action shows a box without choosing a name or changing s
         const document = { uri: { toString: () => 'file:annotations' }, version: 1, getText: () => tree.source };
         let receive, dispose;
         const mock = { env: { language: 'en' }, l10n: { t: text => text }, Uri: { joinPath: (base, ...parts) => [base, ...parts].join('/') },
+            languages: { getDiagnostics: () => [], onDidChangeDiagnostics: () => ({ dispose() {} }) },
             window: { showQuickPick: () => { throw Error('must not choose a name when opening the box'); } },
             workspace: { getConfiguration: () => ({ get: () => 'en' }), onDidChangeTextDocument: () => ({ dispose() {} }),
                 onDidChangeConfiguration: () => ({ dispose() {} }), applyEdit: async edit => { changes.push(edit); return true; } } };
@@ -231,6 +232,7 @@ test('unsaved annotation removals use the live buffer instead of the previous ch
     const messages = [], edits = [];
     let receive, changed, dispose;
     const mock = { env: { language: 'en' }, l10n: { t: text => text }, Uri: { joinPath: (base, ...parts) => [base, ...parts].join('/') },
+        languages: { getDiagnostics: () => [], onDidChangeDiagnostics: () => ({ dispose() {} }) },
         workspace: { getConfiguration: () => ({ get: () => 'en' }), onDidChangeTextDocument: callback => { changed = callback; return { dispose() {} }; },
             onDidChangeConfiguration: () => ({ dispose() {} }), applyEdit: async edit => { edits.push(edit); return true; } } };
     const panel = { active: true, onDidDispose: callback => { dispose = callback; }, webview: { asWebviewUri: uri => uri, cspSource: 'test:',

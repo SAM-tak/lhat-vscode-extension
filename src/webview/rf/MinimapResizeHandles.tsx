@@ -21,7 +21,7 @@ export function MinimapResizeHandles({ size, preferredSize, available, onResize 
     return <>{(["left", "top", "top-left"] as const).map((edge) => {
         const corner = edge === "top-left";
         const key = edge === "left" ? "width" : "height";
-        return <div key={edge} className={`minimap-resize minimap-resize-${edge} nodrag nopan nowheel`}
+        return <div key={edge} className={`minimap-resize minimap-resize-${edge} nodrag nopan nowheel nokey`}
             tabIndex={0}
             {...(corner ? {
                 role: "group", "aria-roledescription": "resize handle",

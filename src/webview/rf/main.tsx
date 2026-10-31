@@ -2,6 +2,9 @@ import { textFields } from "../../graphTextFields";
 import { viewIdentity } from "./viewIdentity";
 import { ClipboardProvider, ClipboardMode } from "./Clipboard";
 import { EXECUTION_INSET } from "../alignment";
+import { graphErrors } from "../diagnostics";
+import { DiagnosticTooltip } from "./DiagnosticTooltip";
+import { DiagnosticMiniMap } from "./DiagnosticMiniMap";
 // L^ (lhat) -- the graph webview on React Flow (06 の 8.4, the V14 spike).
 //
 // What this exists to prove or disprove:
@@ -24,7 +27,7 @@ import * as l10n from "@vscode/l10n";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import {
-    Background, BaseEdge, Handle, MarkerType, MiniMap, Panel, PanOnScrollMode, Position,
+    Background, BaseEdge, Handle, MarkerType, Panel, PanOnScrollMode, Position,
     ReactFlow, getSmoothStepPath, useReactFlow, ReactFlowProvider,
     useUpdateNodeInternals,
     type BuiltInEdge,
@@ -124,6 +127,7 @@ interface SlideData {
 }
 
 interface BoxData extends Record<string, unknown>, SlideData {
+    errorMessage?: string;
     drillTarget?: DrillTarget;
     interpolation?: InterpolationField;
     interpolationFormat?: InterpolationField;
@@ -1014,7 +1018,8 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         }}
     >{data.collapsed ? "▸" : "▾"}</button>;
 
-    if (data.annotationList) return <div className="box comment-box annotation-box"
+    if (data.annotationList) return <div className={`box comment-box annotation-box${data.errorMessage ? " has-error" : ""}`}
+        data-graph-error={data.errorMessage} aria-description={data.errorMessage}
         data-source-start={data.start} data-source-end={data.sourceEnd}
         data-vscode-context={statements.context(undefined, data, data.annotationList ? annotationOwner : undefined)}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}
@@ -1022,7 +1027,8 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         <svg className="annotation-link" style={{ width: data.annotationLinkWidth }} viewBox="0 0 24 2" preserveAspectRatio="none" aria-hidden="true"><path d="M 0 1 H 24" /></svg>
         <AnnotationList owner={data.annotationList} collapsed={data.collapsed} foldButton={foldButton} />
     </div>;
-    if (data.commentOwner !== undefined) return <div className="box comment-box"
+    if (data.commentOwner !== undefined) return <div className={`box comment-box${data.errorMessage ? " has-error" : ""}`}
+        data-graph-error={data.errorMessage} aria-description={data.errorMessage}
         title={data.commentOwner} data-source-start={data.start} data-source-end={data.sourceEnd}
         data-vscode-context={statements.context(undefined, data, data.annotationList ? annotationOwner : undefined)}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove}
@@ -1035,6 +1041,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
         data.branchOffset === undefined && data.definitionBranchOffset === undefined && data.operandOutputY === undefined && !data.sectionDelete) return null;
 
     const classes = ["box"];
+    if (data.errorMessage) classes.push("has-error");
     if (data.interpolation && !data.literal) classes.push("interpolation-box");
     if (data.operatorExpression) classes.push("operator-expression");
     if (data.operandInput) classes.push("operand-slot");
@@ -1065,7 +1072,8 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
                 <span className="semantic-label" data-category="control">{data.sectionDelete.label}</span>
                 <DeleteButton start={data.sectionDelete.site.start} end={data.sectionDelete.site.end} />
             </div>}
-            {data.scrollSurface && <div className="call-tree-surface"
+            {data.scrollSurface && <div className={`call-tree-surface${data.errorMessage ? " has-error" : ""}`}
+                data-graph-error={data.errorMessage} aria-description={data.errorMessage}
                 data-source-start={data.start} data-source-end={data.sourceEnd}
                 data-source-kind={data.drillTarget?.kind}
                 data-vscode-context={statements.context(data.statement, data, annotationOwner)}
@@ -1088,6 +1096,7 @@ function BoxNode({ id, data }: NodeProps<BoxNodeType>) {
             {!data.layoutOnly && !data.isStart && !data.isAdd && !data.decoration &&
                 <CommentButton start={data.start} end={data.sourceEnd} />}
             {!data.layoutOnly && <div
+                data-graph-error={data.errorMessage} aria-description={data.errorMessage}
                 className={[...classes, data.inline ? "inline-box" : "", data.operator ? "operator-box" : "", data.decoration ? "decoration" : ""].join(" ")}
                 data-source-start={data.start} data-source-end={data.sourceEnd}
                 data-source-kind={data.drillTarget?.kind}
@@ -1352,6 +1361,7 @@ function App() {
     const [reply, setReply] = useState<AstReply>();
     const [uri, setUri] = useState("");
     const [version, setVersion] = useState<number>();
+    const [diagnostics, setDiagnostics] = useState<Extract<ToWebview, { type: "diagnostics" }>>();
     const sourceKey = `${uri}\0${reply?.source ?? ""}`;
     const sourceTextFields = useMemo(() => reply ? textFields(reply) : [], [reply]);
     const [nameSizes, setNameSizes] = useState({ sourceKey: "", values: {} as Record<string, string> });
@@ -1379,8 +1389,8 @@ function App() {
     const [annotationBoxes, setAnnotationBoxes] = useState<Record<string, boolean>>({});
     const [trail, setTrail] = useState<DrillTarget[]>([]);
     const [slides, setSlides] = useState<Slides>({});
-    const currentDocument = useRef({ reply, uri });
-    currentDocument.current = { reply, uri };
+    const currentDocument = useRef({ reply, uri, version });
+    currentDocument.current = { reply, uri, version };
     const slidesRef = useRef(slides);
     slidesRef.current = slides;
     const [laid, setLaid] = useState<ElkNode>();
@@ -1453,14 +1463,20 @@ function App() {
                     } else {
                         setFolds({}); setSlides({}); setAnnotationBoxes({}); setTrail([]);
                     }
-                    currentDocument.current = { reply: message.reply, uri: message.uri };
+                    currentDocument.current = { reply: message.reply, uri: message.uri, version: message.version };
                     setReply(message.reply);
                     setUri(message.uri);
                     setVersion(message.version);
                     break;
                 case "pending":
+                    currentDocument.current.version = undefined;
+                    setDiagnostics(undefined);
                     setVersion(undefined);
                     setNote("waiting for the language server…");
+                    break;
+                case "diagnostics":
+                    if (message.uri === currentDocument.current.uri && message.version === currentDocument.current.version)
+                        setDiagnostics(message);
                     break;
                 case "error":
                     setNote(message.message);
@@ -1762,7 +1778,12 @@ function App() {
         [laid, slides, viewWidth, flashKey,
             onSlide, onEnter, onReveal, onFold, onSpring,
             onDocumentStart, onDocumentSlide, onDocumentRelease, onDocumentSpring, onReorder]);
-    const nodes = flow.nodes;
+    const nodes = useMemo(() => {
+        const current = diagnostics?.uri === uri && diagnostics.version === version && laidSourceKey === sourceKey;
+        const messages = graphErrors(flow.nodes, current ? diagnostics.items : []);
+        return flow.nodes.map(node => messages[node.id]
+            ? { ...node, data: { ...node.data, errorMessage: messages[node.id] } } : node);
+    }, [flow.nodes, diagnostics, uri, version, laidSourceKey, sourceKey]);
     const showAnnotationBox = useCallback((owner: AnnotationOwner) => {
         const key = annotationOwnerKey(owner);
         setAnnotationBoxes(boxes => ({ ...boxes, [key]: true }));
@@ -2051,6 +2072,7 @@ function App() {
             boxes: annotationBoxes, show: showAnnotationBox }}>
         <div id="app" data-graph-version={laidSourceKey === sourceKey ? version : undefined}
             data-layout-pending={layoutPending} data-handles-settled={settledNodes === nodes}>
+            <DiagnosticTooltip revision={nodes} />
             <div id="bar">
                 <AddAnnotation unit />
                 <button
@@ -2180,11 +2202,12 @@ function App() {
                         className={`document-minimap-panel${minimapCollapsed ? " collapsed" : ""}`}
                         onPointerDownCapture={onMinimapPointerDown}>
                         {!minimapCollapsed && minimapSize.width > 0 && minimapSize.height > 0 && <>
-                            <MiniMap pannable
+                            <DiagnosticMiniMap pannable
                                 style={minimapSize}
                                 ariaLabel="Document overview"
-                                nodeClassName={(node) => node.data.layoutOnly ? "layout-only"
-                                    : node.data.isStart || node.data.isReturn ? "start-marker" : ""} />
+                                nodeClassName={(node) => [node.data.layoutOnly ? "layout-only"
+                                    : node.data.isStart || node.data.isReturn ? "start-marker" : "",
+                                    node.data.errorMessage ? "minimap-error" : ""].join(" ")} />
                             <MinimapResizeHandles size={minimapSize} preferredSize={preferredMinimapSize}
                                 available={minimapAvailable} onResize={setPreferredMinimapSize} />
                         </>}

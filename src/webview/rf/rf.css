@@ -166,6 +166,12 @@ html, body, #root {
     fill: color-mix(in srgb, var(--vscode-editor-background) 25%, transparent);
 }
 
+.minimap-error-node {
+    fill: var(--vscode-editorError-foreground, #f14c4c);
+    stroke: var(--vscode-editorError-foreground, #f14c4c);
+    stroke-width: 1.5px;
+}
+
 /* One box. The node wrapper carries width/height from the layout;
    this fills it. */
 .box {
@@ -178,6 +184,25 @@ html, body, #root {
     background: var(--vscode-editor-background);
     font-size: calc(11px * var(--lhat-scale, 1));
     overflow: hidden;
+}
+
+.graph-diagnostic-tooltip {
+    position: fixed;
+    z-index: 10000;
+    pointer-events: none;
+    max-width: min(480px, calc(100vw - 16px));
+    max-height: calc(100vh - 16px);
+    overflow: hidden;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border: 1px solid var(--vscode-editorError-foreground, #f14c4c);
+    border-radius: 4px;
+    color: var(--vscode-editorHoverWidget-foreground, var(--vscode-editor-foreground));
+    background: var(--vscode-editorHoverWidget-background, var(--vscode-editor-background));
+    box-shadow: 0 2px 8px var(--vscode-widget-shadow, #0006);
+    font-size: 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 
 /* The one-node fold, in the top right corner. Quiet until the box is pointed
@@ -756,3 +781,10 @@ textarea.literal-input {
 .source-text-field .interpolation-field { min-width: 0; flex: 1; }
 .comment-box > .interpolation-field { width: 100%; height: 100%; }
 .comment-box > .interpolation-field textarea { height: 100%; white-space: pre-wrap; }
+
+.box.has-error, .call-tree-surface.has-error {
+    border-color: var(--vscode-editorError-foreground, #f14c4c);
+    box-shadow: inset 0 0 0 1px var(--vscode-editorError-foreground, #f14c4c);
+    background-image: linear-gradient(color-mix(in srgb, var(--vscode-editorError-foreground, #f14c4c) 8%, transparent),
+        color-mix(in srgb, var(--vscode-editorError-foreground, #f14c4c) 8%, transparent));
+}

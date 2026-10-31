@@ -87,6 +87,86 @@ async function drillGraphNode({ evaluate, until, call }, node) {
     await until(`document.querySelector('#trail') && ${graphReady}`);
 }
 
+test('graph diagnostics highlight visible owners and show error text over input controls without moving nodes', { timeout: 60000 }, async () => {
+    await require('./lhat-server.cjs').withLhatServer(async parse => {
+        const tree = await parse('let^run=p^{let^bad=1\nprint(bad)}\nlet^other=2');
+        const at = tree.source.indexOf('1'), message = '型が一致しません <value>\n数値が必要です';
+        await browser({ ...routes, '/': { type: 'text/html', body: html(tree, false) } }, async client => {
+            const { evaluate, until, call } = client;
+            const send = async (items, extra = {}) => {
+                await evaluate(`window.postMessage(${JSON.stringify({ type: 'diagnostics', uri: 'file:///svg-example.lh', version: 1, items, ...extra })},'*')`);
+                await evaluate(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+            };
+            const items = [{ start: at, end: at + 1, message }];
+            await until(graphReady);
+            await send(items);
+            await until(`document.querySelector('.has-error')`);
+            assert(await evaluate(`document.querySelector('.has-error').classList.contains('folded')`));
+            const minimapErrors = async () => {
+                await until(`document.querySelector('.minimap-error-node')`);
+                assert(await evaluate(`(()=>{const svg=document.querySelector('.react-flow__minimap-svg'), layer=svg.querySelector('.minimap-error-layer');
+                    return svg.lastElementChild===layer && layer.getAttribute('pointer-events')==='none' &&
+                        [...svg.querySelectorAll('.react-flow__minimap-node, .react-flow__minimap-mask')].every(node=>node.compareDocumentPosition(layer)&Node.DOCUMENT_POSITION_FOLLOWING)})()`));
+                assert(await evaluate(`(()=>{const normal=document.querySelector('.react-flow__minimap-node.minimap-error'), error=document.querySelector('.minimap-error-node');
+                    return ['x','y','width','height'].every(key=>normal.getAttribute(key)===error.getAttribute(key))})()`));
+                assert.equal(await evaluate(`getComputedStyle(document.querySelector('.minimap-error-node')).fill`), 'rgb(241, 76, 76)');
+                assert.equal(await evaluate(`document.querySelector('.minimap-error-node').getAttribute('vector-effect')`), 'non-scaling-stroke');
+                assert.equal(await evaluate(`document.querySelector('.minimap-error-node').dataset.nodeId`),
+                    await evaluate(`document.querySelector('.has-error').closest('.react-flow__node').dataset.id`));
+            };
+            await minimapErrors();
+            await graphToolbar(client, 'Unfold All');
+            await until(`document.querySelector('.literal-node.has-error')`);
+            assert.equal(await evaluate(`document.querySelectorAll('.has-error').length`), 1);
+            await minimapErrors();
+            await evaluate(`document.querySelector('.minimap-toggle').click()`);
+            await until(`!document.querySelector('.react-flow__minimap')`);
+            await evaluate(`document.querySelector('.minimap-toggle').click()`);
+            await minimapErrors();
+            const minimapWidth = await evaluate(`document.querySelector('.react-flow__minimap-svg').getBoundingClientRect().width`);
+            await evaluate(`document.querySelector('.minimap-resize-left').focus()`);
+            await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 });
+            await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 });
+            await until(`document.querySelector('.minimap-resize-left').getAttribute('aria-valuenow')>${minimapWidth}`);
+            assert.equal(await evaluate(`document.querySelector('.react-flow__minimap-svg').getBoundingClientRect().width`),
+                await evaluate(`Number(document.querySelector('.minimap-resize-left').getAttribute('aria-valuenow'))`));
+            await minimapErrors();
+            const positions = () => evaluate(`[...document.querySelectorAll('.react-flow__node')].map(n=>[n.dataset.id,n.style.transform,n.style.width,n.style.height])`);
+            const before = await positions();
+            const point = await evaluate(`(()=>{const r=document.querySelector('.has-error .literal-input').getBoundingClientRect();return {x:r.left+3,y:r.top+3}})()`);
+            await call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+            await until(`document.querySelector('.graph-diagnostic-tooltip')`);
+            assert.equal(await evaluate(`document.querySelector('.graph-diagnostic-tooltip').textContent`), message);
+            assert.equal(await evaluate(`getComputedStyle(document.querySelector('.has-error')).borderTopColor`), 'rgb(241, 76, 76)');
+            if (process.env.LHAT_TEST_SEMANTIC_ARTIFACTS) {
+                fs.mkdirSync(process.env.LHAT_TEST_SEMANTIC_ARTIFACTS, { recursive: true });
+                const screenshot = await call('Page.captureScreenshot', { format: 'png' });
+                fs.writeFileSync(path.join(process.env.LHAT_TEST_SEMANTIC_ARTIFACTS, 'graph-diagnostics.png'), Buffer.from(screenshot.data, 'base64'));
+            }
+            await send([]);
+            await until(`!document.querySelector('.has-error') && !document.querySelector('.graph-diagnostic-tooltip') && !document.querySelector('.minimap-error-node')`);
+            assert.deepEqual(await positions(), before);
+            await send(items, { version: 0 });
+            assert.equal(await evaluate(`document.querySelectorAll('.has-error').length`), 0);
+            await send(items, { uri: 'file:///other.lh' });
+            assert.equal(await evaluate(`document.querySelectorAll('.has-error').length`), 0);
+            await send(items);
+            await until(`document.querySelector('.literal-node.has-error')`);
+            await send([], { version: 0 });
+            assert.equal(await evaluate(`document.querySelectorAll('.has-error').length`), 1);
+            await evaluate(`window.postMessage({type:'pending'},'*')`);
+            await until(`!document.querySelector('.has-error')`);
+            await evaluate(`window.postMessage(${JSON.stringify({ type: 'tree', reply: tree, uri: 'file:///svg-example.lh', version: 2 })},'*')`);
+            await until(`document.querySelector('#app').dataset.graphVersion==='2' && ${graphReady}`);
+            await send(items);
+            assert.equal(await evaluate(`document.querySelectorAll('.has-error').length`), 0);
+            await send(items, { version: 2 });
+            await until(`document.querySelector('.literal-node.has-error')`);
+            assert.deepEqual(client.errors, []);
+        });
+    });
+});
+
 test('hover clipboard shortcuts toggle Insert mode and preserve decorated nodes through live edits', { timeout: 60000 }, async () => {
     const { graphHost, graphUi } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {

@@ -145,6 +145,17 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
         const post = (message: ToWebview) => {
             if (!disposed) void panel.webview.postMessage(message);
         };
+        let hadDiagnostics = false;
+        const sendDiagnostics = () => {
+            if (!ready || disposed || currentTree?.source !== document.getText()) return;
+            const items = vscode.languages.getDiagnostics(document.uri)
+                .filter(diagnostic => diagnostic.severity === vscode.DiagnosticSeverity.Error)
+                .map(diagnostic => ({ start: document.offsetAt(diagnostic.range.start),
+                    end: document.offsetAt(diagnostic.range.end), message: diagnostic.message }));
+            if (!items.length && !hadDiagnostics) return;
+            hadDiagnostics = items.length > 0;
+            post({ type: "diagnostics", uri: key, version: document.version, items });
+        };
 
         const send = async (): Promise<void> => {
             if (disposed) return;
@@ -175,7 +186,7 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
                 post(matched === undefined
                     ? { type: "pending" }
                     : { type: "tree", reply: matched, uri: document.uri.toString(), version });
-                if (fresh) treeRetryDelay = 100;
+                if (fresh) { treeRetryDelay = 100; sendDiagnostics(); }
                 else {
                     // didChange only queues checking. Its immediate AST may
                     // still be the old snapshot; don't leave all editing
@@ -246,12 +257,16 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
                 void sendLocalization();
             }
         });
+        const diagnosticsChanged = vscode.languages.onDidChangeDiagnostics(event => {
+            if (event.uris.some(uri => uri.toString() === key)) sendDiagnostics();
+        });
         panel.onDidDispose(() => {
             disposed = true;
             clearTimeout(treeRetry);
             cancelTypeRequest();
             changed.dispose();
             configurationChanged.dispose();
+            diagnosticsChanged.dispose();
             this.statementEditors.delete(panel);
             this.annotationAdders.delete(panel);
             open.delete(panel);

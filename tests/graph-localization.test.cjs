@@ -686,6 +686,7 @@ async function graphHost({ language = 'en', setting, readFile } = {}) {
     const uri = { toString: () => 'test:source' };
     const mock = {
         env: { language }, l10n: { bundle, t: text => text },
+        languages: { getDiagnostics: () => [], onDidChangeDiagnostics: () => ({ dispose() {} }) },
         Uri: { joinPath: (base, ...parts) => [base, ...parts].join('/') },
         workspace: {
             fs: { readFile: async file => {

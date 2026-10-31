@@ -131,6 +131,7 @@ function host(options = {}) {
     const document = { uri: { toString: () => 'file:statements' }, version: 1, getText: () => source, positionAt: character => ({ line: 0, character }) };
     const edits = [], requests = [];
     const mock = { l10n: { t: s => s }, Position: class { constructor(line, character) { Object.assign(this, { line, character }); } },
+        languages: { getDiagnostics: () => [], onDidChangeDiagnostics: () => ({ dispose() {} }) },
         env: { clipboard: { readText: async () => { options.clipboard?.(document); return 'next()'; },
             writeText: async text => { options.clipboard?.(document); options.copied = text; } } },
         Range: class { constructor(start, end) { Object.assign(this, { start, end }); } },
@@ -226,4 +227,50 @@ test('the native context command edits its graph document without needing an act
     dispose(); provider.toggleStatement(context); provider.toggleFold(foldContext); await new Promise(setImmediate);
     assert.equal(messages.length, count, 'closed graph contexts are ignored');
     assert.equal(h.edits.length, 1);
+});
+
+test('graph diagnostics stream current errors and clearing without rebuilding the graph and dispose with the panel', async () => {
+    const h = host(), messages = [];
+    let diagnostics = [], diagnosticChanged, textChanged, receive, close, disposed = false, requests = 0;
+    Object.assign(h.document, { offsetAt: position => position.character });
+    Object.assign(h.mock, { env: { language: 'en' }, DiagnosticSeverity: { Error: 0 },
+        Uri: { joinPath: (base, ...parts) => [base, ...parts].join('/') },
+        languages: { getDiagnostics: () => diagnostics, onDidChangeDiagnostics: callback => {
+            diagnosticChanged = callback; return { dispose() { disposed = true; } };
+        } } });
+    Object.assign(h.mock.workspace, { getConfiguration: () => ({ get: () => 'en' }),
+        onDidChangeTextDocument: callback => { textChanged = callback; return { dispose() {} }; },
+        onDidChangeConfiguration: () => ({ dispose() {} }) });
+    const panel = { onDidDispose: callback => { close = callback; }, webview: {
+        asWebviewUri: uri => uri, cspSource: 'test:', postMessage: message => { messages.push(message); return Promise.resolve(true); },
+        onDidReceiveMessage: callback => { receive = callback; },
+    } };
+    const Provider = load('graphEditor.ts', h.mock).LhatGraphEditorProvider;
+    const client = { sendRequest: async () => { requests++; return h.tree; } };
+    const error = message => ({ severity: 0, message, range: { start: { character: 0 }, end: { character: 4 } } });
+    diagnostics = [error('未定義の名前'), { ...error('warning'), severity: 1 }];
+    await new Provider({ extensionUri: 'test:extension' }, () => client).resolveCustomTextEditor(h.document, panel, {});
+    receive({ type: 'ready' }); await new Promise(setImmediate);
+    assert.deepEqual(messages.at(-1), { type: 'diagnostics', uri: 'file:statements', version: 1,
+        items: [{ start: 0, end: 4, message: '未定義の名前' }] });
+    const count = requests;
+    diagnostics = [error('new error')];
+    diagnosticChanged({ uris: [{ toString: () => 'file:other' }] });
+    assert.equal(messages.at(-1).items[0].message, '未定義の名前');
+    diagnosticChanged({ uris: [h.document.uri] });
+    assert.equal(messages.at(-1).items[0].message, 'new error');
+    diagnostics = [];
+    diagnosticChanged({ uris: [h.document.uri] });
+    assert.deepEqual(messages.at(-1).items, []);
+    assert.equal(requests, count, 'diagnostics do not request another AST');
+    h.document.version++; h.document.getText = () => 'next()';
+    textChanged({ document: h.document });
+    const diagnosticCount = messages.filter(message => message.type === 'diagnostics').length;
+    diagnostics = [error('pending source')]; diagnosticChanged({ uris: [h.document.uri] });
+    assert.equal(messages.filter(message => message.type === 'diagnostics').length, diagnosticCount);
+    close(); assert(disposed);
+    const length = messages.length;
+    diagnosticChanged({ uris: [h.document.uri] });
+    await new Promise(setImmediate);
+    assert.equal(messages.length, length);
 });

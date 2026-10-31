@@ -64,6 +64,7 @@ export interface AstReply {
 }
 
 export interface SourceSpan { start: number; end: number }
+export interface GraphDiagnostic extends SourceSpan { message: string }
 export interface TypeSite extends SourceSpan {
     /** An input without a default has no stored value constraining its type. */
     parameter?: boolean;
@@ -92,6 +93,7 @@ export interface ReferenceTarget extends SourceSpan {
 export type ToWebview =
     | { type: "localization"; language: string; bundle?: Record<string, string> }
     | { type: "tree"; reply: AstReply; uri: string; version?: number }
+    | { type: "diagnostics"; uri: string; version: number; items: GraphDiagnostic[] }
     | { type: "renameResult"; id: string; error?: string }
     | { type: "typeOptions"; id: string; candidates?: string[]; error?: string }
     | { type: "typeResult"; id: string; error?: string }

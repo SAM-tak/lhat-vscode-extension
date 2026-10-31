@@ -237,6 +237,7 @@ async function editorHost(options = {}) {
     const document = { uri, version: 1, getText: () => source, positionAt: character => ({ line: 0, character }) };
     const mock = {
         env: { language: 'en' }, l10n: { t: text => text },
+        languages: { getDiagnostics: () => [], onDidChangeDiagnostics: () => ({ dispose() {} }) },
         Uri: { joinPath: (base, ...parts) => [base, ...parts].join('/') },
         CancellationTokenSource: class { token = { isCancellationRequested: false }; cancel() { this.token.isCancellationRequested = true; } dispose() {} },
         Range: class { constructor(start, end) { Object.assign(this, { start, end }); } },

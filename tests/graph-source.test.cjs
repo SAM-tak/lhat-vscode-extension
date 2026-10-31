@@ -54,3 +54,20 @@ test('statement and variable additions use remapped positions and preserve exist
     const appendBinding = listInsertions(tree).find(site => site.field === 'targets' && site.before === undefined);
     assert.equal(apply(insertListEdit(tree, appendBinding, 'binding')), document.replace('let^ 値 = 1', 'let^ 値, _^ = 1, nil^'));
 });
+
+test('diagnostics choose the smallest visible owner, retain folded errors and separate annotation ranges', () => {
+    const { graphErrors } = load('webview/diagnostics.ts');
+    const box = (id, start, end, extra = {}) => ({ id, data: { start, sourceEnd: end, ...extra } });
+    const parent = box('parent', 0, 100), child = box('child', 10, 20);
+    const errors = [{ start: 12, end: 14, message: '型が一致しません <value>' }, { start: 12, end: 14, message: '別のエラー' }];
+    assert.deepEqual(graphErrors([parent, child, box('layout', 12, 14, { layoutOnly: true }), box('start', 12, 14, { isStart: true })], [...errors, errors[0]]),
+        { child: '型が一致しません <value>\n\n別のエラー' });
+    assert.deepEqual(graphErrors([parent], errors), { parent: '型が一致しません <value>\n\n別のエラー' });
+    assert.deepEqual(graphErrors([parent, child], [{ start: 5, end: 50, message: 'whole expression' }]), { parent: 'whole expression' });
+    const annotations = box('annotations', 10, 40, { annotationList: { annotations: [{ start: 2, end: 8 }] } });
+    assert.deepEqual(graphErrors([annotations, box('definition', 10, 40)], [{ start: 3, end: 5, message: 'annotation error' }]), { annotations: 'annotation error' });
+    assert.deepEqual(graphErrors([annotations, child], errors), { child: '型が一致しません <value>\n\n別のエラー' });
+    assert.deepEqual(graphErrors([box('emptyAnnotations', 10, 40, { annotationList: { annotations: [] } })], errors), {});
+    assert.deepEqual(graphErrors([parent, child], [{ start: 100, end: 100, message: 'missing closing token' }]), { parent: 'missing closing token' });
+    assert.deepEqual(graphErrors([parent, child], []), {});
+});
