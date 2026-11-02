@@ -601,7 +601,7 @@ textarea.literal-input {
     cursor: zoom-in;
 }
 
-/* Code switched off (01 の 6.5). Greyed rather than hidden -- it is still
+/* Code switched off ([lex.comment.disabled]). Greyed rather than hidden -- it is still
    written there -- and see-through, so the execution line that runs past it
    (8.6) shows behind. */
 .box.disabled {

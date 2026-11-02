@@ -85,7 +85,7 @@ function resolveServerCommand(): string {
     return process.platform === "win32" ? "lhatls.exe" : "lhatls";
 }
 
-// 10 §7.4: lhatls answers in the editor's language (LSP's `locale`, which the
+// [l10n.choose.tools]: lhatls answers in the editor's language (LSP's `locale`, which the
 // client sends on its own) from catalogs the editor says the place of --
 // `<dir>/<language tag>/<source>.txt`. The CLI finds its own as `messages/`
 // beside its executable, so a server that ships them keeps them in the same
@@ -211,7 +211,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
     );
 
-    // 09 の 7 章: the debugger. `lhat --dap=PORT` is the adapter, so what is
+    // [debug.vscode]: the debugger. `lhat --dap=PORT` is the adapter, so what is
     // registered here only starts it and says where to connect.
     const debugging = new LhatDebugAdapterFactory();
     context.subscriptions.push(
@@ -254,7 +254,7 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.commands.registerCommand(
             "lhat.outlineReveal",
             async (uri: vscode.Uri, range: vscode.Range) => {
-                // The graph counts in UTF-16 offsets (06 の 4.1); a Range is
+                // The graph counts in UTF-16 offsets ([editor.ast.protocol]); a Range is
                 // line and character, and the document converts.
                 const document = await vscode.workspace.openTextDocument(uri);
                 graphs.focus(uri, document.offsetAt(range.start),
@@ -262,7 +262,7 @@ export function activate(context: vscode.ExtensionContext): void {
             }),
     );
 
-    // 07 の 4 章: the hover shows an elided type, which reads better in a
+    // [lsp.hover]: the hover shows an elided type, which reads better in a
     // popup but is not what anyone can paste. The editor's own copy button
     // on a hover takes the whole popup -- the line, the type, the comments --
     // and neither that nor what it copies is ours to change. So the way to
@@ -341,7 +341,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }),
     );
 
-    // 01 の 6.5: statements switched off as '#[~ ... ]#', and on again. What
+    // [lex.comment.disabled]: statements switched off as '#[~ ... ]#', and on again. What
     // to wrap -- the whole statements a selection touches -- is the server's
     // to say, since only the tree knows where one ends. This applies the
     // edits it answers with, and says why when it answers with none.
@@ -431,7 +431,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 return;
             }
             // A split only when asked for: it halves the width the graph has,
-            // and 06 の 8.1 measured that width to be what runs out first.
+            // and [editor.render.overflow] measured that width to be what runs out first.
             // Beside is the one case where a second tab is the point, so it
             // leaves the text where it is.
             const beside = vscode.workspace

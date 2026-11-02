@@ -5,7 +5,7 @@ import { EXECUTION_INSET } from "../alignment";
 import { graphErrors } from "../diagnostics";
 import { DiagnosticTooltip } from "./DiagnosticTooltip";
 import { DiagnosticMiniMap } from "./DiagnosticMiniMap";
-// L^ (lhat) -- the graph webview on React Flow (06 の 8.4, the V14 spike).
+// L^ (lhat) -- the graph webview on React Flow ([editor.render.layer], the V14 spike).
 //
 // What this exists to prove or disprove:
 //   - ELK owns every position; React Flow only shows them. Static nodes,
@@ -78,7 +78,7 @@ let reorderSequence = 0;
 
 // How far a scroll-owning box has been slid, keyed by what it was made from.
 // ELK ids are regenerated every layout; the source span survives one.
-// The same key is what *.lhl would store (06 の 9 章).
+// The same key is what *.lhl would store ([editor.lhl]).
 //
 // The start alone will not do: a parent and its first child begin at the same
 // place all the time (the root and the first statement of a file, for one), so
@@ -167,7 +167,7 @@ interface BoxData extends Record<string, unknown>, SlideData {
     isCall: boolean;
     definitionHandleY?: number;
     collapsed: boolean;
-    /** 01 の 6.5: written, but switched off. */
+    /** [lex.comment.disabled]: written, but switched off. */
     disabled: boolean;
     start?: number;
     end?: number;

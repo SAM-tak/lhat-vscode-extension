@@ -1,6 +1,6 @@
 // L^ (lhat) -- VSCode extension: running a program under the debugger.
 //
-// 09 の 7 章. The adapter is the runtime itself: `lhat --dap=PORT FILE` binds
+// [debug.vscode]. The adapter is the runtime itself: `lhat --dap=PORT FILE` binds
 // that port on loopback, waits for one debugger, and speaks DAP over it
 // (dap/adapter.c). The extension picks the port and starts the process.
 //
@@ -407,7 +407,7 @@ export class LhatDebugAdapterFactory
         const command = resolveRuntimeCommand();
 
         // 01 の usage: the options come first, the file next, and everything
-        // after it is the program's own '...' (02 の 13.7). --dap= implies
+        // after it is the program's own '...' ([syntax.type.variadic]). --dap= implies
         // --run, so it is not written again.
         const args = [`--dap=${port}`];
         if (configuration.relaxed === true) {

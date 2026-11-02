@@ -146,7 +146,7 @@
     },
 
     "annotations": {
-      "comment": "02-syntax.md 18章: '@' and the name glued to it are one token (18.2), written above a declaration. The '@' carries the same scope as the name rather than one of its own -- unlike the hat, which is a mark on every keyword and stays out of the way, this one is what says an annotation is here.",
+      "comment": "[syntax.annot]: '@' and the name glued to it are one token ([syntax.annot.spelling]), written above a declaration. The '@' carries the same scope as the name rather than one of its own -- unlike the hat, which is a mark on every keyword and stays out of the way, this one is what says an annotation is here.",
       "patterns": [
         {
           "comment": "18.3: only a literal may stand in the parentheses -- a number (a leading '-' allowed), a string, true^/false^, or a bare name. The name is the host's own constant, carried by its spelling and never resolved, so it reads as a constant rather than as anything this program declares.",
@@ -247,13 +247,13 @@
     },
 
     "scope-specifiers": {
-      "comment": "01-lexical-structure.md 8章: $x $$x $^x $^^x ...",
+      "comment": "[lex.scope]: $x $$x $^x $^^x ...",
       "match": "\\$[\\$\\^]*[\\p{L}_][\\p{L}\\p{N}_]*",
       "name": "variable.language.scope.lhat"
     },
 
     "hat-identifiers": {
-      "comment": "01-lexical-structure.md 2章: '^'-suffixed words carry every keyword. The lexer treats them all alike; the groups below are a syntax-highlighting convenience, not a lexical distinction the language itself makes. Each match splits the word from its trailing '^'s so a theme can style punctuation.definition.hat.lhat (the hat itself) separately from the word.",
+      "comment": "[lex.hat]: '^'-suffixed words carry every keyword. The lexer treats them all alike; the groups below are a syntax-highlighting convenience, not a lexical distinction the language itself makes. Each match splits the word from its trailing '^'s so a theme can style punctuation.definition.hat.lhat (the hat itself) separately from the word.",
       "patterns": [
         {
           "comment": "15.11's _yield^ suspends nothing but types as a yield^ does, so it reads as one here. The built-in members of a string, a table and a number were listed here once and are not any more: the checker knows every one of them and says so in a semantic token (defaultLibrary), where a list here could only go stale -- it already had.",
@@ -272,7 +272,7 @@
           }
         },
         {
-          "comment": "Self^ is a type and self^ a value -- 01 の 2.3 compares a hat word byte for byte, so the capital is a different name, matched here rather than below. 14.10改: 't^' is written with the members it asks for, and 'table^' went with the bare spelling.",
+          "comment": "Self^ is a type and self^ a value -- [lex.hat.repeat] compares a hat word byte for byte, so the capital is a different name, matched here rather than below. [syntax.obj.structure]: 't^' is written with the members it asks for, and 'table^' went with the bare spelling.",
           "match": "\\b(number|string|bool|nil|any|t|c|error|Self)(\\^+)",
           "captures": {
             "1": { "name": "storage.type.lhat" },
@@ -294,7 +294,7 @@
           }
         },
         {
-          "comment": "05 の 8.6's L^ names the machine; these are the hat words that name a value rather than syntax.",
+          "comment": "[modules.host.machine]'s L^ names the machine; these are the hat words that name a value rather than syntax.",
           "match": "\\b(this|it|index|self|super|def|L)(\\^+)",
           "captures": {
             "1": { "name": "variable.language.lhat" },

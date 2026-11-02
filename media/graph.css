@@ -75,7 +75,7 @@ body {
     opacity: 0.75;
 }
 
-/* 06 の 8.2: the way back out of a definition that was drilled into. */
+/* [editor.render.drill]: the way back out of a definition that was drilled into. */
 #trail {
     display: flex;
     flex-wrap: wrap;

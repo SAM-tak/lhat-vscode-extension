@@ -169,7 +169,7 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
                 return;
             }
             try {
-                // 06 の 4.3: null until the unit is part of a checked root.
+                // [editor.ast.unchecked]: null until the unit is part of a checked root.
                 const reply = await client.sendRequest<AstReply | null>("lhat/ast", {
                     textDocument: { uri: document.uri.toString() },
                 });
@@ -416,7 +416,7 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
     private async reveal(
         document: vscode.TextDocument, start: number, end: number,
     ): Promise<void> {
-        // 06 の 4.1: the offsets are UTF-16 code units, which is what
+        // [editor.ast.protocol]: the offsets are UTF-16 code units, which is what
         // positionAt counts.
         const range = new vscode.Range(
             document.positionAt(start), document.positionAt(end));
@@ -428,7 +428,7 @@ export class LhatGraphEditorProvider implements vscode.CustomTextEditorProvider 
         editor.revealRange(range, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
     }
 
-    // 06 の 8.4: React Flow. esbuild bundles React and React Flow for the UI,
+    // [editor.render.layer]: React Flow. esbuild bundles React and React Flow for the UI,
     // with ELK in a separate worker. Styles need
     // 'unsafe-inline': React Flow positions its nodes by writing style
     // attributes, which is also how the layout's own sizes reach the boxes.

@@ -6,7 +6,7 @@ import type { ExpressionSite } from "./graphExpressions";
 // L^ (lhat) -- what the extension host and the graph webview say to each
 // other, and the shape lhatls answers lhat/ast with.
 //
-// 06 の 4.1 defines the reply; this file only restates it as types. The
+// [editor.ast.protocol] defines the reply; this file only restates it as types. The
 // webview cannot speak LSP itself (it has no socket to lhatls and no language
 // client), so the host asks on its behalf and forwards the answer -- 07 の L3.
 
@@ -14,7 +14,7 @@ import type { StatementInsertion } from "./graphStatements";
 import type { ListInsertion } from "./graphLists";
 import type { InterpolationSite } from "./graphInterpolation";
 
-/** One node of the syntax tree, as lhat/ast writes it (06 の 4.1). */
+/** One node of the syntax tree, as lhat/ast writes it ([editor.ast.protocol]). */
 export interface AstNode {
     kind: string;
     /** UTF-16 code unit offsets into `AstReply.source`, half-open. */
@@ -103,7 +103,7 @@ export type ToWebview =
     | { type: "showAnnotations"; ownerStart: number; ownerEnd: number; ownerKind: string; version: number }
     | { type: "toggleFold"; key: string; version: number }
     | { type: "referenceResult"; id: string; version: number; target?: ReferenceTarget }
-    /** The unit is not part of any checked root yet (06 の 4.3). */
+    /** The unit is not part of any checked root yet ([editor.ast.unchecked]). */
     | { type: "pending" }
     | { type: "error"; message: string }
     /** Bring what this span covers into view -- the outline was clicked. */

@@ -469,7 +469,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "What the program receives as its own '...' (02 の 13.7).",
+                "description": "What the program receives as its own '...' ([syntax.type.variadic]).",
                 "default": []
               },
               "cwd": {

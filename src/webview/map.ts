@@ -1,5 +1,5 @@
 // L^ (lhat) -- the syntax tree, as lhat/ast answers with it, turned into an
-// ELK graph. 06 の 5 章.
+// ELK graph. [editor.map].
 //
 // Two axes and nothing else (5.1):
 //   - the "voice" a node is read in decides the base direction --
@@ -44,7 +44,7 @@ const MAX_LABEL = 48;
 // is widened by this much to keep the two off each other.
 const FOLD_BTN = 18;
 
-// 5.3's table, by kind. Code switched off (01 の 6.5) lists statements the
+// [editor.map.kinds]'s table, by kind. Code switched off ([lex.comment.disabled]) lists statements the
 // way a block does, and is laid out as one.
 const STATEMENT_LIST = new Set(["block", "loop-clause", "disabled"]);
 // Catch arms are separate alternative lanes, not members of these sequences.
@@ -144,7 +144,7 @@ export interface ElkNode {
         foldable?: boolean;
         foldKey?: string;
         foldedSummary?: string;
-        /** Inside code switched off (01 の 6.5): drawn greyed out. */
+        /** Inside code switched off ([lex.comment.disabled]): drawn greyed out. */
         disabled?: boolean;
         /** An invisible layout row, or one of its two visible boxes. */
         definitionRole?: "row" | "declaration" | "value";
@@ -314,7 +314,7 @@ function holdsCollapsible(node: AstNode): boolean {
         ({ node: c }) => COLLAPSIBLE.has(c.kind) || holdsCollapsible(c));
 }
 
-// 01 の 6.5: everything drawn inside code switched off is switched off too.
+// [lex.comment.disabled]: everything drawn inside code switched off is switched off too.
 function markDisabled(node: ElkNode, statement?: StatementSite): void {
     if (node.lhat !== undefined) {
         node.lhat.disabled = true;
@@ -334,7 +334,7 @@ function labelOf(node: AstNode, source: string, drawn: Child[]): string {
     return createLabeler(source, node)(node, drawn.map((c) => c.node)).text;
 }
 
-// 06 の 8.2: a named subroutine is a unit of its own, so opening one means
+// [editor.render.drill]: a named subroutine is a unit of its own, so opening one means
 // going into it rather than unfolding it where it stands. Anonymous ones are
 // only meaningful where they were written, so they stay put.
 export function isDrillTarget(node: AstNode): boolean {
@@ -2126,7 +2126,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         }
         if (appendSite(node) && !appended) inner.push(markerNode(node, "add"));
 
-        // V4: 9 章's clauses are `extra` on a BLOCK and run in a fixed order,
+        // V4: [syntax.loop]'s clauses are `extra` on a BLOCK and run in a fixed order,
         // so they go down with the rest of the statements.
         const dir = voice === "stmt" || matchExpressions.has(node) ? "DOWN" : "RIGHT";
         // A with^ is a sequence of resource declarations followed by its
@@ -2172,7 +2172,7 @@ export function toElk(reply: AstReply, options: MapOptions = {}): ElkNode {
         return built;
     }
 
-    // 02 §9: pre runs before every test; first and last are conditional,
+    // [syntax.loop]: pre runs before every test; first and last are conditional,
     // one-time side paths. Only successful tests enter main. These groups
     // are layout/flow junctions, not additional source-language boxes.
     function loopBody(node: AstNode, inner: ElkNode[], kids: Child[], unfold: boolean, avail: number): ElkNode {
