@@ -2,7 +2,7 @@
 require^"reference-library.lh"
 let^library = require^"reference-library.lh"
 
-let^build = f^sku:string^, name:string^ {
+let^build = f^sku:string^, name:string^{
     let^copy = sku
     return^{ sku = copy, name = name }
 }

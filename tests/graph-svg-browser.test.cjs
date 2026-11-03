@@ -2625,7 +2625,7 @@ test('packed and propagated values retain tuple editors through wrapping, unwrap
 test('error payloads, error kinds and enumeration members clear and readd through live controls', { timeout: 120000 }, async () => {
     const { graphHost, graphUi, normalizedAst } = require('./graph-browser-host.cjs');
     await require('./lhat-server.cjs').withLhatServer(async (parse, server) => {
-        const expected = normalizedAst(await parse('public^errordef^Issue{Denied{code:number^},Empty} public^enum^Mode{Automatic,Seven=7} let^problem=error^Issue.Denied{code=17}'));
+        const expected = normalizedAst(await parse('public^errordef^Issue{Denied{code:number^},Empty} public^enum^Mode{Automatic,Seven=7} let^problem=new^Issue.Denied{code=17}'));
         const host = await graphHost(parse, server);
         await browser({ ...routes, '/': { type: 'text/html', body: html(host.tree, false) } }, async client => {
             const ui = await graphUi(host, client), items = () => host.tree.root.fields.items;
@@ -2677,7 +2677,7 @@ test('error payloads, error kinds and enumeration members clear and readd throug
 });
 
 test('wrapper roles and inner values survive folding and owner drilling without duplicate content', { timeout: 90000 }, async () => {
-    const source = 'errordef^Issue{Empty} let^values={mutable=box^(17),sealed=constbox^("locked"),kind=typeof^({key=23}),descriptor=number^,collected=pack^((29,31)),expanded=f^{print((37,41)...)},propagated=try^(error^Issue.Empty{})}';
+    const source = 'errordef^Issue{Empty} let^values={mutable=box^(17),sealed=constbox^("locked"),kind=typeof^({key=23}),descriptor=number^,collected=pack^((29,31)),expanded=f^{print((37,41)...)},propagated=try^(new^Issue.Empty{})}';
     await require('./lhat-server.cjs').withLhatServer(async parse => {
         const tree = await parse(source), table = tree.root.fields.items[1].fields.values[0];
         const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
@@ -2707,7 +2707,7 @@ test('wrapper roles and inner values survive folding and owner drilling without 
 });
 
 test('enumerations, error kinds and constructed payloads preserve their contents across semantic views', { timeout: 90000 }, async () => {
-    const source = 'public^enum^Mode{Automatic,Seven=7,Label="labelled"} public^errordef^Issue{Denied{code:number^=13},Empty} let^payload=error^Issue.Denied{code=17}';
+    const source = 'public^enum^Mode{Automatic,Seven=7,Label="labelled"} public^errordef^Issue{Denied{code:number^=13},Empty} let^payload=new^Issue.Denied{code=17}';
     await require('./lhat-server.cjs').withLhatServer(async parse => {
         const tree = await parse(source), [enumeration, errors, declaration] = tree.root.fields.items;
         const flat = n => [n, ...Object.values(n.fields ?? {}).flat().flatMap(flat)];
@@ -2778,7 +2778,7 @@ test('expression constructors and error kind references remain editable through 
                 await evaluate(`window.postMessage({type:'tree',reply:${JSON.stringify(tree)},uri:'file:///svg-example.lh',version:${index + 2}},'*')`);
                 await until(`document.querySelector('#app')?.dataset.graphVersion==='${index + 2}' && !document.querySelector('.svg-export>button').disabled`);
             }
-            assert(tree.source.includes('error^Example.Failure{}'));
+            assert(tree.source.includes('new^Example.Failure{}'));
             assert.deepEqual(errors, []);
         });
     });

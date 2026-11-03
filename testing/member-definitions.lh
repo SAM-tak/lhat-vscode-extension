@@ -1,8 +1,8 @@
 module^examples.memberDefinitions
 
-var^ count = 0
+var^count = 0
 
-let^ settings = {
+let^settings = {
     enabled = true^,
     ["request-method"] = "GET",
     nested = { limit = 10, name = "sample" },
@@ -12,8 +12,8 @@ let^ settings = {
 
 enum^Mode { Idle, Walk, Dash = 10, Label = "dash" }
 
-let^ Counter = def^{
-    self^{ count:number^ = 0 },
+let^Counter = def^{
+    self^{ count:number^= 0 },
     version = 1,
     abstract^limit:number^,
     override^new = f^count:number^{ self^{ count = count } },
@@ -22,6 +22,6 @@ let^ Counter = def^{
 }
 
 errordef^StockError {
-    OutOfStock { sku:string^ = "", wanted:number^ = 0 },
-    UnknownSku { sku:string^ },
+    OutOfStock { sku:string^= "", wanted:number^= 0 },
+    UnknownSku { sku:string^},
 }

@@ -49,10 +49,10 @@ let^route = p^req:Request {
 # コメントのテスト
 let^grade = f^score:number^-> string^{
     if^score ≧ 90: "A"
-    el^score ≧ 80: "B"
-    el^score ≧ 70: "C"
-    el^score ≧ 60: "D"
-    el^: "F" ;
+        el^score ≧ 80: "B"
+        el^score ≧ 70: "C"
+        el^score ≧ 60: "D"
+        el^: "F";
 }
 
 let^describe = f^kind:string^, n:number^{

@@ -5,7 +5,7 @@ let^describe = f^n:number^-> string^{
     return^"other"
 }
 
-let^empty = p^{ return^ }
+let^empty = p^{ return^}
 
 # An implicit return still has a start, a return node and its value in the graph.
 let^implicit = f^n:number^{ n * 2 }

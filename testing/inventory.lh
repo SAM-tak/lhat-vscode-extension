@@ -44,7 +44,7 @@ let^Item = def^{
 
     take = p^self^, n {
         if^n > self^.count {
-            return^error^StockError.OutOfStock{ sku = self^.sku, wanted = n }
+            return^new^StockError.OutOfStock{ sku = self^.sku, wanted = n }
         el^:
             self^.count -= n
         }
@@ -57,11 +57,11 @@ let^Item = def^{
 
 # 税込み価格。if 式の腕が縦に並ぶかを見る。
 let^gross = f^net {
-    if^net < 0: 0 el^net = 0: 0 el^: net * (1 + TAX) ;
+    if^net < 0: 0 el^net = 0: 0 el^: net * (1 + TAX);
 }
 
 let^classify = f^n {
-    if^n = 0: "none" el^n < 5: "low" el^n < 20: "some" el^: "many" ;
+    if^n = 0: "none" el^n < 5: "low" el^n < 20: "some" el^: "many";
 }
 
 let^report = p^items:t^{Item[]} {
@@ -83,17 +83,17 @@ let^total = f^items:t^{Item[]} {
     for^it in^items {
         sum += gross(try^priceOf(it.sku)) * it.count
     }
-    return^ sum
+    return^sum
 }
 
 let^priceOf = f^sku:string^{
-    for^i from^0 to^prices.length^ - 1 {
+    for^i from^0 to^prices.length^- 1 {
         let^price = prices[i]
         if^price? and^price > 0 and^sku.tonumber() = i {
             return^price
         }
     }
-    return^error^StockError.UnknownSku{ sku = sku }
+    return^new^StockError.UnknownSku{ sku = sku }
 }
 
 let^notify = p^sku:string^{}
@@ -104,7 +104,7 @@ let^openLog = f^name:string^{
             dispose = p^{}
         }
     }
-    return^error^std.io.IOError.NotFound{}
+    return^new^std.io.IOError.NotFound{}
 }
 let^readRows = f^{{
     { sku = "1", name = "", n = 3 },

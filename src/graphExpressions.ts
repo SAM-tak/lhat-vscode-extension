@@ -185,7 +185,7 @@ export function expressionTemplates(tree: AstReply, site: ExpressionSite): State
         ["constbox", "Make a constant box", `constbox^(${current})`],
         ["typeValue", "Type value", "number^"],
         ["name", "Identifier value", "id^name"],
-        ["error", "Error value", "error^Problem.Failure{}"],
+        ["error", "Error value", "new^Problem.Failure{}"],
         ["import", "Import module", "import^std.io"],
         ["require", "Require file", 'require^"./module.lh"'],
         ["member", "Access a member", `(${current}).value`],
