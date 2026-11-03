@@ -24,6 +24,7 @@ import {
     TextEdit,
 } from "vscode-languageclient/node";
 import { bundledServer, rememberExtensionRoot } from "./bundled";
+import { registerHatDecoration } from "./hatDecoration";
 import {
     LhatDebugAdapterFactory,
     LhatDebugConfigurationProvider,
@@ -203,6 +204,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
     client = startClient(resolveServerCommand());
     watchProjectConfiguration(context);
+    registerHatDecoration(context, "lhat", ["lhat", "lton"]);
 
     context.subscriptions.push(
         vscode.commands.registerCommand("lhat.restartServer", async () => {
