@@ -56,3 +56,9 @@ test('dot member recognition preserves decimals, concatenation, varargs and type
     assert.deepEqual(scoped(result, 'keyword.operator.spread.lhat'), ['...']);
     assert.deepEqual(scoped(await tokens('"a.0.0" # a.0.0'), 'constant.numeric.integer.lhat'), []);
 });
+
+test('new^ reads as an operator word, in every place it constructs', async () => {
+    for (const source of ['return^new^Kind.Case{}', 'let^p = new^Point { x=10 }', 'new^t^{ a:string^ } { a="" }']) {
+        assert.deepEqual(scoped(await tokens(source), 'keyword.operator.word.lhat'), ['new'], source);
+    }
+});
