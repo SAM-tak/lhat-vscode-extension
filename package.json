@@ -3,7 +3,7 @@
   "displayName": "L^(Lhat) Language Support",
   "description": "Real-time type-check diagnostics for the L^ (lhat) language, via lhatls",
   "icon": "./images/lhat-logo.png",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "publisher": "SAMtak",
   "license": "Apache-2.0",
   "repository": {
@@ -171,6 +171,10 @@
           "L^",
           "lhat"
         ],
+        "icon": {
+          "light": "./images/lhat-logo-small.svg",
+          "dark": "./images/lhat-logo-small.svg"
+        },
         "configuration": "./language-configuration.json"
       },
       {
@@ -183,6 +187,10 @@
           "LTON",
           "lton"
         ],
+        "icon": {
+          "light": "./images/lhat-logo-small.svg",
+          "dark": "./images/lhat-logo-small.svg"
+        },
         "configuration": "./language-configuration.json"
       }
     ],
